@@ -818,8 +818,9 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
                     return;
                 }
                 let ingest_ms = timestamp(fld(3)).unwrap_or(i64::MAX / 2);
+                let eid_key = h64(eid);
                 let mut ev = Ev1 {
-                    eid: h64(eid),
+                    eid: eid_key,
                     user: 0,
                     uref: 0,
                     ts: INVALID,
