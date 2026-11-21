@@ -1210,6 +1210,7 @@ struct Scratch<'s> {
     ck_local: Vec<u32>,
     evs_sorted: Vec<Ev2>,
     cks_sorted: Vec<Ck>,
+    radix_tmp: Vec<Ev2>,
 }
 
 impl Scratch<'_> {
@@ -1229,7 +1230,53 @@ impl Scratch<'_> {
             ck_local: Vec::new(),
             evs_sorted: Vec::new(),
             cks_sorted: Vec::new(),
+            radix_tmp: Vec::new(),
         }
+    }
+}
+
+const RADIX_MIN: usize = 192;
+
+/// LSD radix sort of events by `ts` (ms since window start, < 2^32): three
+/// stable passes of 11 bits; passes whose digit is constant are skipped.
+fn radix_sort_ts(v: &mut [Ev2], tmp: &mut Vec<Ev2>) {
+    let n = v.len();
+    tmp.clear();
+    tmp.reserve(n);
+    unsafe { tmp.set_len(n) };
+    let mut counts = [[0u32; 2048]; 3];
+    for e in v.iter() {
+        let t = e.ts;
+        counts[0][(t & 2047) as usize] += 1;
+        counts[1][((t >> 11) & 2047) as usize] += 1;
+        counts[2][(t >> 22) as usize & 2047] += 1;
+    }
+    let mut src_is_v = true;
+    for (pass, c) in counts.iter_mut().enumerate() {
+        let shift = 11 * pass as u32;
+        if c.iter().any(|&x| x as usize == n) {
+            continue; // every element has the same digit
+        }
+        let mut acc = 0u32;
+        for x in c.iter_mut() {
+            let v0 = *x;
+            *x = acc;
+            acc += v0;
+        }
+        let (src, dst): (&[Ev2], &mut [Ev2]) =
+            if src_is_v { (&*v, &mut tmp[..]) } else { (&tmp[..], unsafe { &mut *(v as *mut [Ev2]) }) };
+        // src and dst never alias: one is `v`, the other `tmp`
+        let src: &[Ev2] = unsafe { std::slice::from_raw_parts(src.as_ptr(), n) };
+        for e in src {
+            let d = ((e.ts >> shift) & 2047) as usize;
+            let at = &mut c[d];
+            unsafe { *dst.get_unchecked_mut(*at as usize) = *e };
+            *at += 1;
+        }
+        src_is_v = !src_is_v;
+    }
+    if !src_is_v {
+        v.copy_from_slice(&tmp[..n]);
     }
 }
 
@@ -1334,7 +1381,9 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
         let (es, ee) = (sc.ev_cnt[pid] as usize, ev_pos[pid] as usize);
         let (cs, ce) = (sc.ck_cnt[pid] as usize, ck_pos[pid] as usize);
         let ev = &mut evs[es..ee];
-        if ev.len() > 1 {
+        if ev.len() > RADIX_MIN {
+            radix_sort_ts(ev, &mut sc.radix_tmp);
+        } else if ev.len() > 1 {
             ev.sort_unstable_by_key(|e| e.ts);
         }
         let ck = &mut cks[cs..ce];
@@ -1729,6 +1778,28 @@ mod tok_tests {
 #[cfg(test)]
 mod hash_tests {
     use super::*;
+    #[test]
+    fn radix_matches_sort() {
+        let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+        for n in [193usize, 500, 5000, 70_000] {
+            for spread in [1u64 << 31, 1 << 20, 3000, 1] {
+                let mut v: Vec<Ev2> = (0..n)
+                    .map(|i| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        Ev2 { key: i as u64, uref: 0, ts: (x % spread) as u32, pc: 0 }
+                    })
+                    .collect();
+                let mut want: Vec<u32> = v.iter().map(|e| e.ts).collect();
+                want.sort();
+                let mut tmp = Vec::new();
+                radix_sort_ts(&mut v, &mut tmp);
+                let got: Vec<u32> = v.iter().map(|e| e.ts).collect();
+                assert_eq!(got, want);
+            }
+        }
+    }
     #[test]
     fn words16_matches_copy() {
         let src: Vec<u8> = (0u8..40).map(|i| i.wrapping_mul(37).wrapping_add(1)).collect();

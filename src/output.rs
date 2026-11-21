@@ -5,12 +5,13 @@ use std::io::BufWriter;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Date32Array, Int64Array, RecordBatch, StringArray};
+use arrow_array::{ArrayRef, Date32Array, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_array::builder::StringBuilder;
 use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
+use parquet::schema::types::ColumnPath;
 use rayon::prelude::*;
 
 use crate::{Agg, Lookups, OutInfo, name_bytes};
@@ -24,6 +25,10 @@ fn props() -> WriterProperties {
         .set_data_page_size_limit(8 << 20)
         .set_max_row_group_row_count(Some(1 << 24))
         .set_write_batch_size(1 << 16)
+        // few distinct values: dictionary + RLE shrinks these columns several-fold
+        .set_column_dictionary_enabled(ColumnPath::from("day"), true)
+        .set_column_dictionary_enabled(ColumnPath::from("top_category"), true)
+        .set_column_dictionary_enabled(ColumnPath::from("channel"), true)
         .build()
 }
 
@@ -38,8 +43,8 @@ fn user_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("user_id", DataType::Utf8, false),
         Field::new("day", DataType::Date32, false),
-        Field::new("sessions", DataType::Int64, false),
-        Field::new("events", DataType::Int64, false),
+        Field::new("sessions", DataType::Int32, false),
+        Field::new("events", DataType::Int32, false),
         Field::new("revenue_cents", DataType::Int64, false),
         Field::new("top_category", DataType::Utf8, true),
     ]))
@@ -132,8 +137,8 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
             for row in &a.rows {
                 ids.append_value(utf8(name_bytes(row.name)));
                 day.push(row.day);
-                s.push(row.sessions as i64);
-                e.push(row.events as i64);
+                s.push(row.sessions as i32);
+                e.push(row.events as i32);
                 r.push(row.revenue);
                 if row.top == 255 {
                     top.append_null();
@@ -144,8 +149,8 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
             let cols: Vec<ArrayRef> = vec![
                 Arc::new(ids.finish()) as ArrayRef,
                 Arc::new(Date32Array::from(day)),
-                Arc::new(Int64Array::from(s)),
-                Arc::new(Int64Array::from(e)),
+                Arc::new(Int32Array::from(s)),
+                Arc::new(Int32Array::from(e)),
                 Arc::new(Int64Array::from(r)),
                 Arc::new(top.finish() as StringArray),
             ];
