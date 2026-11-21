@@ -2,11 +2,32 @@
 
 pub const DAY_MS: i64 = 86_400_000;
 
+/// The fields of one line: separator positions and which fields are quoted.
+/// Field i spans [ends[i-1] + 1, ends[i]) minus its quotes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Fields<const N: usize> {
+    pub ends: [u32; N],
+    pub q: u32,
+}
+
+impl<const N: usize> Fields<N> {
+    #[inline(always)]
+    pub fn get(&self, i: usize) -> (usize, usize) {
+        let s = if i == 0 { 0 } else { self.ends[i - 1] as usize + 1 };
+        let qb = ((self.q >> i) & 1) as usize;
+        (s + qb, self.ends[i] as usize - qb)
+    }
+    #[allow(dead_code)]
+    pub fn pairs(&self) -> Vec<(u32, u32)> {
+        (0..N).map(|i| { let (a, b) = self.get(i); (a as u32, b as u32) }).collect()
+    }
+}
+
 /// Split one physical line (no trailing '\n') into exactly N fields, unquoting
 /// whole-field quotes. Returns None for a malformed line.
 #[inline(always)]
-pub fn split<const N: usize>(line: &[u8]) -> Option<[(u32, u32); N]> {
-    let mut out = [(0u32, 0u32); N];
+pub fn split<const N: usize>(line: &[u8]) -> Option<Fields<N>> {
+    let mut out = Fields { ends: [0u32; N], q: 0 };
     let mut k = 0usize;
     let mut start = 0usize;
     let mut quotes = 0u32;
@@ -21,15 +42,13 @@ pub fn split<const N: usize>(line: &[u8]) -> Option<[(u32, u32); N]> {
             if k == N {
                 return None;
             }
-            let (mut s, mut e) = (start, i);
             if quotes != 0 {
-                if quotes != 2 || first_q != s || last_q + 1 != e || e - s < 2 {
+                if quotes != 2 || first_q != start || last_q + 1 != i || i - start < 2 {
                     return None;
                 }
-                s += 1;
-                e -= 1;
+                out.q |= 1 << k;
             }
-            out[k] = (s as u32, e as u32);
+            out.ends[k] = i as u32;
             k += 1;
             if at_end {
                 break;
@@ -153,9 +172,11 @@ fn civil19_slow(b: &[u8]) -> Option<i64> {
     Some((days * 86_400 + (h * 3_600 + mi * 60 + sec) as i64) * 1_000)
 }
 
+/// Little-endian 8 bytes at `at`; the caller guarantees `at + 8 <= b.len()`.
 #[inline(always)]
 fn le64(b: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(b[at..at + 8].try_into().unwrap())
+    debug_assert!(at + 8 <= b.len());
+    unsafe { std::ptr::read_unaligned(b.as_ptr().add(at) as *const u64) }.to_le()
 }
 
 /// Bytes that are digits (per `mask`) -> 0..=9; None if any is not an ASCII digit.
@@ -178,7 +199,7 @@ fn civil19(b: &[u8]) -> Option<i64> {
     debug_assert!(b.len() >= 20);
     let w0 = le64(b, 0); // YYYY-MM-
     let w1 = le64(b, 8); // DDTHH:MM
-    let w2 = u32::from_le_bytes(b[16..20].try_into().unwrap()) as u64; // :SS?
+    let w2 = unsafe { std::ptr::read_unaligned(b.as_ptr().add(16) as *const u32) }.to_le() as u64; // :SS?
     // separators: '-' at 4 and 7, 'T' at 10, ':' at 13 and 16
     let sep_bad = ((w0 & 0xFF00_00FF_0000_0000) ^ 0x2D00_002D_0000_0000)
         | ((w1 & 0x0000_FF00_00FF_0000) ^ 0x0000_3A00_0054_0000)
@@ -216,6 +237,36 @@ fn civil19(b: &[u8]) -> Option<i64> {
     Some((days * 86_400 + (h * 3_600 + mi * 60 + sec) as i64) * 1_000)
 }
 
+/// `ingest_ts`, which rules.md guarantees is always valid F1: digits are taken
+/// without range checks. Anything not shaped like F1 goes through `timestamp`.
+#[inline(always)]
+pub fn ingest(b: &[u8]) -> Option<i64> {
+    if b.len() != 20 || b[19] != b'Z' {
+        return timestamp(b);
+    }
+    let w0 = le64(b, 0);
+    let w1 = le64(b, 8);
+    let w2 = unsafe { std::ptr::read_unaligned(b.as_ptr().add(16) as *const u32) }.to_le() as u64;
+    let sep_bad = ((w0 & 0xFF00_00FF_0000_0000) ^ 0x2D00_002D_0000_0000)
+        | ((w1 & 0x0000_FF00_00FF_0000) ^ 0x0000_3A00_0054_0000)
+        | ((w2 & 0xFF) ^ 0x3A);
+    let p0 = pairs((w0 ^ 0x3030_3030_3030_3030) & 0x00FF_FF00_FFFF_FFFF);
+    let p1 = pairs((w1 ^ 0x3030_3030_3030_3030) & 0xFFFF_00FF_FF00_FFFF);
+    let p2 = pairs((w2 ^ 0x3030_3030) & 0x00FF_FF00);
+    let y = (p0 & 0xFF) * 100 + ((p0 >> 16) & 0xFF);
+    let mo = ((p0 >> 40) & 0xFF) as usize;
+    let yi = y.wrapping_sub(Y0 as u64) as usize;
+    if sep_bad != 0 || yi >= YN || mo > 12 {
+        return timestamp(b);
+    }
+    let day = (p1 & 0xFF) as i64;
+    let h = ((p1 >> 24) & 0xFF) as i64;
+    let mi = ((p1 >> 48) & 0xFF) as i64;
+    let sec = ((p2 >> 8) & 0xFF) as i64;
+    let days = MONTH_START[yi * 16 + mo] as i64 + day - 1;
+    Some((days * 86_400 + h * 3_600 + mi * 60 + sec) * 1_000)
+}
+
 /// Any of F1, F2, F3 -> epoch ms. None for a bad timestamp (window not checked).
 #[inline]
 pub fn timestamp(b: &[u8]) -> Option<i64> {
@@ -236,9 +287,24 @@ pub fn timestamp(b: &[u8]) -> Option<i64> {
         let off = (oh * 60 + om) * 60_000;
         return Some(if b[19] == b'+' { base - off } else { base + off });
     }
-    // F3: digits only. Fast path for 9..=19 digits: a short scalar prefix,
-    // then the last 8 digits in one SWAR step.
-    if (9..=19).contains(&n) {
+    // F3: digits only. 9..=16 digits (epoch ms is 13): two SWAR groups of 8,
+    // the high one left-padded with '0'.
+    if (9..=16).contains(&n) {
+        let hi_raw = le64(b, 0);
+        let sh = 8 * (16 - n as u32);
+        let fill = if sh == 0 { 0 } else { 0x3030_3030_3030_3030u64 & ((1u64 << sh) - 1) };
+        let whi = (hi_raw << sh) | fill;
+        let wlo = le64(b, n - 8);
+        let (xh, xl) = (whi.wrapping_sub(0x3030_3030_3030_3030), wlo.wrapping_sub(0x3030_3030_3030_3030));
+        let bad = (xh | whi.wrapping_add(0x4646_4646_4646_4646) | xl | wlo.wrapping_add(0x4646_4646_4646_4646))
+            & 0x8080_8080_8080_8080;
+        if bad != 0 {
+            return None;
+        }
+        return Some((eight_digits(xh) * 100_000_000 + eight_digits(xl)) as i64);
+    }
+    // 17..=19 digits: a short scalar prefix, then the last 8 digits in one SWAR step.
+    if (17..=19).contains(&n) {
         let mut hi: u64 = 0;
         let mut bad = 0u8;
         for &c in &b[..n - 8] {
@@ -388,12 +454,36 @@ mod tests {
     }
 
     #[test]
+    fn ingest_matches_timestamp_on_valid_f1() {
+        for d in days_from_civil(2000, 1, 1)..days_from_civil(2060, 1, 1) {
+            for secs in [0i64, 1, 59, 3_599, 43_210, 86_399] {
+                let ms = (d * 86_400 + secs) * 1_000;
+                let z = d + 719_468;
+                let era = z.div_euclid(146_097);
+                let doe = z - era * 146_097;
+                let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+                let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+                let mp = (5 * doy + 2) / 153;
+                let dd = doy - (153 * mp + 2) / 5 + 1;
+                let mm = if mp < 10 { mp + 3 } else { mp - 9 };
+                let yy = yoe + era * 400 + (mm <= 2) as i64;
+                let s = format!("{yy:04}-{mm:02}-{dd:02}T{:02}:{:02}:{:02}Z", secs / 3600, secs / 60 % 60, secs % 60);
+                assert_eq!(ingest(s.as_bytes()), Some(ms), "{s}");
+                assert_eq!(timestamp(s.as_bytes()), Some(ms), "{s}");
+            }
+        }
+        // not F1-shaped: falls back to the full parser
+        assert_eq!(ingest(b"1791071890000"), Some(1791071890000));
+    }
+
+    #[test]
     fn splitting() {
         let l = b"a,\"b\",,\"\"";
         let f = split::<4>(l).unwrap();
-        assert_eq!(&l[f[1].0 as usize..f[1].1 as usize], b"b");
-        assert_eq!(f[2].0, f[2].1);
-        assert_eq!(f[3].0, f[3].1);
+        let (a, b) = f.get(1);
+        assert_eq!(&l[a..b], b"b");
+        assert_eq!(f.get(2).0, f.get(2).1);
+        assert_eq!(f.get(3).0, f.get(3).1);
         assert!(split::<4>(b"a,b,c").is_none());
         assert!(split::<2>(b"u1,u5\"").is_none());
         assert!(split::<2>(b"\"u1,u5").is_none());

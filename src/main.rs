@@ -26,7 +26,7 @@ use memmap2::Mmap;
 use rayon::prelude::*;
 use xxhash_rust::xxh3::{xxh3_64, xxh3_64_with_seed};
 
-use parse::{DAY_MS, split, timestamp};
+use parse::{DAY_MS, Fields, split, timestamp};
 
 const P1_BITS: u32 = 9; // event_id buckets
 const P1: usize = 1 << P1_BITS;
@@ -41,6 +41,7 @@ const CLICK_REACH: i64 = 7 * DAY_MS;
 /// Input mappings of the current run (leaked so refs stay 'static; one run per process,
 /// or a few in diagnostic mode).
 static FILES: AtomicPtr<Vec<Mmap>> = AtomicPtr::new(std::ptr::null_mut());
+static SCALAR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static LENS: AtomicPtr<Vec<usize>> = AtomicPtr::new(std::ptr::null_mut());
 
 /// file:12 | offset:36 | len:16
@@ -312,7 +313,7 @@ fn for_records<const N: usize>(
     f: usize,
     s: usize,
     e: usize,
-    mut each: impl FnMut(usize, &'static [u8], Option<[(u32, u32); N]>),
+    mut each: impl FnMut(usize, &'static [u8], Option<Fields<N>>),
 ) {
     // sub-blocks small enough that stage-2 reads hit L2 right after stage 1
     const SUB: usize = 192 << 10;
@@ -329,7 +330,7 @@ fn for_records_block<const N: usize>(
     f: usize,
     s: usize,
     e: usize,
-    each: &mut impl FnMut(usize, &'static [u8], Option<[(u32, u32); N]>),
+    each: &mut impl FnMut(usize, &'static [u8], Option<Fields<N>>),
 ) {
     let data = file_bytes(f);
     let n = data.len();
@@ -383,12 +384,13 @@ fn for_records_block<const N: usize>(
             let len = end - p;
             let fields = if len == 0 {
                 None
-            } else if len < 128 && end <= lim {
+            } else if len <= 120 && end <= lim {
                 let off = p - base;
                 let cm = bits128(cmb, off) & ((1u128 << len) - 1);
                 let qm = bits128(qtb, off);
                 split_masked::<N>(line, cm, qm)
             } else {
+                SCALAR.fetch_add(1, Ordering::Relaxed);
                 split::<N>(line)
             };
             each(p, line, fields);
@@ -413,19 +415,15 @@ fn for_records_block<const N: usize>(
     });
 }
 
-/// 128 bits of a bitmap starting at bit `off` (words past the end read as 0).
+/// 128 bits of a bitmap starting at bit `off`. The bitmap carries at least 3
+/// zero words of padding, so the unaligned 16-byte load below stays in bounds;
+/// bits 121..127 may be missing for odd offsets, so callers use it for lines of
+/// at most 120 bytes.
 #[inline(always)]
 fn bits128(bm: &[u64], off: usize) -> u128 {
-    let w = off / 64;
-    let sh = off % 64;
-    let g = |i: usize| -> u64 { if i < bm.len() { bm[i] } else { 0 } };
-    let (a, b, c) = (g(w), g(w + 1), g(w + 2));
-    let lo = (a as u128) | ((b as u128) << 64);
-    if sh == 0 {
-        lo
-    } else {
-        (lo >> sh) | ((c as u128) << (128 - sh))
-    }
+    debug_assert!(off / 8 + 16 <= bm.len() * 8);
+    let v = unsafe { std::ptr::read_unaligned((bm.as_ptr() as *const u8).add(off / 8) as *const u128) };
+    v >> (off % 8)
 }
 
 #[derive(Default)]
@@ -436,13 +434,15 @@ struct Bitmaps {
 }
 
 impl Bitmaps {
+    /// Bitmaps of `words` words plus 3 zeroed words of padding (for `bits128`).
     fn prepare(&mut self, words: usize) -> (&mut [u64], &mut [u64], &mut [u64]) {
         for v in [&mut self.nl, &mut self.cm, &mut self.qt] {
-            if v.len() < words {
-                v.resize(words, 0);
+            if v.len() < words + 3 {
+                v.resize(words + 3, 0);
             }
+            v[words..words + 3].fill(0);
         }
-        (&mut self.nl[..words], &mut self.cm[..words], &mut self.qt[..words])
+        (&mut self.nl[..words + 3], &mut self.cm[..words + 3], &mut self.qt[..words + 3])
     }
 }
 
@@ -480,7 +480,7 @@ fn prefix_xor(x: u128) -> u128 {
 
 /// Fields of a line of `len` (< 128) bytes from its comma and quote masks.
 #[inline(always)]
-fn split_masked<const N: usize>(line: &[u8], cm: u128, qm: u128) -> Option<[(u32, u32); N]> {
+fn split_masked<const N: usize>(line: &[u8], cm: u128, qm: u128) -> Option<Fields<N>> {
     let len = line.len();
     if cm.count_ones() as usize != N - 1 {
         return None;
@@ -493,25 +493,37 @@ fn split_masked<const N: usize>(line: &[u8], cm: u128, qm: u128) -> Option<[(u32
     if bad != 0 {
         return None;
     }
-    let mut out = [(0u32, 0u32); N];
+    // one bit per field: is it quoted? (quote at its start; validated above)
+    let qs = q & starts;
+    let (slo, shi) = (starts as u64, (starts >> 64) as u64);
+    let flags = pext64(qs as u64, slo) | (pext64((qs >> 64) as u64, shi) << slo.count_ones());
+    let mut out = Fields { ends: [0u32; N], q: flags as u32 };
     let mut c = cm;
-    let mut s = 0usize;
-    let (qlo, qhi) = (q as u64, (q >> 64) as u64);
-    for (k, slot) in out.iter_mut().enumerate() {
-        let e = if k + 1 < N {
-            let t = c.trailing_zeros() as usize;
-            c &= c - 1;
-            t
-        } else {
-            len
-        };
-        // quoted iff a quote sits at the field start (validated above); branch-free
-        let bit = if s < 64 { (qlo >> s) & 1 } else { (qhi >> (s & 63)) & 1 } as usize;
-        let bit = bit & ((e > s) as usize);
-        *slot = ((s + bit) as u32, (e - bit) as u32);
-        s = e + 1;
+    for k in 0..N - 1 {
+        out.ends[k] = c.trailing_zeros();
+        c &= c - 1;
     }
+    out.ends[N - 1] = len as u32;
     Some(out)
+}
+
+#[inline(always)]
+fn pext64(x: u64, m: u64) -> u64 {
+    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+    unsafe {
+        std::arch::x86_64::_pext_u64(x, m)
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+    {
+        let (mut r, mut m, mut i) = (0u64, m, 0);
+        while m != 0 {
+            let t = m.trailing_zeros();
+            r |= ((x >> t) & 1) << i;
+            i += 1;
+            m &= m - 1;
+        }
+        r
+    }
 }
 
 mod simd {
@@ -605,8 +617,10 @@ fn lookups(inp: &Inputs) -> Lookups {
     let n = file_bytes(pf).len();
     for_lines(pf, 0, n, |_, line| {
         if let Some(fs) = split::<2>(line) {
-            let a = &line[fs[0].0 as usize..fs[0].1 as usize];
-            let b = &line[fs[1].0 as usize..fs[1].1 as usize];
+            let (a0, a1) = fs.get(0);
+            let (b0, b1) = fs.get(1);
+            let a = &line[a0..a1];
+            let b = &line[b0..b1];
             prods.push((a, b));
         }
     });
@@ -629,8 +643,10 @@ fn lookups(inp: &Inputs) -> Lookups {
     let n = file_bytes(cf).len();
     for_lines(cf, 0, n, |_, line| {
         if let Some(fs) = split::<2>(line) {
-            let a = &line[fs[0].0 as usize..fs[0].1 as usize];
-            let b = &line[fs[1].0 as usize..fs[1].1 as usize];
+            let (a0, a1) = fs.get(0);
+            let (b0, b1) = fs.get(1);
+            let a = &line[a0..a1];
+            let b = &line[b0..b1];
             let (_, existed) = campaigns.insert_or_get(h64(a), campaign_names.len() as u64);
             if !existed {
                 campaign_names.push(a.to_vec());
@@ -656,13 +672,10 @@ struct Persons {
 }
 
 /// Open addressing keyed by the hash's top bits, built from keys sorted by hash
-/// (so construction is one streaming pass), with a 1-bit-per-slot filter that
-/// answers most "not linked" lookups from a few MiB.
+/// (so construction is one streaming pass, and keys sit in sorted order).
 struct PersonMap {
     shift: u32,
     slots: Vec<Slot>,
-    filter: Vec<u64>,
-    fmask: u64,
 }
 
 impl PersonMap {
@@ -682,36 +695,20 @@ impl PersonMap {
             slots[at] = Slot { key: k, val: v };
             next = at + 1;
         }
-        let fbits = ((n * 24).next_power_of_two().max(1 << 12)) as u64;
-        let mut filter = vec![0u64; (fbits / 64) as usize];
-        let fmask = fbits - 1;
-        for &(k, _) in sorted {
-            let i = k & fmask;
-            filter[(i >> 6) as usize] |= 1 << (i & 63);
-        }
-        PersonMap { shift: 64 - bits, slots, filter, fmask }
-    }
-    #[inline(always)]
-    fn maybe(&self, k: u64) -> bool {
-        let i = k & self.fmask;
-        unsafe { (*self.filter.get_unchecked((i >> 6) as usize) >> (i & 63)) & 1 != 0 }
+        PersonMap { shift: 64 - bits, slots }
     }
     #[inline(always)]
     fn prefetch(&self, k: u64) {
-        if self.maybe(k) {
-            let i = (k >> self.shift) as usize;
-            #[cfg(target_arch = "x86_64")]
-            unsafe {
-                use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-                _mm_prefetch(self.slots.as_ptr().add(i) as *const i8, _MM_HINT_T0);
-            }
+        let i = (k >> self.shift) as usize;
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+            _mm_prefetch(self.slots.as_ptr().add(i) as *const i8, _MM_HINT_T0);
         }
     }
+    /// Lookup; the caller prefetches, so no filter in front (its own load would miss).
     #[inline(always)]
     fn get(&self, k: u64) -> Option<u64> {
-        if !self.maybe(k) {
-            return None;
-        }
         let mut i = (k >> self.shift) as usize;
         loop {
             let sl = unsafe { self.slots.get_unchecked(i) };
@@ -770,8 +767,8 @@ fn links(inp: &Inputs) -> Persons {
             let mut v = Vec::new();
             for_records::<2>(f, s, e, |p, line, fs| {
                 if let Some(fs) = fs {
-                    let (a0, a1) = (fs[0].0 as usize, fs[0].1 as usize);
-                    let (b0, b1) = (fs[1].0 as usize, fs[1].1 as usize);
+                    let (a0, a1) = fs.get(0);
+                    let (b0, b1) = fs.get(1);
                     if a1 > a0 && b1 > b0 {
                         v.push((h64(&line[a0..a1]), mkref(f, p + a0, a1 - a0)));
                         v.push((h64(&line[b0..b1]), mkref(f, p + b0, b1 - b0)));
@@ -933,12 +930,15 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
             let mut overflow: Vec<Vec<Ev1>> = (0..P1).map(|_| Vec::new()).collect();
             for_records::<7>(f, s, e, |p, line, fs| {
                 let Some(fs) = fs else { return };
-                let fld = |i: usize| unsafe { line.get_unchecked(fs[i].0 as usize..fs[i].1 as usize) };
+                let fld = |i: usize| {
+                    let (a, b) = fs.get(i);
+                    unsafe { line.get_unchecked(a..b) }
+                };
                 let eid = fld(0);
                 if eid.is_empty() {
                     return;
                 }
-                let ingest_ms = timestamp(fld(3)).unwrap_or(i64::MAX / 2);
+                let ingest_ms = parse::ingest(fld(3)).unwrap_or(i64::MAX / 2);
                 let (eid_h, eid_c) = h64_chk(eid);
                 let mut ev = Ev1 {
                     eid: eid_h,
@@ -972,7 +972,7 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
                         break 'valid;
                     };
                     ev.user = h64(user);
-                    ev.uref = mkref(f, p + fs[1].0 as usize, user.len());
+                    ev.uref = mkref(f, p + fs.get(1).0, user.len());
                     ev.ts = (ts - ws) as u32;
                     ev.pc = pc;
                 }
@@ -1132,7 +1132,10 @@ fn parse_clicks(units: &[(usize, usize, usize)], lk: &Lookups, persons: &Persons
             let mut v: Vec<Ck> = Vec::with_capacity((e - s) / 40 + 16);
             for_records::<4>(f, s, e, |p, line, fs| {
                 let Some(fs) = fs else { return };
-                let fld = |i: usize| unsafe { line.get_unchecked(fs[i].0 as usize..fs[i].1 as usize) };
+                let fld = |i: usize| {
+                    let (a, b) = fs.get(i);
+                    unsafe { line.get_unchecked(a..b) }
+                };
                 let cid = fld(0);
                 let user = fld(1);
                 if cid.is_empty() || user.is_empty() {
@@ -1143,7 +1146,7 @@ fn parse_clicks(units: &[(usize, usize, usize)], lk: &Lookups, persons: &Persons
                     return;
                 }
                 let Some(camp) = lk.campaigns.get(h64(fld(2))) else { return };
-                v.push(Ck { key: h64(user), cref: mkref(f, p + fs[0].0 as usize, cid.len()), ts: ts - ws, camp: camp as u32 });
+                v.push(Ck { key: h64(user), cref: mkref(f, p + fs.get(0).0, cid.len()), ts: ts - ws, camp: camp as u32 });
             });
             const AHEAD: usize = 16;
             let n = v.len();
@@ -1467,6 +1470,63 @@ fn main() {
     let out = PathBuf::from(env("OUTPUT_DIR", "/output"));
     let threads: usize = env("NCPU", "8").parse().unwrap_or(8);
     rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().unwrap();
+    if let Ok(mode) = std::env::var("SS_MICRO") {
+        // deterministic micro-benchmarks (run under cachegrind)
+        let inp = open_all(&data);
+        let units = chunks(&inp.events);
+        let mut acc = 0u64;
+        let mut lines = 0u64;
+        if mode == "s1" || mode == "nl" {
+            let mut bm = Bitmaps::default();
+            for &(f, s, e) in &units {
+                let d = file_bytes(f);
+                let mut a = s;
+                while a < e {
+                    let b = (a + (192 << 10)).min(e);
+                    let words = (b - a).div_ceil(64);
+                    let (x, y, z) = bm.prepare(words);
+                    simd::stage1(&d[a..b], x, y, z);
+                    if mode == "nl" {
+                        for w in x.iter() {
+                            let mut c = *w;
+                            while c != 0 {
+                                lines += 1;
+                                acc = acc.wrapping_add(c.trailing_zeros() as u64);
+                                c &= c - 1;
+                            }
+                        }
+                    } else {
+                        acc = acc.wrapping_add(x[0] ^ y[words - 1]);
+                        lines += (b - a) as u64 / 77;
+                    }
+                    a = b;
+                }
+            }
+            eprintln!("micro {mode}: lines {lines} acc {acc}");
+            return;
+        }
+        for &(f, s, e) in &units {
+            for_records::<7>(f, s, e, |p, line, fs| {
+                lines += 1;
+                if let Some(fs) = fs {
+                    let fld = |i: usize| {
+                    let (a, b) = fs.get(i);
+                    unsafe { line.get_unchecked(a..b) }
+                };
+                    match mode.as_str() {
+                        "tok" => acc = acc.wrapping_add(fs.get(3).1 as u64 ^ p as u64),
+                        "ts" => acc = acc.wrapping_add(timestamp(fld(2)).unwrap_or(0) as u64 ^ parse::ingest(fld(3)).unwrap_or(0) as u64),
+                        "ts1" => acc = acc.wrapping_add(timestamp(fld(2)).unwrap_or(0) as u64),
+                        "ing" => acc = acc.wrapping_add(parse::ingest(fld(3)).unwrap_or(0) as u64),
+                        "hash" => acc = acc.wrapping_add(h64_chk(fld(0)).0 ^ h64(fld(1))),
+                        _ => {}
+                    }
+                }
+            });
+        }
+        eprintln!("micro {mode}: lines {lines} acc {acc} scalar {}", SCALAR.load(Ordering::Relaxed));
+        return;
+    }
     if std::env::var("SS_DIAG").is_ok() {
         diag::main(&data, &out, threads);
         std::process::exit(1);
@@ -1616,7 +1676,7 @@ mod tok_tests {
         };
         while p < d.len() {
             let end = d[p..].iter().position(|&c| c == b'\n').map_or(d.len(), |i| p + i);
-            out.push((p, split::<N>(&d[p..end]).map(|f| f.to_vec())));
+            out.push((p, split::<N>(&d[p..end]).map(|f| f.pairs())));
             p = end + 1;
         }
         out
@@ -1659,7 +1719,7 @@ mod tok_tests {
             cuts.dedup();
             let mut got = Vec::new();
             for w in cuts.windows(2) {
-                for_records::<4>(0, w[0], w[1], |p, _line, fs| got.push((p, fs.map(|f| f.to_vec()))));
+                for_records::<4>(0, w[0], w[1], |p, _line, fs| got.push((p, fs.map(|f| f.pairs()))));
             }
             assert_eq!(got, want, "round {round}: {:?}", String::from_utf8_lossy(&d));
         }
