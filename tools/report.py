@@ -6,6 +6,8 @@ def stat(rows,v,k='wall_ms'):
  x=[r[k] for r in rows if r['variant']==v];return [statistics.median(x),statistics.mean(x),statistics.stdev(x) if len(x)>1 else 0,min(x),max(x)]
 def fmt(x):return ' | '.join(f'{v:,.2f}' for v in x)
 large=load('final-large.json');eight=load('final-large-threads8.json');base=stat(large,'baseline');opt=stat(large,'final');io=load('io-large.json')
+ready=R/'submission/READY.json'
+scorer=json.loads(ready.read_text())['scorer_commit'] if ready.exists() else None
 lines=['# First submission report — Shopping Sessions / Codex','',
 'Validated implementation prepared on2026-11-21 UTC from pinned baseline `d2dc441e6bed67a57572a7c1f12b06dad7f163cc`. The exact scorer commit is recorded in the submission receipt after committing. Original history is preserved on a distinct optimization branch.','',
 f'**Local20M result: {base[0]/1000:.3f}s → {opt[0]/1000:.3f}s median, {(1-opt[0]/base[0])*100:.1f}% less elapsed time.** With NCPU=8 on this same2-CPU-quota VM: {stat(eight,"baseline")[0]/1000:.3f}s → {stat(eight,"final")[0]/1000:.3f}s, {(1-stat(eight,"final")[0]/stat(eight,"baseline")[0])*100:.1f}% faster. These are not official scores. No sub-1s or sub-0.5s official result is claimed.','',
@@ -74,6 +76,8 @@ if (D/'docker-large.json').exists():
  lines += ['', 'Container timings are highly variable and not an official score estimate. Both images use the same pinned Rust1.100.0 compiler, static flags and locked dependencies; baseline source is exactly the original commit. A static affinity probe proved Docker ignored requested cpuset0,2: containers actually see CPUs0,1,2. Hence Docker absolute times must not be compared with the direct0,2-pinned runs. State start-to-exit excludes CLI create/attach overhead; CLI elapsed is retained separately. The rootless daemon cannot reproduce official resource controls. The optimized static image also passed all36 official fixtures and the1M answer;20M outputs match both frozen static Docker baseline and original direct baseline.']
 lines+=['','Public repository: https://github.com/akshayagg18/shopping-cl . No generated datasets are versioned. Root Dockerfile and lockfile provide a static linux/amd64 build; runtime has no network dependency. MIT notice and dependency/AI disclosures are included.','',
 '**Official submission not performed.** The browser tool failed to initialize, so no authenticated competition session was verified. No practice allowance was consumed; no official time, rank or validation receipt exists for this candidate. Submit the exact validated commit through https://www.joinbuilders.org/buildathon/tracks/shopping-sessions ; wait for actual scoring feedback. The cutoff is2026-11-22 16:00UTC (11:00AM EST).']
+if scorer:
+ lines[2]=lines[2].replace('The exact scorer commit is recorded in the submission receipt after committing.', f'Validated scorer commit: `{scorer}` (see `submission/READY.json`).')
 from format_docs import format_text
 (R/'FIRST_SUBMISSION_REPORT.md').write_text(format_text('\n'.join(lines)+'\n'))
 print('Report generated from raw measurements.')

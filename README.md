@@ -1,5 +1,7 @@
 # Shopping Sessions — Codex optimization branch
 
+Validated scorer commit: [`1ffcf309d044cf44d38ed49c071308b73b46118c`](https://github.com/akshayagg18/shopping-cl/commit/1ffcf309d044cf44d38ed49c071308b73b46118c).
+
 Builders Buildathon 2026, Databricks track. Reads every CSV shard under `/data`
 and writes `/output/user_daily/*.parquet` and `/output/campaign_daily/*.parquet`.
 Days use Parquet DATE; comparison is exact and independent of row/file order.

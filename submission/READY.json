@@ -1,0 +1,41 @@
+{
+  "repository": "https://github.com/akshayagg18/shopping-cl",
+  "branch": "codex/optimize",
+  "scorer_commit": "1ffcf309d044cf44d38ed49c071308b73b46118c",
+  "source_tree": "59268eacf3d1c2b36653954bdc9058f11bf0a401",
+  "baseline_commit": "d2dc441e6bed67a57572a7c1f12b06dad7f163cc",
+  "docker_image_id": "sha256:6191ac729901acfc005337f82be47438df9a51ab6c333bf28210e16ba833a2a7",
+  "docker_image_bytes": 6302024,
+  "docker_platform": "linux/amd64",
+  "root_build_seconds": 136.09006139700068,
+  "correctness": {
+    "official_fixtures": "36/36 direct and static Docker",
+    "official_dev_answer": "exact direct and Docker",
+    "literal_reference": "small baseline +4 fuzz mutations +3 additional seeds",
+    "adversarial": "passed including forced collisions, long UTF8, pre-epoch ingestion",
+    "large_20M": "exact NCPU2 and NCPU8, static Docker and direct",
+    "release_units": "3 passed"
+  },
+  "local_20M": {
+    "runs_per_variant": 15,
+    "cpu_quota": 2,
+    "baseline_median_ms": 3543.2143609996274,
+    "final_median_ms": 3132.6063829992563,
+    "elapsed_reduction_percent": 11.588572865360835,
+    "peak_rss_reduction_percent": 22.6
+  },
+  "official": {
+    "submitted": false,
+    "runtime_seconds": null,
+    "rank": null,
+    "validation_receipt": null,
+    "reason": "Browser tool could not initialize; authenticated competition session not verified"
+  },
+  "limitations": [
+    "No official runtime or sub-0.5s result established",
+    "60M run unavailable on8GiB VM",
+    "Docker resource controls differ from scorer; observed CPU mask0,1,2"
+  ],
+  "submission_url": "https://www.joinbuilders.org/buildathon/tracks/shopping-sessions",
+  "deadline_utc": "2026-11-22T16:00:00Z"
+}

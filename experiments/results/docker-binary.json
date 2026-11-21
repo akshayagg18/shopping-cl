@@ -1,0 +1,6 @@
+{
+  "sha256": "4f5b43c8af8506a01719411b08ca32e720f2c5ae721fc0e777108515a9ac845f",
+  "bytes": 6300952,
+  "static": true,
+  "description": "experiments/bin/docker-final: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), static-pie linked, for GNU/Linux 3.2.0, BuildID[sha1]=76d7b830417c6cdb622aa6ced41368b72caaf4d6, not stripped"
+}

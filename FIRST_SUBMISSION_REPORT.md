@@ -1,6 +1,6 @@
 # First submission report — Shopping Sessions / Codex
 
-Validated implementation prepared on 2026-11-21 UTC from pinned baseline `d2dc441e6bed67a57572a7c1f12b06dad7f163cc`. The exact scorer commit is recorded in the submission receipt after committing. Original history is preserved on a distinct optimization branch.
+Validated implementation prepared on 2026-11-21 UTC from pinned baseline `d2dc441e6bed67a57572a7c1f12b06dad7f163cc`. Validated scorer commit: `1ffcf309d044cf44d38ed49c071308b73b46118c` (see `submission/READY.json`). Original history is preserved on a distinct optimization branch.
 
 **Local 20M result: 3.543 s → 3.133 s median, 11.6% less elapsed time.** With NCPU=8 on this same 2-CPU-quota VM: 4.056 s → 3.131 s, 22.8% faster. These are not official scores. No sub-1 s or sub-0.5 s official result is claimed.
 

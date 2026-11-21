@@ -21,3 +21,5 @@
 /experiments/collision-tests.rs
 /experiments/replay/
 __pycache__/
+
+/experiments/reference*
