@@ -756,7 +756,7 @@ impl EvChunk {
     }
 }
 
-fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64) -> Vec<EvChunk> {
+fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, persons: &Persons, ws: i64, we: i64) -> Vec<EvChunk> {
     units
         .par_iter()
         .map(|&(f, s, e)| {
@@ -808,7 +808,8 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
                     } else {
                         break 'valid;
                     };
-                    ev.user = h64(user);
+                    let uh = h64(user);
+                    ev.user = persons.map.get(uh).unwrap_or_else(|| unlinked_key(uh));
                     ev.uref = mkref(f, p + fs[1].0 as usize, user.len());
                     ev.ts = (ts - ws) as u32;
                     ev.pc = pc;
@@ -869,7 +870,7 @@ thread_local! {
 
 /// Dedup one event_id bucket in place over the parse chunks, map users to
 /// persons, bucket by person.
-fn dedup_bucket(parts: &[EvChunk], b: usize, persons: &Persons) -> (Vec<Ev2>, Vec<u32>) {
+fn dedup_bucket(parts: &[EvChunk], b: usize) -> (Vec<Ev2>, Vec<u32>) {
     DEDUP.with(|cell| {
         let mut guard = cell.borrow_mut();
         let sc = &mut *guard;
@@ -924,37 +925,17 @@ fn dedup_bucket(parts: &[EvChunk], b: usize, persons: &Persons) -> (Vec<Ev2>, Ve
                 g += 1;
             }
         }
-        const AHEAD: usize = 16;
         sc.out.clear();
         let out = &mut sc.out;
-        let mut ring: [*const Ev1; AHEAD] = [std::ptr::null(); AHEAD];
-        let mut head = 0usize;
-        let mut filled = 0usize;
-        let emit = |e: &Ev1, out: &mut Vec<Ev2>| {
-            let key = persons.map.get(e.user).unwrap_or_else(|| unlinked_key(e.user));
-            out.push(Ev2 { key, uref: e.uref, ts: e.ts, pc: e.pc });
-        };
         let mut g = 0usize;
         for p in parts {
             let (m, o) = p.bucket(b);
             for e in m.iter().chain(o.iter()) {
                 if keep[g] != 0 && e.ts != INVALID {
-                    persons.map.prefetch(e.user);
-                    if filled == AHEAD {
-                        emit(unsafe { &*ring[head] }, out);
-                    } else {
-                        filled += 1;
-                    }
-                    ring[head] = e as *const Ev1;
-                    head = (head + 1) % AHEAD;
+                    out.push(Ev2 { key: e.user, uref: e.uref, ts: e.ts, pc: e.pc });
                 }
                 g += 1;
             }
-        }
-        // drain in insertion order
-        let start = if filled == AHEAD { head } else { 0 };
-        for k in 0..filled {
-            emit(unsafe { &*ring[(start + k) % AHEAD] }, out);
         }
         by_bucket(&sc.out, |e| person_bucket(e.key), &mut sc.ks)
     })
@@ -1326,29 +1307,14 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let (ws, we) = (inp.window_start, inp.window_end);
     let ev_units = chunks(&inp.events);
     let ck_units = chunks(&inp.clicks);
-    let seq = std::env::var("SS_SEQ").is_ok();
-    let (persons, ev_parts) = if seq {
-        let p = links(&inp);
-        lap("links");
-        let e = parse_events(&ev_units, &lk, ws, we);
-        lap("events parsed");
-        (p, e)
-    } else {
-        rayon::join(|| links(&inp), || parse_events(&ev_units, &lk, ws, we))
-    };
+    let persons = links(&inp);
+    lap("links");
+    let ev_parts = parse_events(&ev_units, &lk, &persons, ws, we);
     lap("links + events parsed");
-    let (ev_scattered, ck_parts) = if seq {
-        let a = (0..P1).into_par_iter().map(|b| dedup_bucket(&ev_parts, b, &persons)).collect::<Vec<_>>();
-        lap("dedup");
-        let b = parse_clicks(&ck_units, &lk, &persons, ws, we);
-        lap("clicks");
-        (a, b)
-    } else {
-        rayon::join(
-            || (0..P1).into_par_iter().map(|b| dedup_bucket(&ev_parts, b, &persons)).collect::<Vec<_>>(),
-            || parse_clicks(&ck_units, &lk, &persons, ws, we),
-        )
-    };
+    let (ev_scattered, ck_parts) = rayon::join(
+        || (0..P1).into_par_iter().map(|b| dedup_bucket(&ev_parts, b)).collect::<Vec<_>>(),
+        || parse_clicks(&ck_units, &lk, &persons, ws, we),
+    );
     lap("dedup + clicks");
 
     let ws_day = ws.div_euclid(DAY_MS);
