@@ -824,7 +824,7 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
                     uref: 0,
                     ts: INVALID,
                     ingest: (ingest_ms.div_euclid(1000)).clamp(0, u32::MAX as i64) as u32,
-                    chk: xxh3_64_with_seed(eid, 0x51_7C_C1_B7) as u32,
+                    chk: if (eid_key & (1u64 << 22)) == 0 { 0 } else { xxh3_64_with_seed(eid, 0x51_7C_C1_B7) as u32 },
                     pc: 0,
                 };
                 'valid: {

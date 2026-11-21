@@ -1,0 +1,67 @@
+name: GPT-6 SIMD exact packed key skips second hash A/B
+on:
+  push:
+    branches: [gpt6-simd-skip-second-hash]
+  workflow_dispatch:
+env:
+  RUSTFLAGS: "-C target-cpu=x86-64-v3"
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build candidate and parent baseline
+        run: |
+          cargo build --release --locked
+          cp target/release/ssp /tmp/shop-candidate
+          git show bc272b815059c02dd95edfeb0217b34c65667d34:src/main.rs > src/main.rs
+          cargo build --release --locked
+          cp target/release/ssp /tmp/shop-baseline
+          chmod +x /tmp/shop-baseline /tmp/shop-candidate
+      - name: Download official generator; create 20M event workload
+        run: |
+          curl --retry 3 -fsSL https://www.joinbuilders.org/buildathon/tracks/shopping-sessions/files/generator.zip -o /tmp/shop-generator.zip
+          mkdir -p /tmp/shopgen
+          cd /tmp/shopgen
+          unzip -q /tmp/shop-generator.zip
+          cargo build --release --locked --manifest-path generator/Cargo.toml
+          generator/target/release/generate --seed 20 --events 20000000 --clicks 5000000 --threads 4 --output /tmp/shop-perf
+      - name: Compare 5 paired whole-process medians
+        run: |
+          python3 - <<'PY'
+          import os, time, subprocess, pathlib, statistics
+          names=['baseline','candidate','candidate','baseline','baseline','candidate','candidate','baseline','baseline','candidate']
+          records={x:[] for x in set(names)}
+          d=pathlib.Path('/tmp/shop-results')
+          d.mkdir(exist_ok=True)
+          for i,name in enumerate(names):
+              out=d/f'{name}-{i}'
+              out.mkdir()
+              env=dict(os.environ,DATA_DIR='/tmp/shop-perf',OUTPUT_DIR=str(out),NCPU='4',SS_TIMING='1')
+              t=time.perf_counter()
+              r=subprocess.run(['/tmp/shop-'+name],env=env,capture_output=True,text=True)
+              dt=time.perf_counter()-t
+              print(f'RUN {name} {i} TIME={dt:.6f}',flush=True)
+              print(r.stderr[-800:],flush=True)
+              if r.returncode:
+                  raise RuntimeError(f'{name} returned {r.returncode}')
+              records[name].append(dt)
+          print('SAMPLES',records,flush=True)
+          for k,x in records.items():print('MEDIAN_'+k.upper(),statistics.median(x),flush=True)
+          print('SPEEDUP',statistics.median(records['baseline'])/statistics.median(records['candidate']),flush=True)
+          PY
+      - name: Official-format development answer checks
+        run: |
+          /tmp/shopgen/generator/target/release/generate --seed 1 --events 1000000 --clicks 250000 --threads 4 --output /tmp/shop-dev
+          mkdir -p /tmp/shop-baseline-dev /tmp/shop-candidate-dev
+          DATA_DIR=/tmp/shop-dev OUTPUT_DIR=/tmp/shop-baseline-dev NCPU=4 /tmp/shop-baseline
+          DATA_DIR=/tmp/shop-dev OUTPUT_DIR=/tmp/shop-candidate-dev NCPU=4 /tmp/shop-candidate
+          python3 -m pip install --quiet pyarrow
+          python3 tools/check.py /tmp/shop-baseline-dev --hash
+          python3 tools/check.py /tmp/shop-candidate-dev --hash
+          python3 tools/check.py /tmp/shop-candidate-dev --other /tmp/shop-baseline-dev
+          python3 tools/check.py /tmp/shop-results/candidate-9 --other /tmp/shop-results/baseline-8
