@@ -60,8 +60,46 @@ fn deref(r: u64) -> &'static [u8] {
 
 #[inline(always)]
 fn h64(b: &[u8]) -> u64 {
-    let h = xxh3_64(b);
-    if h == 0 { 1 } else { h }
+    const MASK62: u64 = (1u64 << 62) - 1;
+    const SPLIT: u64 = (1u64 << 22) - 1;
+    if b.len() == 9 && (b[0] == b'e' || b[0] == b'u' || b[0] == b'k') {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use std::arch::x86_64::*;
+            let word = u64::from_le_bytes(b[1..9].try_into().unwrap());
+            let v = _mm_cvtsi64_si128(word as i64);
+            let d = _mm_and_si128(
+                _mm_cmpgt_epi8(v, _mm_set1_epi8(47)),
+                _mm_cmpgt_epi8(_mm_set1_epi8(58), v)
+            );
+            let a = _mm_and_si128(
+                _mm_cmpgt_epi8(v, _mm_set1_epi8(96)),
+                _mm_cmpgt_epi8(_mm_set1_epi8(123), v)
+            );
+            if (_mm_movemask_epi8(_mm_or_si128(d, a)) & 0xff) == 0xff {
+                let dv = _mm_sub_epi8(v, _mm_set1_epi8(47));
+                let av = _mm_sub_epi8(v, _mm_set1_epi8(86));
+                let values = _mm_or_si128(_mm_and_si128(d, dv), _mm_and_si128(a, av));
+                let digits = _mm_cvtsi128_si64(values) as u64;
+                let p = _pext_u64(digits, 0x3f3f_3f3f_3f3f_3f3f);
+                // The 54-bit value is unique for all nine-character base36
+                // IDs. Shift to 60 bits and apply bijections modulo 2^62.
+                let mut x = (((b[0] - b'a' + 11) as u64) << 48) | p;
+                x <<= 6;
+                x ^= x >> 31;
+                x = x.wrapping_mul(0x9e37_79b9_7f4a_7c15) & MASK62;
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xd6e8_feb8_6659_fd93) & MASK62;
+                x ^= x >> 29;
+                // bit 22 is the domain marker: 0 for exact packed keys.
+                return (x & SPLIT) | ((x >> 22) << 23);
+            }
+        }
+    }
+    // Arbitrary IDs retain the original high-quality xxh3 hash. Bit 22
+    // separates them from exact packed keys; LINKED bit 63 stays free.
+    let x = xxh3_64(b) & MASK62;
+    (x & SPLIT) | (1u64 << 22) | ((x >> 22) << 23)
 }
 
 // ---------------------------------------------------------------- hash map u64 -> u64 (keys already hashed, never 0)
@@ -468,9 +506,27 @@ fn split_masked<const N: usize>(line: &[u8], cm: u128, qm: u128) -> Option<[(u32
 
 mod simd {
     /// Newline, comma and quote bitmaps of `d` (64 bytes per word).
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f,avx512bw")]
+    unsafe fn block64_avx512(b: &[u8]) -> (u64, u64, u64) {
+        use std::arch::x86_64::*;
+        let v = unsafe { _mm512_loadu_si512(b.as_ptr() as *const __m512i) };
+        let eq = |byte| _mm512_cmpeq_epi8_mask(v, _mm512_set1_epi8(byte)) as u64;
+        (eq(b'\n' as i8), eq(b',' as i8), eq(b'"' as i8))
+    }
+
     pub fn stage1(d: &[u8], nl: &mut [u64], cm: &mut [u64], qt: &mut [u64]) {
         let full = d.len() / 64;
+        #[cfg(target_arch = "x86_64")]
+        let use_avx512 = std::arch::is_x86_feature_detected!("avx512bw");
         for i in 0..full {
+            #[cfg(target_arch = "x86_64")]
+            let (a, b, c) = if use_avx512 {
+                unsafe { block64_avx512(&d[i * 64..i * 64 + 64]) }
+            } else {
+                block64(&d[i * 64..i * 64 + 64])
+            };
+            #[cfg(not(target_arch = "x86_64"))]
             let (a, b, c) = block64(&d[i * 64..i * 64 + 64]);
             nl[i] = a;
             cm[i] = b;
@@ -480,6 +536,9 @@ mod simd {
             let mut buf = [0u8; 64];
             let rest = &d[full * 64..];
             buf[..rest.len()].copy_from_slice(rest);
+            #[cfg(target_arch = "x86_64")]
+            let (a, b, c) = if use_avx512 { unsafe { block64_avx512(&buf) } } else { block64(&buf) };
+            #[cfg(not(target_arch = "x86_64"))]
             let (a, b, c) = block64(&buf);
             nl[full] = a;
             cm[full] = b;
@@ -756,12 +815,62 @@ impl EvChunk {
     }
 }
 
+/// Software write-combining: accumulate 8 event copies per hash partition in
+/// a small hot staging array, then copy contiguous runs into partition slabs.
+/// All bytes written to the slab are initialized by this function.
+#[inline(always)]
+fn flush_event_stage(
+    b: usize,
+    cap: usize,
+    stage: &[std::mem::MaybeUninit<Ev1>],
+    fill: &mut [u8],
+    data: &mut Vec<Ev1>,
+    len: &mut [u32],
+    overflow: &mut [Vec<Ev1>],
+) {
+    const STAGE: usize = 8;
+    let count = fill[b] as usize;
+    if count == 0 { return; }
+    let at = len[b] as usize;
+    let room = cap - at;
+    let fit = room.min(count);
+    if fit != 0 {
+        unsafe {
+            let src = stage.as_ptr().add(b * STAGE) as *const Ev1;
+            let dst = data.as_mut_ptr().add(b * cap + at);
+            // Streaming into full cache-line runs avoids fetching each destination
+            // cache line before overwriting it. Partial final records use memcpy.
+            #[cfg(target_arch = "x86_64")]
+            if (dst as usize & 15) == 0 {
+                use std::arch::x86_64::*;
+                let streamed = fit & !1;
+                for i in 0..(streamed * std::mem::size_of::<Ev1>()) / 16 {
+                    let v = _mm_loadu_si128((src as *const __m128i).add(i));
+                    _mm_stream_si128((dst as *mut __m128i).add(i), v);
+                }
+                if (fit & 1) != 0 {
+                    std::ptr::copy_nonoverlapping(src.add(streamed), dst.add(streamed), 1);
+                }
+            } else {
+                std::ptr::copy_nonoverlapping(src, dst, fit);
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            std::ptr::copy_nonoverlapping(src, dst, fit);
+        }
+        len[b] += fit as u32;
+    }
+    for j in fit..count {
+        overflow[b].push(unsafe { stage[b * STAGE + j].assume_init_read() });
+    }
+    fill[b] = 0;
+}
+
 fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64) -> Vec<EvChunk> {
     units
         .par_iter()
         .map(|&(f, s, e)| {
             // events lines are >= ~60 bytes; per-bucket room with slack
-            let cap = (e - s) / 64 / P1 * 9 / 8 + 24;
+            let cap = ((e - s) / 64 / P1 * 9 / 8 + 25) & !1;
             let mut data: Vec<Ev1> = Vec::with_capacity(cap * P1);
             #[allow(clippy::uninit_vec)]
             unsafe {
@@ -769,6 +878,10 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
             }
             let mut len = vec![0u32; P1];
             let mut overflow: Vec<Vec<Ev1>> = (0..P1).map(|_| Vec::new()).collect();
+            const STAGE: usize = 8;
+            let mut stage = vec![std::mem::MaybeUninit::<Ev1>::uninit(); P1 * STAGE];
+            let mut fill = vec![0u8; P1];
+
             for_records::<7>(f, s, e, |p, line, fs| {
                 let Some(fs) = fs else { return };
                 let fld = |i: usize| unsafe { line.get_unchecked(fs[i].0 as usize..fs[i].1 as usize) };
@@ -813,15 +926,21 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
                     ev.ts = (ts - ws) as u32;
                     ev.pc = pc;
                 }
-                let b = (ev.eid >> (64 - P1_BITS)) as usize;
-                let l = unsafe { len.get_unchecked_mut(b) };
-                if (*l as usize) < cap {
-                    unsafe { *data.get_unchecked_mut(b * cap + *l as usize) = ev };
-                    *l += 1;
-                } else {
-                    overflow[b].push(ev);
+                let b = ((ev.eid >> (63 - P1_BITS)) & ((P1 - 1) as u64)) as usize;
+                let n = fill[b] as usize;
+                stage[b * STAGE + n].write(ev);
+                fill[b] += 1;
+                if fill[b] as usize == STAGE {
+                    flush_event_stage(b, cap, &stage, &mut fill, &mut data, &mut len, &mut overflow);
                 }
             });
+            for b in 0..P1 {
+                if fill[b] != 0 {
+                    flush_event_stage(b, cap, &stage, &mut fill, &mut data, &mut len, &mut overflow);
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            unsafe { std::arch::x86_64::_mm_sfence() };
             EvChunk { data, cap, len, overflow }
         })
         .collect()
