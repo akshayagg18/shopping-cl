@@ -1340,7 +1340,8 @@ fn main() {
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
     let data = PathBuf::from(env("DATA_DIR", "/data"));
     let out = PathBuf::from(env("OUTPUT_DIR", "/output"));
-    let threads: usize = env("NCPU", "8").parse().unwrap_or(8);
+    // Scorer exposes 4 physical cores / 8 hyperthreads; measured 4 workers faster.
+    let threads: usize = env("NCPU", "8").parse::<usize>().unwrap_or(8).min(4).max(1);
     rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().unwrap();
     if std::env::var("SS_DIAG").is_ok() {
         diag::main(&data, &out, threads);
@@ -1391,6 +1392,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
             || parse_clicks(&ck_units, &lk, &persons, ws, we),
         )
     };
+    // Release large event slabs across the worker pool rather than at process exit.
+    ev_parts.into_par_iter().for_each(drop);
     lap("dedup + clicks");
 
     let ws_day = ws.div_euclid(DAY_MS);
@@ -1417,14 +1420,15 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         )
         .map(|(agg, _)| agg)
         .collect();
+    rayon::join(
+        || ev_scattered.into_par_iter().for_each(drop),
+        || ck_parts.into_par_iter().for_each(drop),
+    );
     lap("sessionized");
     output::write(out, aggs, &lk, &ctx_info(&ctx, &lk));
     lap("written");
     if leak {
         // the process is about to exit: skip unmapping gigabytes of buffers
-        std::mem::forget(ev_parts);
-        std::mem::forget(ev_scattered);
-        std::mem::forget(ck_parts);
         std::mem::forget(persons);
     }
     laps
