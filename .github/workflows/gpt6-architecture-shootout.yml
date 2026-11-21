@@ -1,0 +1,74 @@
+name: Architecture shootout 20M (research)
+on:
+  push:
+    branches: [gpt6-architecture-shootout]
+  workflow_dispatch:
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: vibhor
+            repo: Vibhor7-7/shopping-sessions
+            bin: pipeline
+          - label: krish
+            repo: krishchopda/shopping-sessions
+            bin: solver
+          - label: juan
+            repo: JuanQuenga/buildathon-shopping-sessions
+            bin: pipeline
+          - label: micah
+            repo: micah-andelman/shopping-sessions
+            bin: sessions
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: "-C target-cpu=x86-64-v3"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Claude baseline
+        run: |
+          cargo build --release --locked --bin ssp
+          cp target/release/ssp /tmp/shop-claude
+      - name: Clone and compile public research implementation
+        run: |
+          git clone -q --depth 1 "https://github.com/${{ matrix.repo }}.git" /tmp/other
+          cd /tmp/other
+          cargo build --release --locked --bin "${{ matrix.bin }}"
+          cp "target/release/${{ matrix.bin }}" /tmp/shop-other
+      - name: Generate 20M event official-format dataset
+        run: |
+          curl --retry 4 -fsSL https://www.joinbuilders.org/buildathon/tracks/shopping-sessions/files/generator.zip -o /tmp/shop-generator.zip
+          mkdir /tmp/g
+          cd /tmp/g
+          unzip -q /tmp/shop-generator.zip
+          cargo build --release --locked --manifest-path generator/Cargo.toml
+          generator/target/release/generate --seed 20 --events 20000000 --clicks 5000000 --threads 4 --output /tmp/shop-data
+      - name: 3x paired wall timing and exact table match
+        run: |
+          python3 - <<'PY'
+          import os,subprocess,pathlib,statistics,time,shutil
+          records={'claude':[],'other':[]}
+          root=pathlib.Path('/tmp/outputs');root.mkdir()
+          for it in range(3):
+              order=['claude','other'] if it%2==0 else ['other','claude']
+              for key in order:
+                  out=root/f'{key}-{it}';out.mkdir()
+                  env=dict(os.environ,DATA_DIR='/tmp/shop-data',OUTPUT_DIR=str(out),NCPU='4')
+                  t=time.perf_counter()
+                  p=subprocess.run([f'/tmp/shop-{key}'],env=env,capture_output=True,text=True)
+                  dur=time.perf_counter()-t
+                  print(f'RESEARCH_RUN ${{ matrix.label }} {key} {it} {dur:.6f} exit={p.returncode}',flush=True)
+                  if p.returncode:
+                      print(p.stderr[-3000:])
+                      raise RuntimeError(f'{key} failed')
+                  records[key].append(dur)
+                  if it!=2:shutil.rmtree(out)
+          for key,times in records.items():
+              print(f'RESEARCH_MEDIAN ${{ matrix.label }} {key} {statistics.median(times):.6f}',flush=True)
+          PY
+          python3 -m pip install --quiet pyarrow
+          python3 tools/check.py /tmp/outputs/other-2 --other /tmp/outputs/claude-2
+          echo "RESEARCH_EXACT_20M=YES"
