@@ -6,8 +6,21 @@ use super::*;
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicU64;
 
-pub const PD_BITS: u32 = 10; // event-id partitions of the copy records
-pub const PD: usize = 1 << PD_BITS;
+pub const PD_BITS: u32 = 10; // event-id partitions of the copy records (default)
+pub static PDB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(PD_BITS);
+/// Write-combining staging with non-temporal stores for the record streams.
+pub const WC_DEFAULT: bool = true;
+pub static WC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(WC_DEFAULT);
+
+#[inline(always)]
+pub fn pd_bits() -> u32 {
+    PDB.load(Ordering::Relaxed)
+}
+
+#[inline(always)]
+pub fn pd() -> usize {
+    1 << pd_bits()
+}
 
 /// One copy of an event, valid or not, for dedup. 24 bytes.
 #[derive(Clone, Copy, Default)]
@@ -24,7 +37,7 @@ const NOLOC: u64 = u64::MAX;
 
 #[inline(always)]
 fn eid_part(eid: u64) -> usize {
-    (eid >> (64 - PD_BITS)) as usize
+    (eid >> (64 - pd_bits())) as usize
 }
 
 // ---------------------------------------------------------------- block streams
@@ -72,18 +85,28 @@ struct Tail {
 }
 
 /// Per-partition append-only lists of records in fixed-size blocks. Every
-/// block is full except the last of a partition.
+/// block is full except the last of a partition. With write combining, records
+/// first gather in a small per-partition staging area and leave it a few cache
+/// lines at a time with non-temporal stores (no read-for-ownership of the
+/// destination, no cache pollution).
 pub struct Stream<T> {
     tails: Vec<Tail>,
     blocks: Vec<Vec<usize>>,
+    stage: Vec<T>,
+    wc: bool,
     _t: PhantomData<T>,
 }
 
-impl<T: Copy> Stream<T> {
-    const CAP: usize = BLOCK_BYTES / std::mem::size_of::<T>();
+impl<T: Copy + Default> Stream<T> {
+    /// Records per staging flush: a whole number of cache lines.
+    const K: usize = if std::mem::size_of::<T>() == 24 { 8 } else if std::mem::size_of::<T>() == 32 { 4 } else { 1 };
+    /// Records per block, a multiple of K.
+    const CAP: usize = BLOCK_BYTES / std::mem::size_of::<T>() / Self::K * Self::K;
 
     fn new(parts: usize) -> Self {
-        Stream { tails: vec![Tail::default(); parts], blocks: (0..parts).map(|_| Vec::new()).collect(), _t: PhantomData }
+        let wc = WC.load(Ordering::Relaxed) && Self::K > 1;
+        let stage = if wc { vec![T::default(); parts * Self::K] } else { Vec::new() };
+        Stream { tails: vec![Tail::default(); parts], blocks: (0..parts).map(|_| Vec::new()).collect(), stage, wc, _t: PhantomData }
     }
 
     #[cold]
@@ -99,6 +122,9 @@ impl<T: Copy> Stream<T> {
     /// Append `v` to partition `p`; returns its index there.
     #[inline(always)]
     fn push(&mut self, arena: &mut Arena, p: usize, v: T) -> u32 {
+        if self.wc {
+            return self.push_wc(arena, p, v);
+        }
         if unsafe { self.tails.get_unchecked(p) }.left == 0 {
             self.grow(arena, p);
         }
@@ -109,6 +135,68 @@ impl<T: Copy> Stream<T> {
         let i = t.n;
         t.n += 1;
         i
+    }
+
+    #[inline(always)]
+    fn push_wc(&mut self, arena: &mut Arena, p: usize, v: T) -> u32 {
+        let i = unsafe { self.tails.get_unchecked(p) }.n;
+        let f = i as usize % Self::K;
+        unsafe { *self.stage.get_unchecked_mut(p * Self::K + f) = v };
+        unsafe { self.tails.get_unchecked_mut(p) }.n = i + 1;
+        if f == Self::K - 1 {
+            self.flush(arena, p);
+        }
+        i
+    }
+
+    /// Move partition p's full staging area to its block with streaming stores.
+    #[inline(always)]
+    fn flush(&mut self, arena: &mut Arena, p: usize) {
+        if unsafe { self.tails.get_unchecked(p) }.left == 0 {
+            self.grow(arena, p);
+        }
+        let t = unsafe { self.tails.get_unchecked_mut(p) };
+        let bytes = Self::K * std::mem::size_of::<T>();
+        unsafe {
+            let src = self.stage.as_ptr().add(p * Self::K) as *const u8;
+            let dst = t.cur as *mut u8;
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+            {
+                use std::arch::x86_64::*;
+                let mut o = 0;
+                while o < bytes {
+                    let x = _mm256_loadu_si256(src.add(o) as *const __m256i);
+                    _mm256_stream_si256(dst.add(o) as *mut __m256i, x);
+                    o += 32;
+                }
+            }
+            #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+            std::ptr::copy_nonoverlapping(src, dst, bytes);
+        }
+        t.cur += bytes;
+        t.left -= Self::K as u32;
+    }
+
+    /// Write out what is still staged (after the last push of the phase).
+    fn finish(&mut self, arena: &mut Arena) {
+        if !self.wc {
+            return;
+        }
+        for p in 0..self.tails.len() {
+            let rest = self.tails[p].n as usize % Self::K;
+            if rest == 0 {
+                continue;
+            }
+            if self.tails[p].left == 0 {
+                self.grow(arena, p);
+            }
+            let t = &mut self.tails[p];
+            unsafe {
+                std::ptr::copy_nonoverlapping(self.stage.as_ptr().add(p * Self::K), t.cur as *mut T, rest);
+            }
+            t.cur += rest * std::mem::size_of::<T>();
+            t.left -= rest as u32;
+        }
     }
 
     #[inline]
@@ -141,7 +229,17 @@ unsafe impl Sync for Sink {}
 
 impl Sink {
     pub fn new() -> Self {
-        Sink { arena: Arena::new(), ev: Stream::new(P2), cp: Stream::new(PD), ck: Stream::new(P2) }
+        Sink { arena: Arena::new(), ev: Stream::new(p2()), cp: Stream::new(pd()), ck: Stream::new(p2()) }
+    }
+    /// End of the parse phase: everything staged goes to its blocks.
+    pub fn finish(&mut self) {
+        self.ev.finish(&mut self.arena);
+        self.cp.finish(&mut self.arena);
+        self.ck.finish(&mut self.arena);
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            std::arch::x86_64::_mm_sfence()
+        };
     }
 }
 
@@ -172,19 +270,17 @@ fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
 pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons, ws: i64, we: i64, sink: &mut Sink, tid: u64) {
     const AHEAD: usize = 16;
     let mut ring = [PendE::default(); AHEAD];
+    let mut memo = parse::Memo::new();
     let mut head = 0usize;
     let mut filled = 0usize;
-    for_records::<7>(f, s, e, |p, line, fs| {
+    crate::scan::scan_records::<7>(f, s, e, |p, line, fs| {
         let Some(fs) = fs else { return };
-        let fld = |i: usize| {
-            let (a, b) = fs.get(i);
-            unsafe { line.get_unchecked(a..b) }
-        };
+        let fld = |i: usize| fs.get(line, i);
         let eid = fld(0);
         if eid.is_empty() {
             return;
         }
-        let ingest_ms = parse::ingest(fld(3)).unwrap_or(i64::MAX / 2);
+        let ingest_ms = parse::ingest_memo(fld(3), &mut memo).unwrap_or(i64::MAX / 2);
         let (eid_h, eid_c) = h64_chk(eid);
         let ingest = (ingest_ms.div_euclid(1000)).clamp(0, u32::MAX as i64) as u32;
         'valid: {
@@ -192,7 +288,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             if user.is_empty() {
                 break 'valid;
             }
-            let Some(ts) = timestamp(fld(2)) else { break 'valid };
+            let Some(ts) = parse::ts_memo(fld(2), &mut memo) else { break 'valid };
             if ts < ws || ts >= we || ingest_ms - ts > DAY_MS {
                 break 'valid;
             }
@@ -213,7 +309,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             persons.map.prefetch(uh);
             let pd = PendE {
                 uh,
-                uref: mkref(f, p + fs.get(1).0, user.len()),
+                uref: mkref(f, p + fs.span(line, 1).0, user.len()),
                 eid: eid_h,
                 chk: eid_c,
                 ingest,
@@ -259,27 +355,25 @@ pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
     const AHEAD: usize = 16;
     let lo = ws - CLICK_REACH;
     let mut ring = [PendC::default(); AHEAD];
+    let mut memo = parse::Memo::new();
     let mut head = 0usize;
     let mut filled = 0usize;
-    for_records::<4>(f, s, e, |p, line, fs| {
+    crate::scan::scan_records::<4>(f, s, e, |p, line, fs| {
         let Some(fs) = fs else { return };
-        let fld = |i: usize| {
-            let (a, b) = fs.get(i);
-            unsafe { line.get_unchecked(a..b) }
-        };
+        let fld = |i: usize| fs.get(line, i);
         let cid = fld(0);
         let user = fld(1);
         if cid.is_empty() || user.is_empty() {
             return;
         }
-        let Some(ts) = timestamp(fld(3)) else { return };
+        let Some(ts) = parse::ts_memo(fld(3), &mut memo) else { return };
         if ts < lo || ts >= we {
             return;
         }
         let Some(camp) = lk.campaigns.get(h64(fld(2))) else { return };
         let uh = h64(user);
         persons.map.prefetch(uh);
-        let pd = PendC { uh, cref: mkref(f, p + fs.get(0).0, cid.len()), ts: ts - ws, camp: camp as u32 };
+        let pd = PendC { uh, cref: mkref(f, p + fs.span(line, 0).0, cid.len()), ts: ts - ws, camp: camp as u32 };
         if filled == AHEAD {
             emit_click(sink, persons, &ring[head]);
         } else {
@@ -301,32 +395,34 @@ pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
 /// partition) stream.
 pub struct Dead {
     words: Vec<AtomicU64>,
-    off: Vec<usize>, // [thread * P2 + partition] -> first word
+    off: Vec<usize>, // [thread * np + partition] -> first word
+    np: usize,
 }
 
 impl Dead {
     pub fn new(sinks: &[Sink]) -> Self {
-        let mut off = Vec::with_capacity(sinks.len() * P2);
+        let np = p2();
+        let mut off = Vec::with_capacity(sinks.len() * np);
         let mut n = 0usize;
         for s in sinks {
-            for p in 0..P2 {
+            for p in 0..np {
                 off.push(n);
                 n += s.ev.len(p).div_ceil(64);
             }
         }
         let words = (0..n).map(|_| AtomicU64::new(0)).collect();
-        Dead { words, off }
+        Dead { words, off, np }
     }
     #[inline]
     fn kill(&self, loc: u64) {
         let t = (loc >> 48) as usize;
         let p = ((loc >> 32) & 0xFFFF) as usize;
         let i = (loc & 0xFFFF_FFFF) as usize;
-        self.words[self.off[t * P2 + p] + i / 64].fetch_or(1 << (i % 64), Ordering::Relaxed);
+        self.words[self.off[t * self.np + p] + i / 64].fetch_or(1 << (i % 64), Ordering::Relaxed);
     }
     #[inline(always)]
     fn word(&self, t: usize, p: usize, w: usize) -> u64 {
-        unsafe { self.words.get_unchecked(*self.off.get_unchecked(t * P2 + p) + w) }.load(Ordering::Relaxed)
+        unsafe { self.words.get_unchecked(*self.off.get_unchecked(t * self.np + p) + w) }.load(Ordering::Relaxed)
     }
 }
 

@@ -1,59 +1,11 @@
 //! Parquet writing: one user_daily file per aggregation state, written in parallel.
 
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::Path;
-use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Date32Array, Int32Array, Int64Array, RecordBatch, StringArray};
-use arrow_array::builder::StringBuilder;
-use arrow_schema::{DataType, Field, Schema};
-use parquet::arrow::ArrowWriter;
-use parquet::basic::Compression;
-use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
-use parquet::schema::types::ColumnPath;
 use rayon::prelude::*;
 
+use crate::pq::{Column, Kind, write_file};
 use crate::{Agg, Lookups, OutInfo, name_bytes};
-
-fn props() -> WriterProperties {
-    WriterProperties::builder()
-        .set_compression(Compression::UNCOMPRESSED)
-        .set_dictionary_enabled(false)
-        .set_statistics_enabled(EnabledStatistics::None)
-        .set_writer_version(WriterVersion::PARQUET_1_0)
-        .set_data_page_size_limit(8 << 20)
-        .set_max_row_group_row_count(Some(1 << 24))
-        .set_write_batch_size(1 << 16)
-        // few distinct values: dictionary + RLE shrinks these columns several-fold
-        .set_column_dictionary_enabled(ColumnPath::from("day"), true)
-        .set_column_dictionary_enabled(ColumnPath::from("top_category"), true)
-        .set_column_dictionary_enabled(ColumnPath::from("channel"), true)
-        .build()
-}
-
-fn write_batch(path: &Path, batch: RecordBatch) {
-    let f = BufWriter::with_capacity(4 << 20, File::create(path).expect("create parquet"));
-    let mut w = ArrowWriter::try_new(f, batch.schema(), Some(props())).expect("writer");
-    w.write(&batch).expect("write");
-    w.close().expect("close");
-}
-
-fn user_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("user_id", DataType::Utf8, false),
-        Field::new("day", DataType::Date32, false),
-        Field::new("sessions", DataType::Int32, false),
-        Field::new("events", DataType::Int32, false),
-        Field::new("revenue_cents", DataType::Int64, false),
-        Field::new("top_category", DataType::Utf8, true),
-    ]))
-}
-
-fn utf8(b: &[u8]) -> &str {
-    // Inputs are UTF-8 by contract; avoid a validation pass on the hot path.
-    unsafe { std::str::from_utf8_unchecked(b) }
-}
 
 pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
     let ud = out.join("user_daily");
@@ -78,10 +30,15 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
     }
 
     let cats = &lk.categories;
-    let schema = user_schema();
     let campaign_job = || {
-        let (mut id, mut ch, mut day) = (StringBuilder::new(), StringBuilder::new(), Vec::new());
-        let (mut s, mut p, mut r, mut a) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let n = camp.iter().filter(|v| v[0] != 0 || v[3] != 0).count();
+        let mut id = Column::new("campaign_id", Kind::Str, n, n * 12);
+        let mut ch = Column::new("channel", Kind::Str, n, n * 12);
+        let mut day = Column::new("day", Kind::Date, n, n * 4);
+        let mut s = Column::new("sessions", Kind::I64, n, n * 8);
+        let mut p = Column::new("purchasing_sessions", Kind::I64, n, n * 8);
+        let mut r = Column::new("revenue_cents", Kind::I64, n, n * 8);
+        let mut a = Column::new("assisted_sessions", Kind::I64, n, n * 8);
         for c in 0..=info.ncamp {
             for d in 0..info.ndays {
                 let v = camp[c * info.ndays + d];
@@ -89,38 +46,20 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
                     continue;
                 }
                 if c == info.ncamp {
-                    id.append_value("organic");
-                    ch.append_value("organic");
+                    id.str(b"organic");
+                    ch.str(b"organic");
                 } else {
-                    id.append_value(utf8(&lk.campaign_names[c]));
-                    ch.append_value(utf8(&lk.channels[c]));
+                    id.str(&lk.campaign_names[c]);
+                    ch.str(&lk.channels[c]);
                 }
-                day.push((info.ws_day + d as i64) as i32);
-                s.push(v[0]);
-                p.push(v[1]);
-                r.push(v[2]);
-                a.push(v[3]);
+                day.i32((info.ws_day + d as i64) as i32);
+                s.i64(v[0]);
+                p.i64(v[1]);
+                r.i64(v[2]);
+                a.i64(v[3]);
             }
         }
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("campaign_id", DataType::Utf8, false),
-            Field::new("channel", DataType::Utf8, false),
-            Field::new("day", DataType::Date32, false),
-            Field::new("sessions", DataType::Int64, false),
-            Field::new("purchasing_sessions", DataType::Int64, false),
-            Field::new("revenue_cents", DataType::Int64, false),
-            Field::new("assisted_sessions", DataType::Int64, false),
-        ]));
-        let cols: Vec<ArrayRef> = vec![
-            Arc::new(id.finish()),
-            Arc::new(ch.finish()),
-            Arc::new(Date32Array::from(day)),
-            Arc::new(Int64Array::from(s)),
-            Arc::new(Int64Array::from(p)),
-            Arc::new(Int64Array::from(r)),
-            Arc::new(Int64Array::from(a)),
-        ];
-        write_batch(&cd.join("part-0.parquet"), RecordBatch::try_new(schema, cols).unwrap());
+        write_file(&cd.join("part-0.parquet"), &[id, ch, day, s, p, r, a]);
     };
 
     let user_jobs = || {
@@ -129,32 +68,22 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
                 return;
             }
             let n = a.rows.len();
-            let bytes: usize = a.rows.iter().map(|r| (r.name & 0xFFFF) as usize).sum();
-            let mut ids = StringBuilder::with_capacity(n, bytes);
-            let mut top = StringBuilder::with_capacity(n, n * 4);
-            let mut day = Vec::with_capacity(n);
-            let (mut s, mut e, mut r) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
+            let bytes: usize = a.rows.iter().map(|r| (r.name & 0xFFFF) as usize + 4).sum();
+            let mut ids = Column::new("user_id", Kind::Str, n, bytes);
+            let mut day = Column::new("day", Kind::Date, n, n * 4);
+            let mut s = Column::new("sessions", Kind::I32, n, n * 4);
+            let mut e = Column::new("events", Kind::I32, n, n * 4);
+            let mut r = Column::new("revenue_cents", Kind::I64, n, n * 8);
+            let mut top = Column::new("top_category", Kind::OptStr, n, n * 12);
             for row in &a.rows {
-                ids.append_value(utf8(name_bytes(row.name)));
-                day.push(row.day);
-                s.push(row.sessions as i32);
-                e.push(row.events as i32);
-                r.push(row.revenue);
-                if row.top == 255 {
-                    top.append_null();
-                } else {
-                    top.append_value(utf8(&cats[row.top as usize]));
-                }
+                ids.str(name_bytes(row.name));
+                day.i32(row.day);
+                s.i32(row.sessions as i32);
+                e.i32(row.events as i32);
+                r.i64(row.revenue);
+                top.opt_str(if row.top == 255 { None } else { Some(&cats[row.top as usize]) });
             }
-            let cols: Vec<ArrayRef> = vec![
-                Arc::new(ids.finish()) as ArrayRef,
-                Arc::new(Date32Array::from(day)),
-                Arc::new(Int32Array::from(s)),
-                Arc::new(Int32Array::from(e)),
-                Arc::new(Int64Array::from(r)),
-                Arc::new(top.finish() as StringArray),
-            ];
-            write_batch(&ud.join(format!("part-{i}.parquet")), RecordBatch::try_new(schema.clone(), cols).unwrap());
+            write_file(&ud.join(format!("part-{i}.parquet")), &[ids, day, s, e, r, top]);
         });
     };
     rayon::join(campaign_job, user_jobs);
