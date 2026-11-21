@@ -1,0 +1,58 @@
+name: PGO versus Claude V3 20M exactness and timing
+on:
+  push:
+    branches: [gpt6-pgo-shootout]
+  workflow_dispatch:
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+      - name: Build standard baseline
+        run: |
+          RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release --locked --bin ssp
+          cp target/release/ssp /tmp/shop-base
+      - name: Generate public training and test data
+        run: |
+          curl --retry 4 -fsSL https://www.joinbuilders.org/buildathon/tracks/shopping-sessions/files/generator.zip -o /tmp/generator.zip
+          mkdir /tmp/generator
+          cd /tmp/generator
+          unzip -q /tmp/generator.zip
+          cargo build --release --locked --manifest-path generator/Cargo.toml
+          generator/target/release/generate --seed 37 --events 2000000 --clicks 500000 --threads 4 --output /tmp/data-train
+          generator/target/release/generate --seed 20 --events 20000000 --clicks 5000000 --threads 4 --output /tmp/data-perf
+      - name: Instrument, train and rebuild with PGO
+        run: |
+          mkdir -p /tmp/pgo /tmp/out-train
+          CARGO_TARGET_DIR=/tmp/pgo-build RUSTFLAGS="-C target-cpu=x86-64-v3 -C profile-generate=/tmp/pgo" cargo build --release --locked --bin ssp
+          DATA_DIR=/tmp/data-train OUTPUT_DIR=/tmp/out-train NCPU=4 /tmp/pgo-build/release/ssp
+          PROF=$(find "$(rustc --print sysroot)/lib/rustlib" -path "*/bin/llvm-profdata" | head -1)
+          "$PROF" merge -o /tmp/pgo.profdata /tmp/pgo
+          CARGO_TARGET_DIR=/tmp/pgo-final RUSTFLAGS="-C target-cpu=x86-64-v3 -C profile-use=/tmp/pgo.profdata -C llvm-args=-pgo-warn-mismatch=false" cargo build --release --locked --bin ssp
+          cp /tmp/pgo-final/release/ssp /tmp/shop-pgo
+      - name: Compare four interleaved whole process runs
+        run: |
+          python3 - <<'PY'
+          import os,subprocess,statistics,time,pathlib,shutil
+          results={'base':[],'pgo':[]}
+          root=pathlib.Path('/tmp/outputs');root.mkdir()
+          for it in range(4):
+              for k in (['base','pgo'] if it%2==0 else ['pgo','base']):
+                  out=root/f'{k}-{it}';out.mkdir()
+                  env=dict(os.environ,DATA_DIR='/tmp/data-perf',OUTPUT_DIR=str(out),NCPU='4')
+                  t=time.perf_counter()
+                  p=subprocess.run(['/tmp/shop-'+k],env=env,text=True,capture_output=True)
+                  dt=time.perf_counter()-t
+                  if p.returncode:raise RuntimeError(k+' '+p.stderr[-2000:])
+                  results[k].append(dt)
+                  print(f'RUN {k} #{it} {dt:.6f}',flush=True)
+                  if it<3:shutil.rmtree(out)
+          for k,x in results.items():print(f'MEDIAN_{k.upper()} {statistics.median(x):.6f} MEAN {statistics.mean(x):.6f}',flush=True)
+          print('PGO_SPEEDUP',statistics.median(results['base'])/statistics.median(results['pgo']),flush=True)
+          PY
+          python3 -m pip install --quiet pyarrow
+          python3 tools/check.py /tmp/outputs/pgo-3 --other /tmp/outputs/base-3
