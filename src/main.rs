@@ -1252,7 +1252,7 @@ fn main() {
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
     let data = PathBuf::from(env("DATA_DIR", "/data"));
     let out = PathBuf::from(env("OUTPUT_DIR", "/output"));
-    let threads: usize = env("NCPU", "8").parse().unwrap_or(8);
+    let threads: usize = env("NCPU", "8").parse::<usize>().unwrap_or(8).clamp(1, 4);
     rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().unwrap();
     let timing = std::env::var("SS_TIMING").is_ok();
     let lap = |what: &str| {

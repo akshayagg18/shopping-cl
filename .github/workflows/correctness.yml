@@ -1,0 +1,15 @@
+name: Correctness build
+on:
+  push:
+    branches: [threads4-v1]
+  workflow_dispatch:
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Unit tests
+        run: cargo test --release --locked
+      - name: Release compile
+        run: cargo build --release --locked
