@@ -1,7 +1,7 @@
 name: Correctness build
 on:
   push:
-    branches: [claude-v3-four-workers]
+    branches: [v3-four-workers-clickties]
   workflow_dispatch:
 jobs:
   rust:

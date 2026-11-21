@@ -1,7 +1,7 @@
 name: Compare Claude vs hybrid
 on:
   push:
-    branches: [claude-v3-four-workers]
+    branches: [v3-four-workers-clickties]
   workflow_dispatch:
 env:
   RUSTFLAGS: "-C target-cpu=x86-64-v3 -C target-feature=+pclmulqdq"
@@ -23,7 +23,7 @@ jobs:
         run: |
           cargo build --release --locked
           cp target/release/ssp /tmp/shopping-hybrid
-          git show bc272b815059c02dd95edfeb0217b34c65667d34:src/main.rs > src/main.rs
+          git show 768825aa831d2b1e4d15e41a8e00b515ec1df845:src/main.rs > src/main.rs
           cargo build --release --locked
           cp target/release/ssp /tmp/shopping-claude
           git restore src/main.rs

@@ -1171,7 +1171,25 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
         }
         let ck = &mut cks[cs..ce];
         if ck.len() > 1 {
-            ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
+            if ck.len() < 64 {
+                ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
+            } else {
+                ck.sort_unstable_by_key(|c| c.ts);
+                let mut k = 0usize;
+                while k < ck.len() {
+                    let ts = ck[k].ts;
+                    let mut end = k + 1;
+                    while end < ck.len() && ck[end].ts == ts { end += 1; }
+                    if end > k + 1 {
+                        let mut first = k;
+                        for i in (k + 1)..end {
+                            if deref(ck[i].cref) < deref(ck[first].cref) { first = i; }
+                        }
+                        ck.swap(k, first);
+                    }
+                    k = end;
+                }
+            }
         }
         person_sessions(ctx, ev, ck, agg, sc);
     }
