@@ -32,7 +32,7 @@ jobs:
           DATA_DIR=/tmp/data-train OUTPUT_DIR=/tmp/out-train NCPU=4 /tmp/pgo-build/release/ssp
           PROF=$(find "$(rustc --print sysroot)/lib/rustlib" -path "*/bin/llvm-profdata" | head -1)
           "$PROF" merge -o /tmp/pgo.profdata /tmp/pgo
-          CARGO_TARGET_DIR=/tmp/pgo-final RUSTFLAGS="-C target-cpu=x86-64-v3 -C profile-use=/tmp/pgo.profdata -C llvm-args=-pgo-warn-mismatch=false" cargo build --release --locked --bin ssp
+          CARGO_TARGET_DIR=/tmp/pgo-final RUSTFLAGS="-C target-cpu=x86-64-v3 -C profile-use=/tmp/pgo.profdata" cargo build --release --locked --bin ssp
           cp /tmp/pgo-final/release/ssp /tmp/shop-pgo
       - name: Compare four interleaved whole process runs
         run: |
