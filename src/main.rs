@@ -772,15 +772,20 @@ fn event_duplicate_bitmap(units: &[(usize, usize, usize)]) -> Vec<u64> {
     let seen: Vec<AtomicU64> = (0..words).map(|_| AtomicU64::new(0)).collect();
     let duplicates: Vec<AtomicU64> = (0..words).map(|_| AtomicU64::new(0)).collect();
     units.par_iter().for_each(|&(f, s, e)| {
-        for_records::<7>(f, s, e, |_, line, fields| {
-            if let Some(fs) = fields {
-                let (a, b) = fs[0];
-                let eid = &line[a as usize..b as usize];
-                if !eid.is_empty() {
-                    let (i, m) = event_bloom_slot(h64(eid));
-                    if seen[i].fetch_or(m, Ordering::Relaxed) & m != 0 {
-                        duplicates[i].fetch_or(m, Ordering::Relaxed);
-                    }
+        for_lines(f, s, e, |_, line| {
+            // Conservative prefilter: valid CSV always has a first comma,
+            // and a quoted event ID is wrapped in exactly two quotes.
+            // Unusual/malformed lines may add false positives, never false
+            // negatives, because the full parser verifies them on pass two.
+            let Some(end) = memchr(b',', line) else { return };
+            let mut eid = &line[..end];
+            if eid.len() >= 2 && eid[0] == b'"' && eid[eid.len()-1] == b'"' {
+                eid = &eid[1..eid.len()-1];
+            }
+            if !eid.is_empty() {
+                let (i, m) = event_bloom_slot(h64(eid));
+                if seen[i].fetch_or(m, Ordering::Relaxed) & m != 0 {
+                    duplicates[i].fetch_or(m, Ordering::Relaxed);
                 }
             }
         });
