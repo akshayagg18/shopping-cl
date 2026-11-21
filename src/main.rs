@@ -600,11 +600,34 @@ const LINKED: u64 = 1 << 63;
 
 /// Person keys: a linked ID maps to LINKED | component index; any other ID's
 /// key is its own hash with the top bit cleared.
+const LINK_FILTER_BITS: usize = 24;
+#[inline(always)]
+fn linked_filter_bit(key: u64) -> (usize,u64) {
+    let hash = key.wrapping_mul(0xD6E8_FEB8_6659_FD93);
+    let bit = (hash >> (64-LINK_FILTER_BITS)) as usize;
+    (bit >> 6, 1u64 << (bit & 63))
+}
 struct Persons {
-    /// user hash -> person key, for every linked ID
     map: U64Map,
-    /// component index -> ref of its byte-wise smallest ID
     names: Vec<u64>,
+    linked_filter: Vec<u64>,
+}
+impl Persons {
+    #[inline(always)]
+    fn maybe_linked(&self,key:u64)->bool{
+        let(i,mask)=linked_filter_bit(key);
+        (self.linked_filter[i]&mask)!=0
+    }
+    #[inline(always)]
+    fn lookup(&self,key:u64)->u64{
+        if self.maybe_linked(key){
+            self.map.get(key).unwrap_or_else(||unlinked_key(key))
+        }else{unlinked_key(key)}
+    }
+    #[inline(always)]
+    fn prefetch(&self,key:u64){
+        if self.maybe_linked(key){self.map.prefetch(key)}
+    }
 }
 
 #[inline(always)]
@@ -696,7 +719,12 @@ fn links(inp: &Inputs) -> Persons {
         }
         map.insert_or_get(hashes[i], LINKED | c as u64);
     }
-    Persons { map, names }
+    let mut linked_filter=vec![0u64;(1usize<<LINK_FILTER_BITS)/64];
+    for &key in &hashes {
+        let(i,mask)=linked_filter_bit(key);
+        linked_filter[i]|=mask;
+    }
+    Persons{map,names,linked_filter}
 }
 
 // ---------------------------------------------------------------- records
@@ -931,7 +959,7 @@ fn dedup_bucket(parts: &[EvChunk], b: usize, persons: &Persons) -> (Vec<Ev2>, Ve
         let mut head = 0usize;
         let mut filled = 0usize;
         let emit = |e: &Ev1, out: &mut Vec<Ev2>| {
-            let key = persons.map.get(e.user).unwrap_or_else(|| unlinked_key(e.user));
+            let key = persons.lookup(e.user);
             out.push(Ev2 { key, uref: e.uref, ts: e.ts, pc: e.pc });
         };
         let mut g = 0usize;
@@ -939,7 +967,7 @@ fn dedup_bucket(parts: &[EvChunk], b: usize, persons: &Persons) -> (Vec<Ev2>, Ve
             let (m, o) = p.bucket(b);
             for e in m.iter().chain(o.iter()) {
                 if keep[g] != 0 && e.ts != INVALID {
-                    persons.map.prefetch(e.user);
+                    persons.prefetch(e.user);
                     if filled == AHEAD {
                         emit(unsafe { &*ring[head] }, out);
                     } else {
@@ -985,14 +1013,14 @@ fn parse_clicks(units: &[(usize, usize, usize)], lk: &Lookups, persons: &Persons
             const AHEAD: usize = 16;
             let n = v.len();
             for i in 0..n.min(AHEAD) {
-                persons.map.prefetch(v[i].key);
+                persons.prefetch(v[i].key);
             }
             for i in 0..n {
                 if i + AHEAD < n {
-                    persons.map.prefetch(v[i + AHEAD].key);
+                    persons.prefetch(v[i + AHEAD].key);
                 }
                 let uh = v[i].key;
-                v[i].key = persons.map.get(uh).unwrap_or_else(|| unlinked_key(uh));
+                v[i].key = persons.lookup(uh);
             }
             let mut ks = Vec::new();
             by_bucket(&v, |c| person_bucket(c.key), &mut ks)
