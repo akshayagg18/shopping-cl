@@ -222,8 +222,8 @@ fn civil19(b: &[u8]) -> Option<i64> {
     if h > 23 || mi > 59 || sec > 59 || mo > 12 || day == 0 {
         return None;
     }
-    let i = (y as i64 - Y0) as usize * 16 + mo;
     let days = if (y as i64) >= Y0 && (y as i64) < Y0 + YN as i64 {
+        let i = (y as i64 - Y0) as usize * 16 + mo;
         if day > MONTH_LEN[i] as u32 {
             return None;
         }

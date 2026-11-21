@@ -51,10 +51,12 @@ unsafe fn map(size: usize) -> *mut u8 {
 unsafe impl GlobalAlloc for HugeAlloc {
     #[inline]
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        crate::profile::allocation(l.size());
         unsafe { if l.size() >= BIG && l.align() <= HUGE { map(l.size()) } else { System.alloc(l) } }
     }
     #[inline]
     unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
+        crate::profile::allocation(l.size());
         // fresh anonymous mappings are already zero
         unsafe { if l.size() >= BIG && l.align() <= HUGE { map(l.size()) } else { System.alloc_zeroed(l) } }
     }

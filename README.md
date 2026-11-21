@@ -1,91 +1,41 @@
-# Shopping Sessions — exact, parallel Rust pipeline
+# Exact Shopping Sessions pipeline
 
-Builders Buildathon 2026, Databricks track. Reads the dirty CSV shards in `/data`
-and writes `/output/user_daily/*.parquet` and `/output/campaign_daily/*.parquet`
-exactly as `rules.md` defines them.
+Rust solution for the [Builders Shopping Sessions track](https://www.joinbuilders.org/buildathon/tracks/shopping-sessions). The target is a verified official runtime below 0.4 seconds. **That target has not been achieved or verified.** Local and GitHub Actions measurements are not official scores.
 
-The image is a single statically linked binary on `scratch`, so container start-up
-adds almost nothing to the measured time.
-
-## How it works
-
-1. **Input.** Every CSV is memory-mapped lazily. Work is split into ~4 MiB line-aligned
-   units (a line belongs to the unit holding its first byte), processed in 192 KiB
-   sub-blocks so the second pass hits L2.
-2. **Links first, in parallel.** Link endpoints are hashed and scattered into 256
-   partitions, numbered per partition, joined with a lock-free union-find (a root only
-   links to a smaller root), and every component is named by its byte-wise smallest ID
-   with a parallel compare-and-swap minimum. The person map is a sorted open-addressing
-   table built in 256 independent ranges.
-3. **Tokenizing.** One fused AVX2 pass per 64 bytes builds the newline bitmap, a bitmap
-   of quoting violations (prefix-XOR quote parity: no separator inside quotes, opening
-   quotes after a separator, closing quotes before one) and a flat list of separator
-   positions. A line is then: next newline from the bitmap, one compare that its N-th
-   separator is that newline, one test of the violation bitmap. Fields are unquoted on
-   access.
-4. **Values.** F1/F2/F3 timestamps take inlined fast paths with a small per-thread cache
-   of validated `YYYY-MM-DD` dates; anything unusual falls back to the strict general
-   parser (impossible dates, hour 24, second 60, bad offsets are rejected). Short IDs
-   are hashed with two AES rounds (a bijection of the zero-padded 16-byte ID).
-5. **One scatter per record.** With persons known up front, each valid event goes
-   straight to its person partition (24-byte record), and every event copy, valid or
-   not, leaves a 24-byte copy record in its `event_id` partition. Records leave through
-   per-partition write-combining staging areas with non-temporal stores. Person lookups
-   are prefetched 16 lines ahead.
-6. **Dedup.** Per `event_id` partition, a fingerprint table keeps the earliest-ingested
-   copy (dedup before validation: an invalid winner kills its valid copies) and marks
-   every losing copy's event record dead in a bitmap. Click copies are identical
-   (`rules.md`), so they need no dedup.
-7. **Sessions without sorting.** Inside each person partition (largest first), events
-   are grouped per person and ordered by half-hour bin with two counting passes. Two
-   events in one bin are never more than 30 minutes apart, so sessions are cut between
-   bins only (by each bin's min and max). A sliding 7-day click window gives the
-   credited click (latest `ts`, then smallest `click_id`) and the distinct assisting
-   campaigns.
-8. **Output.** A small hand-written Parquet writer (PLAIN, uncompressed, one page per
-   column, `DATE` days) writes one `user_daily` file per worker in parallel.
-9. **Exit.** Buffers and input mappings are released from all threads at once, so the
-   kernel's single-threaded teardown has little left.
-
-Partition counts scale with the input size, so the 60M final keeps the same per-partition
-working sets as the 20M practice set. Large buffers come from 2 MiB-aligned mappings
-advised for transparent huge pages.
-
-## Correctness checks
-
-- 36/36 official edge fixtures.
-- The official 1M dev set matches `dev-answer` exactly (sorted-row SHA-256 of both tables).
-- Generated datasets for 10 other seeds were diffed row-for-row against an independent
-  Polars implementation. They included leap-day (Feb 29, 2028) and year-crossing
-  windows, and a 10M-event run (1.14M user-day rows).
-- Contract-respecting fuzzing (`tools/fuzz.py`) adds CR bytes, stray and partial
-  quotes, whitespace, case changes, odd timestamp forms, empty lines, a missing final
-  newline, 0-byte files and non-CSV files. Rust, Polars and a literal pure-Python
-  reference (`tools/ref.py`) agree on every round.
-
-`tools/check.py` compares an output folder with expected CSVs, with another output
-folder, or with the dev-answer hashes.
+The original submission is preserved at `d2dc441e6bed67a57572a7c1f12b06dad7f163cc`. This branch adapts the repository's subsequent v11.3 architecture (`0edb1e785c36ae85cdf53faddcfc319b7d424d48`), adds exact identifier representations and edge-case repairs, and measures event/copy compaction. The inherited architecture and new experiments are distinguished in `experiments/SUB400_PROGRESS.md`.
 
 ## Build and run
 
-```bash
-docker build -t shopping .
+```sh
+docker build --platform linux/amd64 -t shopping .
+mkdir -p out/user_daily out/campaign_daily
+chmod -R a+rwX out
 docker run --rm --network none --read-only --user 1000:1000 \
-  --cpus 8 --memory 24g --tmpfs /tmp:rw,size=64m \
-  -e DATA_DIR=/data -e OUTPUT_DIR=/output -e NCPU=8 \
-  -v "$PWD/dev:/data:ro" -v "$PWD/out:/output" shopping
-python3 tools/check.py out --hash        # dev set: prints dev_match=True for both tables
+  --cpus 8 --memory 24g --memory-swap 24g --tmpfs /tmp:rw,size=64m \
+  -v "$PWD/data:/data:ro" -v "$PWD/out:/output" shopping
 ```
 
-Locally: `cargo build --release && DATA_DIR=dev OUTPUT_DIR=out NCPU=8 target/release/ssp`
-(`SS_TIMING=1` prints stage timings).
+The root Dockerfile pins the Rust builder image and produces a static Linux/AMD64 executable in a scratch image. Runtime needs no network. Input/output default to `/data` and `/output`; `DATA_DIR`, `OUTPUT_DIR` and `NCPU` override them. Do not commit generated data. An optional BuildKit `build_ca` secret supplies a local proxy's trusted CA bundle during compilation; ordinary public builds need no secret.
 
-## Dependencies and disclosure
+For direct runs: `cargo build --release --locked`, then `DATA_DIR=data OUTPUT_DIR=out NCPU=8 target/release/ssp`. AVX2/BMI2 and PCLMULQDQ match the stated Cascade Lake-or-newer scoring CPUs.
 
-Open-source crates: `rayon`, `memmap2`, `xxhash-rust`, `libc` (the Parquet writer is
-our own). The verification scripts use `pyarrow`. This solution was written with help
-from an AI assistant (Claude), as the Buildathon rules allow. Some techniques (half-hour
-bins instead of sorts, write-combining scatter, links before parsing) were inspired by
-notes in public Shopping Sessions repositories; no code was copied.
+## Data flow and exactness
 
-MIT licensed.
+* Memory-map input; partition scans into line-owned chunks with a SIMD dialect tokenizer. Only LF separates lines. Malformed quotes and field counts are rejected; CR is preserved.
+* Resolve literal identity edges with parallel union-find; choose each component's byte-wise smallest ID. A bijective integer permutation of reversible ASCII keys or exact interned bytes replaces probabilistic identifier equality. No identifier bits are discarded.
+* Route valid event candidates directly to person streams. Keep every parseable event copy, including invalid candidates, in an independent deduplication stream. Earliest ingestion wins before validation can affect the result. Rare dates outside unsigned epoch seconds retain full signed comparisons.
+* Use 16-byte surviving-event candidates and 16-byte copy records. Event IDs have a lossless base62 encoding when possible; every other ID is interned exactly. Wide references, stream locations and timestamps use explicit side tables instead of truncation.
+* Deduplication marks losing candidates dead. Group surviving events by person and half-hour bins. Track each bin's minimum and maximum to form sessions under the strictly-greater-than-30-minute rule without sorting every event timestamp. Click ordering, inclusive seven-day attribution and distinct assistance are preserved.
+* Decode user names only when writing output. Write standards-compliant uncompressed Parquet directly, with DATE logical types, integer counts, nullable UTF-8 categories and 64-bit revenues. Row order and file count may differ.
+
+The default release build contains no per-record diagnostic counters. Build with `--features diagnostics` and set `SS_PROFILE=1` for independent wall/process/thread CPU spans, partition sizes and allocation diagnostics. `SS_TIMING=1` prints cumulative barriers. CPU times sum execution across threads and must not be treated as wall time. `tools/bench.py` interleaves variants and records every start-to-exit sample, CPU, RSS, faults and IO counts.
+
+## Validation
+
+`tools/validate.py BINARY --threads 8 --fuzz-rounds 5` runs all 36 official fixtures, the downloaded official development answer, and a literal Python reference on the small generated input plus four dirty-input mutations. `tests/adversarial.py BINARY` checks long UTF-8 identifiers, dates before 1970 and transformation boundaries. `tools/check.py` compares both complete tables while ignoring permitted row/file ordering. Release unit tests exercise tokenizer equivalence, identity domains and inverses, compact copy bit layouts and overflow side tables.
+
+See the experiment report and raw results for the exact tested artifacts and sample distributions. A larger hosted check is attached to the candidate commit on GitHub. A successful GitHub check or repository push is not an official competition submission.
+
+## Dependencies and license
+
+MIT licensed. Rust dependencies: `libc` (MIT/Apache-2.0), `memmap2` (MIT/Apache-2.0), `rayon` (MIT/Apache-2.0), `xxhash-rust` (BSL-1.0). Validation uses Python, PyArrow (Apache-2.0) and Polars (MIT). The official generator and fixtures are downloaded for testing and are not shipped as competition data. Development used Claude and OpenAI Codex, as permitted by the competition.

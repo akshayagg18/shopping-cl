@@ -68,15 +68,16 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
                 return;
             }
             let n = a.rows.len();
-            let bytes: usize = a.rows.iter().map(|r| (r.name & 0xFFFF) as usize + 4).sum();
+            let bytes = n * 13;
             let mut ids = Column::new("user_id", Kind::Str, n, bytes);
             let mut day = Column::new("day", Kind::Date, n, n * 4);
             let mut s = Column::new("sessions", Kind::I32, n, n * 4);
             let mut e = Column::new("events", Kind::I32, n, n * 4);
             let mut r = Column::new("revenue_cents", Kind::I64, n, n * 8);
             let mut top = Column::new("top_category", Kind::OptStr, n, n * 12);
+            let mut name_buffer=[0u8;9];
             for row in &a.rows {
-                ids.str(name_bytes(row.name));
+                ids.str(name_bytes(row.name, info, &mut name_buffer));
                 day.i32(row.day);
                 s.i32(row.sessions as i32);
                 e.i32(row.events as i32);

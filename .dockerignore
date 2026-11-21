@@ -1,8 +1,7 @@
-target
-data
-out
-dev
-scratch
-*.parquet
-*.csv
-.git
+**
+!Dockerfile
+!Cargo.toml
+!Cargo.lock
+!LICENSE
+!src/
+!src/**

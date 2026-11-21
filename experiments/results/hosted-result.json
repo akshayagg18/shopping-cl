@@ -1,0 +1,114 @@
+{
+  "success": true,
+  "candidate": "1ffcf309d044cf44d38ed49c071308b73b46118c",
+  "baseline": "d2dc441e6bed67a57572a7c1f12b06dad7f163cc",
+  "official_score": false,
+  "run_url": "https://github.com/akshayagg18/shopping-cl/actions/runs/44932772729",
+  "started_utc": "2026-11-21T17:56:53.702735+00:00",
+  "measurements": {
+    "20m": {
+      "hosted-baseline": {
+        "n": 7,
+        "median_ms": 1820.2769859999535,
+        "mean_ms": 1820.6788447142637,
+        "sd_ms": 43.13512877101097,
+        "min_ms": 1775.2993970000261,
+        "max_ms": 1906.2898170000153,
+        "samples_ms": [
+          1775.2993970000261,
+          1809.3701589998545,
+          1781.070914999873,
+          1906.2898170000153,
+          1829.1383929999938,
+          1820.2769859999535,
+          1823.3062460001292
+        ],
+        "peak_rss_kib": 4280552,
+        "user_ms": 5364.942,
+        "system_ms": 726.997
+      },
+      "hosted-candidate": {
+        "n": 7,
+        "median_ms": 1685.4368330000398,
+        "mean_ms": 1686.3943681428932,
+        "sd_ms": 22.39847549316229,
+        "min_ms": 1652.7480759998525,
+        "max_ms": 1715.2897329999632,
+        "samples_ms": [
+          1710.9276020000834,
+          1670.112931000176,
+          1715.2897329999632,
+          1685.4368330000398,
+          1652.7480759998525,
+          1675.8485640000345,
+          1694.3968380001024
+        ],
+        "peak_rss_kib": 3315504,
+        "user_ms": 4976.179,
+        "system_ms": 506.58599999999996
+      },
+      "exact_output_comparison": "passed",
+      "input_csv_bytes": 1883811848,
+      "candidate_sandbox_comparison": "passed"
+    },
+    "60m": {
+      "hosted-baseline": {
+        "n": 3,
+        "median_ms": 5553.2550999998875,
+        "mean_ms": 5554.494997333222,
+        "sd_ms": 82.65676097502684,
+        "min_ms": 5472.465159999956,
+        "max_ms": 5637.764731999823,
+        "samples_ms": [
+          5637.764731999823,
+          5553.2550999998875,
+          5472.465159999956
+        ],
+        "peak_rss_kib": 13321356,
+        "user_ms": 17477.607,
+        "system_ms": 1521.175
+      },
+      "hosted-candidate": {
+        "n": 3,
+        "median_ms": 5233.8578430001235,
+        "mean_ms": 5194.059847000062,
+        "sd_ms": 90.80186978640512,
+        "min_ms": 5090.154485000085,
+        "max_ms": 5258.167212999979,
+        "samples_ms": [
+          5233.8578430001235,
+          5090.154485000085,
+          5258.167212999979
+        ],
+        "peak_rss_kib": 9887656,
+        "user_ms": 16352.481000000002,
+        "system_ms": 1076.451
+      },
+      "exact_output_comparison": "passed",
+      "input_csv_bytes": 5659197309,
+      "candidate_sandbox_comparison": "passed"
+    }
+  },
+  "hardware": {
+    "affinity": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "cpu_model": "AMD EPYC 9V45 96-Core Processor",
+    "memory": {
+      "MemTotal": "16366632 kB",
+      "SwapTotal": "0 kB",
+      "SwapFree": "0 kB"
+    },
+    "cpu_max": "unavailable",
+    "memory_max": "unavailable"
+  },
+  "baseline_build_s": 91.97679312900004,
+  "baseline_image": "sha256:38a0c9fc4e32ce1935635ed1a595da8d6a956eee8bb79e55a19c59673e338b9e",
+  "candidate_build_s": 81.89485254500005,
+  "candidate_image": "sha256:f0d00f8a5bd7ff0a47f7d37d4d093eea33a083c22b5148bd78e545f67f9f84ea",
+  "generator_zip_sha256": "13724cadbac5a99d847e27cea911cd2e338ff972b46c2039da87452011bb101e",
+  "dev_and_36_fixtures": "passed"
+}
