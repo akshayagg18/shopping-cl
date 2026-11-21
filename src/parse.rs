@@ -729,6 +729,7 @@ mod tests {
 }
 
 #[inline(never)]
+#[allow(dead_code)]
 pub fn ingest_ni(b: &[u8]) -> Option<i64> {
     ingest(b)
 }

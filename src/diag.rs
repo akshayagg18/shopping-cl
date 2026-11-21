@@ -115,6 +115,7 @@ fn upscale(src: &Path, dst: &Path, k: usize) {
     });
 }
 
+#[allow(dead_code)]
 fn zero_bench(huge: bool, mb: usize) -> f64 {
     unsafe {
         let len = mb << 20;
@@ -218,6 +219,7 @@ fn child(tag: &str, data: &Path, out: &Path, threads: usize, extra: &[(&str, &st
 }
 
 /// Map every input file and read one byte per cache line with all threads.
+#[allow(dead_code)]
 fn read_bench(data: &Path) -> f64 {
     let mut files = Vec::new();
     for d in ["events", "clicks", "links"] {
@@ -246,14 +248,14 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let k: usize = std::env::var("SS_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let t = Instant::now();
     upscale(data, &big, k);
-    eprintln!("D11 x{k} up={:.1}s; wall/int ms: open links parse dedup sess write free | user sys", t.elapsed().as_secs_f64());
+    eprintln!("D12 x{k} up={:.1}s; wall/int ms: open links parse dedup sess write free | user sys", t.elapsed().as_secs_f64());
     let vars: [(&str, &[(&str, &str)]); 8] = [
         ("base", &[]),
+        ("mmap", &[("SS_READ", "0")]),
         ("wc0", &[("SS_WC", "0")]),
-        ("pf0", &[("SS_PFREE", "0")]),
+        ("pf1", &[("SS_PFREE", "1")]),
         ("p9", &[("SS_P2B", "9")]),
         ("p11", &[("SS_P2B", "11")]),
-        ("d9", &[("SS_PDB", "9")]),
         ("d11", &[("SS_PDB", "11")]),
         ("p9d9", &[("SS_P2B", "9"), ("SS_PDB", "9")]),
     ];

@@ -421,7 +421,7 @@ impl Dead {
         self.words[self.off[t * self.np + p] + i / 64].fetch_or(1 << (i % 64), Ordering::Relaxed);
     }
     #[inline(always)]
-    fn word(&self, t: usize, p: usize, w: usize) -> u64 {
+    pub fn word(&self, t: usize, p: usize, w: usize) -> u64 {
         unsafe { self.words.get_unchecked(*self.off.get_unchecked(t * self.np + p) + w) }.load(Ordering::Relaxed)
     }
 }
@@ -484,43 +484,4 @@ pub fn dedup_part(b: usize, sinks: &[Sink], dead: &Dead) {
             }
         }
     })
-}
-
-/// The live event records of person partition `b`, appended to `out`.
-pub fn live_events(b: usize, sinks: &[Sink], dead: &Dead, out: &mut Vec<Ev2>) {
-    out.clear();
-    let n: usize = sinks.iter().map(|s| s.ev.len(b)).sum();
-    out.reserve(n);
-    for (t, s) in sinks.iter().enumerate() {
-        let mut i = 0usize;
-        for sl in s.ev.slices(b) {
-            // records were streamed out of the cache: fetch ahead (the hardware
-            // prefetcher restarts at every 4 KiB)
-            for (j, e) in sl.iter().enumerate() {
-                if j % 4 == 0 {
-                    #[cfg(target_arch = "x86_64")]
-                    unsafe {
-                        std::arch::x86_64::_mm_prefetch(sl.as_ptr().wrapping_add(j + 24) as *const i8, std::arch::x86_64::_MM_HINT_T0)
-                    };
-                }
-                if (dead.word(t, b, i / 64) >> (i % 64)) & 1 == 0 {
-                    unsafe {
-                        let len = out.len();
-                        out.as_mut_ptr().add(len).write(*e);
-                        out.set_len(len + 1);
-                    }
-                }
-                i += 1;
-            }
-        }
-    }
-}
-
-pub fn clicks_of(b: usize, sinks: &[Sink], out: &mut Vec<Ck>) {
-    out.clear();
-    for s in sinks {
-        for sl in s.ck.slices(b) {
-            out.extend_from_slice(sl);
-        }
-    }
 }
