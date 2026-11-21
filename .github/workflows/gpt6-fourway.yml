@@ -1,0 +1,71 @@
+name: Four-way 20M final selection
+on:
+  push:
+    branches: [gpt6-fourway-comparison]
+  workflow_dispatch:
+env:
+  RUSTFLAGS: "-C target-cpu=x86-64-v3"
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build four exact variants
+        run: |
+          cp src/main.rs /tmp/source-current.rs
+          for spec in "main bc272b815059c02dd95edfeb0217b34c65667d34" "lazy 7aa396b3625cda2befc882ce6db55c4d74ffcdbb" "lazyfree f78f15b2074ef7e189cb5764510278950e5694bc" "final c0b38b9c2150fcc6fcb220bfcdd72321195e261c"; do
+            set -- $spec
+            git show "$2:src/main.rs" > src/main.rs
+            cargo build --release --locked
+            cp target/release/ssp "/tmp/shop-$1"
+          done
+          cp /tmp/source-current.rs src/main.rs
+      - name: Generate official 20M practice-size dataset
+        run: |
+          curl --retry 3 -fsSL https://www.joinbuilders.org/buildathon/tracks/shopping-sessions/files/generator.zip -o /tmp/shop-generator.zip
+          mkdir /tmp/shopgen
+          cd /tmp/shopgen
+          unzip -q /tmp/shop-generator.zip
+          cargo build --release --locked --manifest-path generator/Cargo.toml
+          generator/target/release/generate --seed 20 --events 20000000 --clicks 5000000 --threads 4 --output /tmp/shop-perf
+      - name: Five interleaved whole-process runs per variant
+        run: |
+          python3 - <<'PY'
+          import os,subprocess,time,statistics,pathlib,shutil
+          variants=['main','lazy','lazyfree','final']
+          rec={k:[] for k in variants}
+          root=pathlib.Path('/tmp/shop-matrix')
+          root.mkdir()
+          for round in range(5):
+              order=variants[round%4:]+variants[:round%4]
+              if round%2:order.reverse()
+              for k in order:
+                  p=root/f'{k}-r{round}'
+                  p.mkdir()
+                  env=dict(os.environ,DATA_DIR='/tmp/shop-perf',OUTPUT_DIR=str(p),NCPU='4',SS_TIMING='1')
+                  t=time.perf_counter()
+                  r=subprocess.run([f'/tmp/shop-{k}'],env=env,text=True,capture_output=True)
+                  seconds=time.perf_counter()-t
+                  if r.returncode:
+                      print(r.stderr[-4000:])
+                      raise RuntimeError(f'{k} returned {r.returncode}')
+                  print(f'RUN {k} r{round} TIME={seconds:.6f}',flush=True)
+                  rec[k].append(seconds)
+                  if round!=4 or k not in ('main','final'):shutil.rmtree(p)
+          for k,ts in rec.items():
+              print(f'MEDIAN_{k.upper()}_S={statistics.median(ts):.6f} AVG_{k.upper()}_S={statistics.mean(ts):.6f} SAMPLES={ts}',flush=True)
+          print('SPEEDUP_FINAL_VS_MAIN',statistics.median(rec['main'])/statistics.median(rec['final']),flush=True)
+          print('SPEEDUP_FINAL_VS_LAZY',statistics.median(rec['lazy'])/statistics.median(rec['final']),flush=True)
+          PY
+      - name: Compare full 20M output tables and public development answer
+        run: |
+          python3 -m pip install --quiet pyarrow
+          python3 tools/check.py /tmp/shop-matrix/final-r4 --other /tmp/shop-matrix/main-r4
+          /tmp/shopgen/generator/target/release/generate --seed 1 --events 1000000 --clicks 250000 --threads 4 --output /tmp/shop-dev
+          mkdir /tmp/shop-dev-final
+          DATA_DIR=/tmp/shop-dev OUTPUT_DIR=/tmp/shop-dev-final NCPU=4 /tmp/shop-final
+          python3 tools/check.py /tmp/shop-dev-final --hash
