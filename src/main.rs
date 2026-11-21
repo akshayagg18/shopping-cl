@@ -1228,7 +1228,7 @@ fn person_sessions_bitmap(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc:
     let words = sessions.len().div_ceil(64);
     let mut masks: std::collections::HashMap<u32, Vec<u64>> = std::collections::HashMap::new();
     for c in cks {
-        let first = sessions.partition_point(|s| s.start <= c.ts);
+        let first = sessions.partition_point(|s| s.start < c.ts);
         if first == sessions.len() { continue; }
         let stop = sessions.partition_point(|s| s.start <= c.ts + CLICK_REACH);
         if first >= stop { continue; }
