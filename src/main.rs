@@ -786,7 +786,7 @@ fn flush_event_stage(
             if (dst as usize & 15) == 0 {
                 use std::arch::x86_64::*;
                 let streamed = fit & !1;
-                for i in 0..streamed * (std::mem::size_of::<Ev1>() / 16) {
+                for i in 0..(streamed * std::mem::size_of::<Ev1>()) / 16 {
                     let v = _mm_loadu_si128((src as *const __m128i).add(i));
                     _mm_stream_si128((dst as *mut __m128i).add(i), v);
                 }
