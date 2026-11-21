@@ -1,0 +1,69 @@
+name: High-performance architecture shootout v2
+on:
+  push:
+    branches: [gpt6-architecture-shootout-v2]
+  workflow_dispatch:
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: axhiao
+            repo: axhiao/Shopping-Sessions
+            bin: shopping
+          - label: th3r0n
+            repo: Th3r0n/shopping-sessions
+            bin: shopping-sessions
+          - label: warrior
+            repo: Warrior-hound/shopping-sessions
+            bin: sessions
+    timeout-minutes: 25
+    env:
+      RUSTFLAGS: "-C target-cpu=x86-64-v3"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build fast reference candidate for research comparison
+        run: |
+          git clone -q --depth 1 https://github.com/Vibhor7-7/shopping-sessions.git /tmp/reference
+          cd /tmp/reference
+          cargo build --release --locked --bin pipeline
+          cp target/release/pipeline /tmp/shop-reference
+      - name: Build public candidate
+        run: |
+          git clone -q --depth 1 "https://github.com/${{ matrix.repo }}.git" /tmp/candidate
+          cd /tmp/candidate
+          cargo build --release --locked --bin "${{ matrix.bin }}"
+          cp "target/release/${{ matrix.bin }}" /tmp/shop-candidate
+      - name: Generate official-format 20M-event dataset
+        run: |
+          curl --retry 3 -fsSL https://www.joinbuilders.org/buildathon/tracks/shopping-sessions/files/generator.zip -o /tmp/gen.zip
+          mkdir /tmp/g
+          cd /tmp/g
+          unzip -q /tmp/gen.zip
+          cargo build --release --locked --manifest-path generator/Cargo.toml
+          generator/target/release/generate --seed 20 --events 20000000 --clicks 5000000 --threads 4 --output /tmp/shop-data
+      - name: Three paired whole-process runs and full exactness
+        run: |
+          python3 - <<'PY'
+          import os,subprocess,time,statistics,pathlib,shutil
+          root=pathlib.Path('/tmp/out');root.mkdir()
+          times={'reference':[],'candidate':[]}
+          for i in range(3):
+              for k in (['reference','candidate'] if i%2==0 else ['candidate','reference']):
+                  out=root/f'{k}-{i}';out.mkdir()
+                  env=dict(os.environ,DATA_DIR='/tmp/shop-data',OUTPUT_DIR=str(out),NCPU='4')
+                  t=time.perf_counter()
+                  p=subprocess.run([f'/tmp/shop-{k}'],env=env,text=True,capture_output=True)
+                  seconds=time.perf_counter()-t
+                  if p.returncode:raise RuntimeError(f'{k} exited {p.returncode}: {p.stderr[-2000:]}')
+                  times[k].append(seconds)
+                  print(f'COMPARE ${{ matrix.label }} {k} {i} {seconds:.6f}',flush=True)
+                  if i!=2:shutil.rmtree(out)
+          for k,v in times.items():print(f'MEDIAN ${{ matrix.label }} {k} {statistics.median(v):.6f}',flush=True)
+          PY
+          python3 -m pip install --quiet pyarrow
+          python3 tools/check.py /tmp/out/candidate-2 --other /tmp/out/reference-2
+          echo EXACT_20M=YES
