@@ -1,7 +1,7 @@
 name: Compare Claude vs hybrid
 on:
   push:
-    branches: [nosort-v1]
+    branches: [nosort-20m-benchmark]
   workflow_dispatch:
 env:
   RUSTFLAGS: "-C target-cpu=x86-64-v3"
@@ -23,14 +23,14 @@ jobs:
           cp target/release/ssp /tmp/shopping-claude
           git restore src/main.rs
           chmod +x /tmp/shopping-claude /tmp/shopping-hybrid
-      - name: Generate 5M official-format test data
+      - name: Generate 20M official-format test data
         run: |
           curl --retry 3 -fsSL https://www.joinbuilders.org/buildathon/tracks/shopping-sessions/files/generator.zip -o /tmp/generator.zip
           mkdir /tmp/shopping-generator
           cd /tmp/shopping-generator
           unzip -q /tmp/generator.zip
           cargo build --release --locked --manifest-path generator/Cargo.toml
-          generator/target/release/generate --seed 20 --events 5000000 --clicks 1250000 --threads 4 --output /tmp/shopping-perf-data
+          generator/target/release/generate --seed 20 --events 20000000 --clicks 5000000 --threads 4 --output /tmp/shopping-perf-data
       - name: Compare whole-process runtimes
         run: |
           python3 - <<'PY'
