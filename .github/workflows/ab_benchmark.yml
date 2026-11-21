@@ -3,6 +3,8 @@ on:
   push:
     branches: [hybrid-bucket-v1]
   workflow_dispatch:
+env:
+  RUSTFLAGS: "-C target-cpu=x86-64-v3"
 jobs:
   benchmark:
     runs-on: ubuntu-latest
