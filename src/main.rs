@@ -32,7 +32,7 @@ const P1_BITS: u32 = 9; // event_id buckets
 const P1: usize = 1 << P1_BITS;
 const P2_BITS: u32 = 10; // person buckets
 const P2: usize = 1 << P2_BITS;
-const CHUNK: usize = 4 << 20;
+const CHUNK: usize = 16 << 20;
 const SESSION_GAP: i64 = 1_800_000;
 const CLICK_REACH: i64 = 7 * DAY_MS;
 
