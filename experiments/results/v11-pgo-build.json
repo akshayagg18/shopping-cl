@@ -1,0 +1,44 @@
+{
+  "generate_build_s": 35.69740138799898,
+  "training": [
+    {
+      "dataset": "data-dev",
+      "seconds": 0.5751394580001943
+    },
+    {
+      "dataset": "data-reference-7",
+      "seconds": 0.062111462000757456
+    },
+    {
+      "dataset": "data-reference-99",
+      "seconds": 0.06398401600017678
+    },
+    {
+      "dataset": "data-reference-2028",
+      "seconds": 0.05624851899847272
+    },
+    {
+      "dataset": "fuzz-1",
+      "seconds": 0.05430663200240815
+    },
+    {
+      "dataset": "fuzz-2",
+      "seconds": 0.0505177930026548
+    },
+    {
+      "dataset": "fuzz-3",
+      "seconds": 0.05559751599867013
+    },
+    {
+      "dataset": "fuzz-4",
+      "seconds": 0.05567687700022361
+    },
+    {
+      "dataset": "data-adversarial",
+      "seconds": 0.06274670499988133
+    }
+  ],
+  "merge_s": 0.06786340600228868,
+  "use_build_s": 13.903782276000129,
+  "profile_bytes": 200536
+}

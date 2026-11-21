@@ -1,0 +1,141 @@
+{
+  "source": "experiments/results/sub400-stage-profile.json",
+  "variant": "profile",
+  "n": 3,
+  "notes": [
+    "Phase process CPU is summed across threads. Nested task spans overlap and are not added to phase walls.",
+    "RSS is sampled, not exact per-stage peak, and has a small process-start offset.",
+    "Byte counts after parsing describe logical representations, not hardware memory traffic.",
+    "Session records count incoming candidates plus clicks, including duplicate losers before live gather."
+  ],
+  "stages": {
+    "open": {
+      "wall_ms": 1.243,
+      "thread_ms": 0.689,
+      "process_ms": 1.77,
+      "records": 111.0,
+      "bytes": 1883811848.0,
+      "avg_sampled_rss_kib": null,
+      "peak_sampled_rss_kib": null
+    },
+    "links_phase": {
+      "wall_ms": 220.202,
+      "thread_ms": 4.835,
+      "process_ms": 363.443,
+      "records": 1196940.0,
+      "bytes": 18347905.0,
+      "avg_sampled_rss_kib": 116944,
+      "peak_sampled_rss_kib": 275944
+    },
+    "parse_phase": {
+      "wall_ms": 1750.733,
+      "thread_ms": 0.045,
+      "process_ms": 3313.677,
+      "records": 26152802.0,
+      "bytes": 1864727253.0,
+      "avg_sampled_rss_kib": 1542393.7647058824,
+      "peak_sampled_rss_kib": 2769932
+    },
+    "dedup_phase": {
+      "wall_ms": 134.091,
+      "thread_ms": 0.706,
+      "process_ms": 256.757,
+      "records": 21113660.0,
+      "bytes": 337818560.0,
+      "avg_sampled_rss_kib": 2796416,
+      "peak_sampled_rss_kib": 2796416
+    },
+    "session_phase": {
+      "wall_ms": 547.351,
+      "thread_ms": 0.813,
+      "process_ms": 1089.985,
+      "records": 25617501.0,
+      "bytes": 450193152.0,
+      "avg_sampled_rss_kib": 2868810.8,
+      "peak_sampled_rss_kib": 2902844
+    },
+    "output": {
+      "wall_ms": 112.937,
+      "thread_ms": 1.257,
+      "process_ms": 192.376,
+      "records": 2224281.0,
+      "bytes": 79156607,
+      "avg_sampled_rss_kib": 2938136,
+      "peak_sampled_rss_kib": 2976036
+    },
+    "release": {
+      "wall_ms": 34.668,
+      "thread_ms": 0.011,
+      "process_ms": 35.916,
+      "records": 0.0,
+      "bytes": 0.0,
+      "avg_sampled_rss_kib": 2149284,
+      "peak_sampled_rss_kib": 2149284
+    }
+  },
+  "tasks": {
+    "parse_events": {
+      "n": 1275,
+      "median_wall_ms": 6.302,
+      "max_wall_ms": 53.245,
+      "max_records": 54565.0,
+      "summed_thread_cpu_ms": 8394.741,
+      "worker_thread_cpu_ms": {
+        "0": 3283.7369999999983,
+        "1": 5111.003999999999
+      }
+    },
+    "parse_clicks": {
+      "n": 207,
+      "median_wall_ms": 7.31,
+      "max_wall_ms": 17.71,
+      "max_records": 88033.0,
+      "summed_thread_cpu_ms": 1371.795,
+      "worker_thread_cpu_ms": {
+        "0": 1371.7950000000008
+      }
+    },
+    "dedup_bucket": {
+      "n": 3072,
+      "median_wall_ms": 0.198,
+      "max_wall_ms": 3.103,
+      "max_records": 21225.0,
+      "summed_thread_cpu_ms": 709.39,
+      "worker_thread_cpu_ms": {
+        "0": 338.0910000000011,
+        "1": 371.29900000000015
+      }
+    },
+    "session_gather": {
+      "n": 3072,
+      "median_wall_ms": 0.058,
+      "max_wall_ms": 8.812,
+      "max_records": 455095.0,
+      "summed_thread_cpu_ms": 259.281,
+      "worker_thread_cpu_ms": {
+        "0": 124.71600000000097,
+        "1": 134.5650000000001
+      }
+    },
+    "session_bucket": {
+      "n": 3072,
+      "median_wall_ms": 0.797,
+      "max_wall_ms": 50.387,
+      "max_records": 455095.0,
+      "summed_thread_cpu_ms": 3151.562,
+      "worker_thread_cpu_ms": {
+        "0": 1573.1699999999994,
+        "1": 1578.3920000000014
+      }
+    }
+  },
+  "allocations": {
+    "allocations": 12376,
+    "requested_bytes": 1653746598,
+    "peak_rss_kib": 2994456,
+    "minor_faults": 39682,
+    "major_faults": 0,
+    "voluntary_cs": 349,
+    "involuntary_cs": 113
+  }
+}

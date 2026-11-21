@@ -17,7 +17,7 @@ docker run --rm --network none --read-only --user 1000:1000 \
 
 The root Dockerfile pins the Rust builder image and produces a static Linux/AMD64 executable in a scratch image. Runtime needs no network. Input/output default to `/data` and `/output`; `DATA_DIR`, `OUTPUT_DIR` and `NCPU` override them. Do not commit generated data. An optional BuildKit `build_ca` secret supplies a local proxy's trusted CA bundle during compilation; ordinary public builds need no secret.
 
-For direct runs: `cargo build --release --locked`, then `DATA_DIR=data OUTPUT_DIR=out NCPU=8 target/release/ssp`. AVX2/BMI2 and PCLMULQDQ match the stated Cascade Lake-or-newer scoring CPUs.
+For direct runs: `cargo build --release --locked`, then `DATA_DIR=data OUTPUT_DIR=out NCPU=8 target/release/ssp`. AVX2/BMI2 and PCLMULQDQ retain the upstream CPU requirements; newer instruction sets require runtime dispatch.
 
 ## Data flow and exactness
 
@@ -34,7 +34,7 @@ The default release build contains no per-record diagnostic counters. Build with
 
 `tools/validate.py BINARY --threads 8 --fuzz-rounds 5` runs all 36 official fixtures, the downloaded official development answer, and a literal Python reference on the small generated input plus four dirty-input mutations. `tests/adversarial.py BINARY` checks long UTF-8 identifiers, dates before 1970 and transformation boundaries. `tools/check.py` compares both complete tables while ignoring permitted row/file ordering. Release unit tests exercise tokenizer equivalence, identity domains and inverses, compact copy bit layouts and overflow side tables.
 
-See the experiment report and raw results for the exact tested artifacts and sample distributions. A larger hosted check is attached to the candidate commit on GitHub. A successful GitHub check or repository push is not an official competition submission.
+See the experiment report and raw results for the exact tested artifacts and sample distributions. The fresh hosted check passed at20M and60M for exact source commit `fef07368caf2e161fbf91dbf67e8176574fcfaa9`:20M935.15ms versus1550.86ms baseline,60M2857.89ms versus4816.35ms, on4 CPUs. Full evidence is in `FIRST_SUBMISSION_REPORT.md` and `submission/READY.json`. A successful GitHub check or repository push is not an official competition submission.
 
 ## Dependencies and license
 

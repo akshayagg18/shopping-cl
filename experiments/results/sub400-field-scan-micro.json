@@ -1,0 +1,1808 @@
+[
+  {
+    "variant": "fields",
+    "run": 0,
+    "wall_ms": 879.7908329979691,
+    "user_ms": 790.698,
+    "sys_ms": 87.271,
+    "peak_rss_kib": 1590324,
+    "avg_rss_kib": 743528.7058823529,
+    "minor_faults": 25249,
+    "major_faults": 0,
+    "voluntary_cs": 7,
+    "involuntary_cs": 34,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.703,
+        92
+      ],
+      [
+        52.909,
+        87532
+      ],
+      [
+        103.15,
+        187276
+      ],
+      [
+        153.381,
+        278604
+      ],
+      [
+        203.629,
+        375116
+      ],
+      [
+        253.832,
+        473036
+      ],
+      [
+        304.058,
+        577068
+      ],
+      [
+        354.822,
+        659080
+      ],
+      [
+        405.065,
+        738816
+      ],
+      [
+        455.455,
+        821208
+      ],
+      [
+        505.738,
+        913740
+      ],
+      [
+        556.054,
+        1012616
+      ],
+      [
+        606.354,
+        1113440
+      ],
+      [
+        656.709,
+        1207012
+      ],
+      [
+        707.164,
+        1300728
+      ],
+      [
+        757.387,
+        1396084
+      ],
+      [
+        807.614,
+        1498540
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-fields-0.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "compressed_fields",
+    "run": 0,
+    "wall_ms": 1238.047151000501,
+    "user_ms": 1128.674,
+    "sys_ms": 100.56899999999999,
+    "peak_rss_kib": 1590356,
+    "avg_rss_kib": 724806,
+    "minor_faults": 25249,
+    "major_faults": 0,
+    "voluntary_cs": 7,
+    "involuntary_cs": 41,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.62,
+        88
+      ],
+      [
+        52.89,
+        94976
+      ],
+      [
+        103.153,
+        174828
+      ],
+      [
+        156.885,
+        246252
+      ],
+      [
+        208.874,
+        280748
+      ],
+      [
+        259.405,
+        312748
+      ],
+      [
+        310.741,
+        358764
+      ],
+      [
+        361.25,
+        429356
+      ],
+      [
+        411.79,
+        511948
+      ],
+      [
+        462.172,
+        581196
+      ],
+      [
+        512.419,
+        648552
+      ],
+      [
+        562.725,
+        721292
+      ],
+      [
+        613.028,
+        824248
+      ],
+      [
+        663.592,
+        924656
+      ],
+      [
+        716.389,
+        991868
+      ],
+      [
+        863.099,
+        1032528
+      ],
+      [
+        915.575,
+        1097724
+      ],
+      [
+        966.117,
+        1171020
+      ],
+      [
+        1016.394,
+        1264296
+      ],
+      [
+        1066.657,
+        1329276
+      ],
+      [
+        1116.97,
+        1431828
+      ],
+      [
+        1167.194,
+        1517540
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-compressed_fields-0.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "compressed_fields",
+    "run": 1,
+    "wall_ms": 1047.1647779995692,
+    "user_ms": 923.825,
+    "sys_ms": 116.215,
+    "peak_rss_kib": 1590268,
+    "avg_rss_kib": 728180.8421052631,
+    "minor_faults": 25231,
+    "major_faults": 0,
+    "voluntary_cs": 6,
+    "involuntary_cs": 36,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        6.163,
+        192
+      ],
+      [
+        56.433,
+        60412
+      ],
+      [
+        205.203,
+        98716
+      ],
+      [
+        255.771,
+        200240
+      ],
+      [
+        306.159,
+        265392
+      ],
+      [
+        356.648,
+        371952
+      ],
+      [
+        407.95,
+        436784
+      ],
+      [
+        458.273,
+        508496
+      ],
+      [
+        508.7,
+        588112
+      ],
+      [
+        559.264,
+        689548
+      ],
+      [
+        610.468,
+        808872
+      ],
+      [
+        660.692,
+        912148
+      ],
+      [
+        710.929,
+        980132
+      ],
+      [
+        761.201,
+        1067876
+      ],
+      [
+        811.44,
+        1169616
+      ],
+      [
+        861.659,
+        1262552
+      ],
+      [
+        911.93,
+        1371452
+      ],
+      [
+        962.206,
+        1467324
+      ],
+      [
+        1012.415,
+        1575620
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-compressed_fields-1.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "fields",
+    "run": 1,
+    "wall_ms": 872.7782290006871,
+    "user_ms": 768.4609999999999,
+    "sys_ms": 100.588,
+    "peak_rss_kib": 1590340,
+    "avg_rss_kib": 752958.1176470588,
+    "minor_faults": 25242,
+    "major_faults": 0,
+    "voluntary_cs": 6,
+    "involuntary_cs": 35,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.846,
+        92
+      ],
+      [
+        53.274,
+        99640
+      ],
+      [
+        103.614,
+        172080
+      ],
+      [
+        153.918,
+        267952
+      ],
+      [
+        204.131,
+        350384
+      ],
+      [
+        254.338,
+        452976
+      ],
+      [
+        304.553,
+        556368
+      ],
+      [
+        354.776,
+        660248
+      ],
+      [
+        405.023,
+        760964
+      ],
+      [
+        455.248,
+        858152
+      ],
+      [
+        505.553,
+        950596
+      ],
+      [
+        555.791,
+        1041816
+      ],
+      [
+        606.069,
+        1128876
+      ],
+      [
+        656.826,
+        1226132
+      ],
+      [
+        707.169,
+        1323844
+      ],
+      [
+        757.409,
+        1422852
+      ],
+      [
+        807.683,
+        1527316
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-fields-1.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "fields",
+    "run": 2,
+    "wall_ms": 1043.2840370012855,
+    "user_ms": 918.1999999999999,
+    "sys_ms": 86.782,
+    "peak_rss_kib": 1590356,
+    "avg_rss_kib": 757927,
+    "minor_faults": 25251,
+    "major_faults": 0,
+    "voluntary_cs": 6,
+    "involuntary_cs": 108,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        4.504,
+        1600
+      ],
+      [
+        55.637,
+        67068
+      ],
+      [
+        105.89,
+        155140
+      ],
+      [
+        156.219,
+        249260
+      ],
+      [
+        206.441,
+        345260
+      ],
+      [
+        256.699,
+        450540
+      ],
+      [
+        307.057,
+        531468
+      ],
+      [
+        357.29,
+        625640
+      ],
+      [
+        407.542,
+        661032
+      ],
+      [
+        457.844,
+        711840
+      ],
+      [
+        508.658,
+        772876
+      ],
+      [
+        558.926,
+        863032
+      ],
+      [
+        609.165,
+        944700
+      ],
+      [
+        659.426,
+        998376
+      ],
+      [
+        709.658,
+        1077244
+      ],
+      [
+        759.937,
+        1180412
+      ],
+      [
+        810.607,
+        1239532
+      ],
+      [
+        861.037,
+        1325972
+      ],
+      [
+        911.259,
+        1427228
+      ],
+      [
+        961.63,
+        1530320
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-fields-2.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "compressed_fields",
+    "run": 2,
+    "wall_ms": 1012.1184870004072,
+    "user_ms": 941.808,
+    "sys_ms": 67.09899999999999,
+    "peak_rss_kib": 1590280,
+    "avg_rss_kib": 682963.8,
+    "minor_faults": 25230,
+    "major_faults": 0,
+    "voluntary_cs": 6,
+    "involuntary_cs": 34,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        3.881,
+        92
+      ],
+      [
+        54.149,
+        31272
+      ],
+      [
+        104.432,
+        65192
+      ],
+      [
+        154.71,
+        130540
+      ],
+      [
+        204.936,
+        229620
+      ],
+      [
+        255.216,
+        321460
+      ],
+      [
+        305.43,
+        417012
+      ],
+      [
+        357.28,
+        457076
+      ],
+      [
+        407.58,
+        518904
+      ],
+      [
+        459.798,
+        589716
+      ],
+      [
+        510.082,
+        660572
+      ],
+      [
+        560.413,
+        736788
+      ],
+      [
+        610.784,
+        833772
+      ],
+      [
+        661.023,
+        936688
+      ],
+      [
+        711.252,
+        1031876
+      ],
+      [
+        761.501,
+        1129212
+      ],
+      [
+        811.723,
+        1230744
+      ],
+      [
+        862.063,
+        1339912
+      ],
+      [
+        912.292,
+        1450120
+      ],
+      [
+        962.508,
+        1548708
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-compressed_fields-2.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "compressed_fields",
+    "run": 3,
+    "wall_ms": 826.9092939990514,
+    "user_ms": 744.514,
+    "sys_ms": 70.419,
+    "peak_rss_kib": 1590268,
+    "avg_rss_kib": 773668.75,
+    "minor_faults": 25248,
+    "major_faults": 0,
+    "voluntary_cs": 6,
+    "involuntary_cs": 59,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        3.052,
+        88
+      ],
+      [
+        53.267,
+        96728
+      ],
+      [
+        103.517,
+        199400
+      ],
+      [
+        154.033,
+        306216
+      ],
+      [
+        204.261,
+        415016
+      ],
+      [
+        254.455,
+        522440
+      ],
+      [
+        304.689,
+        621112
+      ],
+      [
+        354.933,
+        720652
+      ],
+      [
+        405.16,
+        828192
+      ],
+      [
+        455.411,
+        944740
+      ],
+      [
+        505.712,
+        1044584
+      ],
+      [
+        555.972,
+        1141332
+      ],
+      [
+        606.35,
+        1244816
+      ],
+      [
+        656.608,
+        1337596
+      ],
+      [
+        706.899,
+        1431228
+      ],
+      [
+        757.337,
+        1524560
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-compressed_fields-3.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "fields",
+    "run": 3,
+    "wall_ms": 909.2239099991275,
+    "user_ms": 843.5070000000001,
+    "sys_ms": 60.162,
+    "peak_rss_kib": 1590348,
+    "avg_rss_kib": 754837.7777777778,
+    "minor_faults": 25245,
+    "major_faults": 0,
+    "voluntary_cs": 7,
+    "involuntary_cs": 36,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        3.844,
+        92
+      ],
+      [
+        54.065,
+        85572
+      ],
+      [
+        104.348,
+        169016
+      ],
+      [
+        154.606,
+        258936
+      ],
+      [
+        204.889,
+        346296
+      ],
+      [
+        255.231,
+        442168
+      ],
+      [
+        305.453,
+        536856
+      ],
+      [
+        355.68,
+        618056
+      ],
+      [
+        405.947,
+        708760
+      ],
+      [
+        456.16,
+        796416
+      ],
+      [
+        506.411,
+        883960
+      ],
+      [
+        556.655,
+        971852
+      ],
+      [
+        607.244,
+        1051988
+      ],
+      [
+        657.476,
+        1156316
+      ],
+      [
+        707.706,
+        1246432
+      ],
+      [
+        757.901,
+        1341068
+      ],
+      [
+        808.114,
+        1433804
+      ],
+      [
+        858.344,
+        1539492
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-fields-3.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "fields",
+    "run": 4,
+    "wall_ms": 921.1609890007821,
+    "user_ms": 819.0939999999999,
+    "sys_ms": 96.506,
+    "peak_rss_kib": 1590312,
+    "avg_rss_kib": 749912,
+    "minor_faults": 25255,
+    "major_faults": 0,
+    "voluntary_cs": 6,
+    "involuntary_cs": 35,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        6.09,
+        88
+      ],
+      [
+        56.387,
+        68944
+      ],
+      [
+        106.62,
+        162828
+      ],
+      [
+        156.828,
+        264916
+      ],
+      [
+        207.06,
+        359700
+      ],
+      [
+        257.267,
+        433876
+      ],
+      [
+        307.532,
+        523588
+      ],
+      [
+        357.797,
+        615908
+      ],
+      [
+        408.02,
+        709044
+      ],
+      [
+        458.223,
+        786772
+      ],
+      [
+        508.491,
+        885268
+      ],
+      [
+        559.148,
+        981408
+      ],
+      [
+        609.558,
+        1073832
+      ],
+      [
+        659.771,
+        1142208
+      ],
+      [
+        710.118,
+        1230072
+      ],
+      [
+        760.439,
+        1324404
+      ],
+      [
+        810.688,
+        1422632
+      ],
+      [
+        860.906,
+        1512928
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-fields-4.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "compressed_fields",
+    "run": 4,
+    "wall_ms": 907.3683610004082,
+    "user_ms": 780.074,
+    "sys_ms": 115.577,
+    "peak_rss_kib": 1590340,
+    "avg_rss_kib": 755152.2222222222,
+    "minor_faults": 25253,
+    "major_faults": 0,
+    "voluntary_cs": 7,
+    "involuntary_cs": 62,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        3.049,
+        92
+      ],
+      [
+        53.335,
+        103540
+      ],
+      [
+        103.615,
+        206772
+      ],
+      [
+        153.836,
+        300852
+      ],
+      [
+        204.117,
+        390836
+      ],
+      [
+        254.416,
+        495636
+      ],
+      [
+        304.704,
+        560212
+      ],
+      [
+        354.958,
+        618112
+      ],
+      [
+        405.201,
+        688404
+      ],
+      [
+        455.448,
+        757824
+      ],
+      [
+        505.72,
+        839144
+      ],
+      [
+        555.955,
+        940588
+      ],
+      [
+        606.287,
+        1041328
+      ],
+      [
+        656.5,
+        1120940
+      ],
+      [
+        706.736,
+        1230484
+      ],
+      [
+        756.968,
+        1322768
+      ],
+      [
+        807.198,
+        1436548
+      ],
+      [
+        857.448,
+        1538660
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-compressed_fields-4.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "compressed_fields",
+    "run": 5,
+    "wall_ms": 800.3391230013222,
+    "user_ms": 710.264,
+    "sys_ms": 84.67999999999999,
+    "peak_rss_kib": 1590300,
+    "avg_rss_kib": 792241.25,
+    "minor_faults": 25263,
+    "major_faults": 0,
+    "voluntary_cs": 6,
+    "involuntary_cs": 41,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.825,
+        92
+      ],
+      [
+        53.081,
+        95496
+      ],
+      [
+        103.341,
+        213448
+      ],
+      [
+        153.637,
+        320328
+      ],
+      [
+        203.853,
+        427400
+      ],
+      [
+        254.052,
+        531752
+      ],
+      [
+        304.258,
+        639920
+      ],
+      [
+        354.542,
+        749204
+      ],
+      [
+        406.738,
+        850432
+      ],
+      [
+        456.969,
+        943748
+      ],
+      [
+        507.214,
+        1050720
+      ],
+      [
+        557.565,
+        1151904
+      ],
+      [
+        607.788,
+        1265200
+      ],
+      [
+        658.179,
+        1373084
+      ],
+      [
+        708.416,
+        1479096
+      ],
+      [
+        758.675,
+        1584036
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-compressed_fields-5.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "fields",
+    "run": 5,
+    "wall_ms": 863.9601430004404,
+    "user_ms": 770.683,
+    "sys_ms": 83.72699999999999,
+    "peak_rss_kib": 1590364,
+    "avg_rss_kib": 777733.6470588235,
+    "minor_faults": 25258,
+    "major_faults": 0,
+    "voluntary_cs": 4,
+    "involuntary_cs": 42,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        7.459,
+        1644
+      ],
+      [
+        57.733,
+        94924
+      ],
+      [
+        108.089,
+        193028
+      ],
+      [
+        158.409,
+        288904
+      ],
+      [
+        208.683,
+        387208
+      ],
+      [
+        258.964,
+        484168
+      ],
+      [
+        309.361,
+        592296
+      ],
+      [
+        359.632,
+        684908
+      ],
+      [
+        409.952,
+        783056
+      ],
+      [
+        460.221,
+        885320
+      ],
+      [
+        510.468,
+        983172
+      ],
+      [
+        560.881,
+        1078696
+      ],
+      [
+        611.163,
+        1170900
+      ],
+      [
+        661.427,
+        1259760
+      ],
+      [
+        711.678,
+        1345052
+      ],
+      [
+        762.103,
+        1445084
+      ],
+      [
+        812.652,
+        1543352
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-fields-5.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "fields",
+    "run": 6,
+    "wall_ms": 1165.110891997756,
+    "user_ms": 1050.429,
+    "sys_ms": 98.371,
+    "peak_rss_kib": 1590372,
+    "avg_rss_kib": 793102.3636363636,
+    "minor_faults": 25257,
+    "major_faults": 0,
+    "voluntary_cs": 6,
+    "involuntary_cs": 64,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        4.388,
+        328
+      ],
+      [
+        54.679,
+        89948
+      ],
+      [
+        105.229,
+        194572
+      ],
+      [
+        155.481,
+        290704
+      ],
+      [
+        205.74,
+        387024
+      ],
+      [
+        255.989,
+        451024
+      ],
+      [
+        306.25,
+        511356
+      ],
+      [
+        362.571,
+        562480
+      ],
+      [
+        412.864,
+        630420
+      ],
+      [
+        463.087,
+        703920
+      ],
+      [
+        513.358,
+        766428
+      ],
+      [
+        563.598,
+        827848
+      ],
+      [
+        621.364,
+        914108
+      ],
+      [
+        671.6,
+        975180
+      ],
+      [
+        721.913,
+        1044688
+      ],
+      [
+        772.16,
+        1084912
+      ],
+      [
+        822.532,
+        1153256
+      ],
+      [
+        872.806,
+        1223796
+      ],
+      [
+        923.039,
+        1299560
+      ],
+      [
+        973.293,
+        1372324
+      ],
+      [
+        1023.642,
+        1445476
+      ],
+      [
+        1073.857,
+        1518900
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-fields-6.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "compressed_fields",
+    "run": 6,
+    "wall_ms": 1025.1567470004375,
+    "user_ms": 902.569,
+    "sys_ms": 117.829,
+    "peak_rss_kib": 1590352,
+    "avg_rss_kib": 704636.2,
+    "minor_faults": 25258,
+    "major_faults": 0,
+    "voluntary_cs": 6,
+    "involuntary_cs": 41,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        5.706,
+        92
+      ],
+      [
+        55.91,
+        60980
+      ],
+      [
+        106.13,
+        128948
+      ],
+      [
+        156.515,
+        191996
+      ],
+      [
+        206.72,
+        251708
+      ],
+      [
+        256.934,
+        307324
+      ],
+      [
+        307.15,
+        361532
+      ],
+      [
+        357.407,
+        413628
+      ],
+      [
+        407.619,
+        465916
+      ],
+      [
+        457.823,
+        570396
+      ],
+      [
+        508.021,
+        676784
+      ],
+      [
+        558.229,
+        786044
+      ],
+      [
+        608.487,
+        874120
+      ],
+      [
+        658.702,
+        978232
+      ],
+      [
+        719.3,
+        1096952
+      ],
+      [
+        769.51,
+        1173640
+      ],
+      [
+        819.725,
+        1284760
+      ],
+      [
+        869.93,
+        1389072
+      ],
+      [
+        920.122,
+        1493904
+      ],
+      [
+        970.371,
+        1586696
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-compressed_fields-6.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "compressed_fields",
+    "run": 7,
+    "wall_ms": 881.7237250004837,
+    "user_ms": 758.254,
+    "sys_ms": 120.643,
+    "peak_rss_kib": 1590280,
+    "avg_rss_kib": 753461.1764705882,
+    "minor_faults": 25268,
+    "major_faults": 0,
+    "voluntary_cs": 7,
+    "involuntary_cs": 46,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        3.596,
+        92
+      ],
+      [
+        53.813,
+        73656
+      ],
+      [
+        104.015,
+        182132
+      ],
+      [
+        154.228,
+        290676
+      ],
+      [
+        204.424,
+        397172
+      ],
+      [
+        254.683,
+        500884
+      ],
+      [
+        305.139,
+        614520
+      ],
+      [
+        355.371,
+        709280
+      ],
+      [
+        405.632,
+        801068
+      ],
+      [
+        456.114,
+        861164
+      ],
+      [
+        506.404,
+        923428
+      ],
+      [
+        556.619,
+        985008
+      ],
+      [
+        606.811,
+        1081136
+      ],
+      [
+        657.015,
+        1181936
+      ],
+      [
+        707.209,
+        1294796
+      ],
+      [
+        757.405,
+        1400136
+      ],
+      [
+        807.624,
+        1511756
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-compressed_fields-7.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "fields",
+    "run": 7,
+    "wall_ms": 848.6615370020445,
+    "user_ms": 744.7969999999999,
+    "sys_ms": 92.942,
+    "peak_rss_kib": 1590316,
+    "avg_rss_kib": 778804.9411764706,
+    "minor_faults": 25271,
+    "major_faults": 0,
+    "voluntary_cs": 5,
+    "involuntary_cs": 70,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        3.401,
+        92
+      ],
+      [
+        53.64,
+        97864
+      ],
+      [
+        103.863,
+        202136
+      ],
+      [
+        154.139,
+        279256
+      ],
+      [
+        204.369,
+        371608
+      ],
+      [
+        254.925,
+        479320
+      ],
+      [
+        305.183,
+        578236
+      ],
+      [
+        355.471,
+        686140
+      ],
+      [
+        405.695,
+        782680
+      ],
+      [
+        455.93,
+        882904
+      ],
+      [
+        506.185,
+        976532
+      ],
+      [
+        556.616,
+        1076052
+      ],
+      [
+        607.547,
+        1168704
+      ],
+      [
+        657.765,
+        1271624
+      ],
+      [
+        708.085,
+        1364716
+      ],
+      [
+        758.425,
+        1463660
+      ],
+      [
+        808.652,
+        1558160
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-fields-7.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "fields",
+    "run": 8,
+    "wall_ms": 946.7437450002762,
+    "user_ms": 838.681,
+    "sys_ms": 99.795,
+    "peak_rss_kib": 1590360,
+    "avg_rss_kib": 794689.7777777778,
+    "minor_faults": 25261,
+    "major_faults": 0,
+    "voluntary_cs": 6,
+    "involuntary_cs": 45,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        14.751,
+        13820
+      ],
+      [
+        64.992,
+        115120
+      ],
+      [
+        115.365,
+        214660
+      ],
+      [
+        165.908,
+        310788
+      ],
+      [
+        216.202,
+        396292
+      ],
+      [
+        266.462,
+        474884
+      ],
+      [
+        316.762,
+        567404
+      ],
+      [
+        367.03,
+        656748
+      ],
+      [
+        417.319,
+        747792
+      ],
+      [
+        467.621,
+        846332
+      ],
+      [
+        517.89,
+        942848
+      ],
+      [
+        568.148,
+        1035032
+      ],
+      [
+        618.686,
+        1112576
+      ],
+      [
+        668.958,
+        1188904
+      ],
+      [
+        719.226,
+        1290588
+      ],
+      [
+        771.056,
+        1383832
+      ],
+      [
+        821.826,
+        1464984
+      ],
+      [
+        872.163,
+        1541812
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-fields-8.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "compressed_fields",
+    "run": 8,
+    "wall_ms": 1505.3705620011897,
+    "user_ms": 1295.915,
+    "sys_ms": 196.58,
+    "peak_rss_kib": 1590272,
+    "avg_rss_kib": 705231.7037037037,
+    "minor_faults": 25245,
+    "major_faults": 0,
+    "voluntary_cs": 4,
+    "involuntary_cs": 53,
+    "input_blocks": 0,
+    "output_blocks": 8,
+    "output_bytes": 0,
+    "threads": 1,
+    "affinity": "2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        13.624,
+        300
+      ],
+      [
+        63.91,
+        28008
+      ],
+      [
+        114.205,
+        59712
+      ],
+      [
+        164.49,
+        90368
+      ],
+      [
+        214.75,
+        137720
+      ],
+      [
+        265.25,
+        199732
+      ],
+      [
+        315.798,
+        263632
+      ],
+      [
+        368.296,
+        336592
+      ],
+      [
+        418.563,
+        394420
+      ],
+      [
+        468.801,
+        421300
+      ],
+      [
+        519.04,
+        497812
+      ],
+      [
+        569.281,
+        565268
+      ],
+      [
+        619.972,
+        626544
+      ],
+      [
+        670.215,
+        694912
+      ],
+      [
+        720.501,
+        775404
+      ],
+      [
+        770.704,
+        852444
+      ],
+      [
+        820.955,
+        910300
+      ],
+      [
+        871.178,
+        971268
+      ],
+      [
+        921.403,
+        1018728
+      ],
+      [
+        1069.031,
+        1034236
+      ],
+      [
+        1119.294,
+        1080308
+      ],
+      [
+        1169.819,
+        1144984
+      ],
+      [
+        1220.294,
+        1239896
+      ],
+      [
+        1270.53,
+        1315776
+      ],
+      [
+        1320.757,
+        1387968
+      ],
+      [
+        1371.016,
+        1462848
+      ],
+      [
+        1421.29,
+        1530776
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/sub400-field-scan-micro-compressed_fields-8.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  }
+]
