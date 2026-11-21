@@ -246,26 +246,24 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let k: usize = std::env::var("SS_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let t = Instant::now();
     upscale(data, &big, k);
-    eprintln!("D10 x{k} up={:.1}s; wall/int ms: open links parse dedup sess write | user sys", t.elapsed().as_secs_f64());
-    // variants: (tag, write-combining, person bits, dedup bits)
-    let vars: [(&str, &str, &str, &str); 7] = [
-        ("base", "0", "10", "10"),
-        ("wc", "1", "10", "10"),
-        ("p9", "0", "9", "9"),
-        ("p11", "0", "11", "11"),
-        ("wc9", "1", "9", "9"),
-        ("p9d11", "0", "9", "11"),
-        ("wc11", "1", "11", "11"),
+    eprintln!("D11 x{k} up={:.1}s; wall/int ms: open links parse dedup sess write free | user sys", t.elapsed().as_secs_f64());
+    let vars: [(&str, &[(&str, &str)]); 8] = [
+        ("base", &[]),
+        ("wc0", &[("SS_WC", "0")]),
+        ("pf0", &[("SS_PFREE", "0")]),
+        ("p9", &[("SS_P2B", "9")]),
+        ("p11", &[("SS_P2B", "11")]),
+        ("d9", &[("SS_PDB", "9")]),
+        ("d11", &[("SS_PDB", "11")]),
+        ("p9d9", &[("SS_P2B", "9"), ("SS_PDB", "9")]),
     ];
-    // two interleaved rounds so drift hits every variant alike
     for round in 0..2 {
-        for (tag, wc, p2, pd) in vars {
-            let env = [("SS_WC", wc), ("SS_P2B", p2), ("SS_PDB", pd)];
-            eprintln!("{}", child(&format!("{tag}.{round}"), &big, &ob, threads, &env));
+        for (tag, env) in vars.iter() {
+            eprintln!("{}", child(&format!("{tag}.{round}"), &big, &ob, threads, env));
         }
     }
-    eprintln!("{}", child("base4", &big, &ob, 4, &[("SS_WC", "0")]));
-    eprintln!("{}", child("dev8", data, &ob, threads, &[("SS_WC", "0")]));
+    eprintln!("{}", child("t4", &big, &ob, 4, &[]));
+    eprintln!("{}", child("dev", data, &ob, threads, &[]));
     let _ = std::fs::remove_dir_all(&big);
     let _ = std::fs::remove_dir_all(&ob);
     eprintln!("done {:.1}s", t0.elapsed().as_secs_f64());

@@ -1922,7 +1922,10 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
             ))
         })
         .collect();
-    (0..p2()).into_par_iter().for_each(|b| {
+    // largest partitions first, so a giant component never starts last
+    let mut order: Vec<(usize, usize)> = (0..p2()).map(|b| (sinks.iter().map(|s| s.ev.len(b)).sum::<usize>(), b)).collect();
+    order.sort_unstable_by(|a, b| b.cmp(a));
+    order.par_iter().with_max_len(1).for_each(|&(_, b)| {
         let i = rayon::current_thread_index().unwrap_or(0) % nthreads;
         let mut guard = states[i].lock().unwrap();
         let (agg, sc, evb, ckb) = &mut *guard;
@@ -1935,8 +1938,16 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     output::write(out, aggs, &lk, &ctx_info(&ctx, &lk));
     lap("written");
     if leak {
-        // the process is about to exit: skip unmapping gigabytes of buffers
-        std::mem::forget(sinks);
+        if std::env::var("SS_PFREE").map_or(true, |v| v != "0") {
+            // release the big mappings from all threads at once, so the
+            // single-threaded teardown at exit has little left to do
+            let files: Box<Vec<Mmap>> = unsafe { Box::from_raw(FILES.swap(std::ptr::null_mut(), Ordering::AcqRel)) };
+            rayon::join(|| sinks.into_par_iter().for_each(drop), || files.into_par_iter().for_each(drop));
+            lap("released");
+        } else {
+            // the process is about to exit: skip unmapping gigabytes of buffers
+            std::mem::forget(sinks);
+        }
         std::mem::forget(dead);
         std::mem::forget(persons);
     }
