@@ -1,0 +1,67 @@
+name: Compare Claude vs hybrid
+on:
+  push:
+    branches: [hybrid-bucket-v1]
+  workflow_dispatch:
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build both binaries
+        run: |
+          cargo build --release --locked
+          cp target/release/ssp /tmp/shopping-hybrid
+          git show d2dc441e6bed67a57572a7c1f12b06dad7f163cc:src/main.rs > src/main.rs
+          cargo build --release --locked
+          cp target/release/ssp /tmp/shopping-claude
+          git restore src/main.rs
+          chmod +x /tmp/shopping-claude /tmp/shopping-hybrid
+      - name: Generate 5M official-format test data
+        run: |
+          curl --retry 3 -fsSL https://www.joinbuilders.org/buildathon/tracks/shopping-sessions/files/generator.zip -o /tmp/generator.zip
+          mkdir /tmp/shopping-generator
+          cd /tmp/shopping-generator
+          unzip -q /tmp/generator.zip
+          cargo build --release --locked --manifest-path generator/Cargo.toml
+          generator/target/release/generate --seed 20 --events 5000000 --clicks 1250000 --threads 4 --output /tmp/shopping-perf-data
+      - name: Compare whole-process runtimes
+        run: |
+          python3 - <<'PY'
+          import os,subprocess,time,statistics,pathlib
+          base=pathlib.Path('/tmp/shopping-perf')
+          base.mkdir(exist_ok=True)
+          cases=['claude','hybrid','hybrid','claude','claude','hybrid']
+          times={'claude':[],'hybrid':[]}
+          for i,name in enumerate(cases):
+              out=base/f'{name}-{i}'
+              out.mkdir(parents=True)
+              env={**os.environ,'DATA_DIR':'/tmp/shopping-perf-data','OUTPUT_DIR':str(out),'NCPU':'4','SS_TIMING':'1'}
+              t0=time.perf_counter()
+              proc=subprocess.run([f'/tmp/shopping-{name}'],env=env,text=True,capture_output=True)
+              t=time.perf_counter()-t0
+              print(f'RUN {name} #{i} wall_s={t:.6f}',flush=True)
+              print(proc.stderr[-3000:],flush=True)
+              if proc.returncode:
+                  print(proc.stdout,flush=True)
+                  raise SystemExit(f'{name} exited {proc.returncode}')
+              times[name].append(t)
+          print('SUMMARY',times,flush=True)
+          print('CLAUDE_MEDIAN_S',statistics.median(times['claude']),flush=True)
+          print('HYBRID_MEDIAN_S',statistics.median(times['hybrid']),flush=True)
+          print('SPEEDUP',statistics.median(times['claude'])/statistics.median(times['hybrid']),flush=True)
+          PY
+      - name: Validate official-format dev fixture and Parquet comparison
+        run: |
+          /tmp/shopping-generator/generator/target/release/generate --seed 1 --events 1000000 --clicks 250000 --threads 4 --output /tmp/shopping-dev
+          mkdir -p /tmp/shopping-dev-claude /tmp/shopping-dev-hybrid
+          DATA_DIR=/tmp/shopping-dev OUTPUT_DIR=/tmp/shopping-dev-claude NCPU=4 /tmp/shopping-claude
+          DATA_DIR=/tmp/shopping-dev OUTPUT_DIR=/tmp/shopping-dev-hybrid NCPU=4 /tmp/shopping-hybrid
+          python3 -m pip install --quiet pyarrow
+          python3 tools/check.py /tmp/shopping-dev-claude --hash
+          python3 tools/check.py /tmp/shopping-dev-hybrid --hash
+          python3 tools/check.py /tmp/shopping-dev-hybrid --other /tmp/shopping-dev-claude
