@@ -543,12 +543,49 @@ fn memchr(c: u8, hay: &[u8]) -> Option<usize> {
 struct Lookups {
     /// product hash -> category index (sorted order)
     products: U64Map,
+    fast_products: Vec<u32>,
     categories: Vec<Vec<u8>>,
     unknown_cat: u8,
     /// campaign hash -> campaign index
     campaigns: U64Map,
+    fast_campaigns: Vec<u32>,
     campaign_names: Vec<Vec<u8>>,
     channels: Vec<Vec<u8>>,
+}
+
+
+const FAST_CATALOG_LIMIT: usize = 65_536;
+
+/// Dense fast path only for canonical decimal IDs, never aliases with leading zeros.
+#[inline(always)]
+fn dense_catalog_id(s: &[u8], prefix: &[u8]) -> Option<usize> {
+    let tail = s.strip_prefix(prefix)?;
+    if tail.is_empty() || (tail.len() > 1 && tail[0] == b'0') { return None; }
+    let mut n = 0usize;
+    for &c in tail {
+        if !c.is_ascii_digit() { return None; }
+        n = n * 10 + (c - b'0') as usize;
+        if n >= FAST_CATALOG_LIMIT { return None; }
+    }
+    Some(n)
+}
+impl Lookups {
+    #[inline(always)]
+    fn product(&self, id: &[u8]) -> u64 {
+        if let Some(i) = dense_catalog_id(id, b"p") {
+            let v = self.fast_products[i];
+            if v != u32::MAX { return v as u64; }
+        }
+        self.products.get(h64(id)).unwrap_or(self.unknown_cat as u64)
+    }
+    #[inline(always)]
+    fn campaign(&self, id: &[u8]) -> Option<u64> {
+        if let Some(i) = dense_catalog_id(id, b"c_") {
+            let v = self.fast_campaigns[i];
+            if v != u32::MAX { return Some(v as u64); }
+        }
+        self.campaigns.get(h64(id))
+    }
 }
 
 fn lookups(inp: &Inputs) -> Lookups {
@@ -569,12 +606,16 @@ fn lookups(inp: &Inputs) -> Lookups {
     assert!(cats.len() < 255, "too many categories");
     let cat_index = |c: &[u8]| cats.binary_search_by(|x| x.as_slice().cmp(c)).unwrap() as u64;
     let mut products = U64Map::with_capacity(prods.len());
+    let mut fast_products = vec![u32::MAX; 65_536];
     for (p, c) in &prods {
-        products.insert_or_get(h64(p), cat_index(c));
+        let category = cat_index(c);
+        products.insert_or_get(h64(p), category);
+        if let Some(i) = dense_catalog_id(p, b"p") { fast_products[i] = category as u32; }
     }
     let unknown_cat = cat_index(b"unknown") as u8;
 
     let mut campaigns = U64Map::with_capacity(4096);
+    let mut fast_campaigns = vec![u32::MAX; 65_536];
     let mut campaign_names = Vec::new();
     let mut channels = Vec::new();
     let cf = inp.campaigns;
@@ -585,13 +626,14 @@ fn lookups(inp: &Inputs) -> Lookups {
             let b = &line[fs[1].0 as usize..fs[1].1 as usize];
             let (_, existed) = campaigns.insert_or_get(h64(a), campaign_names.len() as u64);
             if !existed {
+                if let Some(i) = dense_catalog_id(a, b"c_") { fast_campaigns[i] = campaign_names.len() as u32; }
                 campaign_names.push(a.to_vec());
                 channels.push(b.to_vec());
             }
         }
     });
     assert!(campaign_names.len() < 65_535);
-    Lookups { products, categories: cats, unknown_cat, campaigns, campaign_names, channels }
+    Lookups { products, fast_products, categories: cats, unknown_cat, campaigns, fast_campaigns, campaign_names, channels }
 }
 
 // ---------------------------------------------------------------- links
@@ -803,7 +845,7 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
                         0
                     } else if ty == b"purchase" {
                         let Some(pr) = parse::price(fld(6)) else { break 'valid };
-                        let cat = lk.products.get(h64(fld(5))).map_or(lk.unknown_cat as u64, |c| c) as u32;
+                        let cat = lk.product(fld(5)) as u32;
                         (pr << 8) | cat
                     } else {
                         break 'valid;
@@ -979,7 +1021,7 @@ fn parse_clicks(units: &[(usize, usize, usize)], lk: &Lookups, persons: &Persons
                 if ts < lo || ts >= we {
                     return;
                 }
-                let Some(camp) = lk.campaigns.get(h64(fld(2))) else { return };
+                let Some(camp) = lk.campaign(fld(2)) else { return };
                 v.push(Ck { key: h64(user), cref: mkref(f, p + fs[0].0 as usize, cid.len()), ts: ts - ws, camp: camp as u32 });
             });
             const AHEAD: usize = 16;
