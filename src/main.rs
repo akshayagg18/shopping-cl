@@ -40,7 +40,7 @@ const CLICK_REACH: i64 = 7 * DAY_MS;
 
 /// Input mappings of the current run (leaked so refs stay 'static; one run per process,
 /// or a few in diagnostic mode).
-static FILES: AtomicPtr<Vec<Mmap>> = AtomicPtr::new(std::ptr::null_mut());
+static FILES: AtomicPtr<Vec<Vec<u8>>> = AtomicPtr::new(std::ptr::null_mut());
 static LENS: AtomicPtr<Vec<usize>> = AtomicPtr::new(std::ptr::null_mut());
 
 /// file:12 | offset:36 | len:16
@@ -163,18 +163,11 @@ fn open_all(data: &Path) -> Inputs {
     let links: Vec<usize> = csvs(&data.join("links")).into_iter().map(&mut push).collect();
     let products = push(data.join("products.csv"));
     let campaigns = push(data.join("campaigns.csv"));
-    let maps: Vec<Mmap> = paths
+    // Read each CSV into anonymous memory once using parallel kernel reads.
+    // Unlike mmap, the scanner then pays no demand page faults on the hot path.
+    let maps: Vec<Vec<u8>> = paths
         .par_iter()
-        .map(|p| {
-            let f = File::open(p).unwrap_or_else(|e| panic!("open {}: {e}", p.display()));
-            let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-            if len == 0 {
-                // mmap of an empty file fails on some systems: map an anonymous empty region.
-                memmap2::MmapOptions::new().len(1).map_anon().unwrap().make_read_only().unwrap()
-            } else {
-                unsafe { memmap2::MmapOptions::new().populate().map(&f) }.unwrap()
-            }
-        })
+        .map(|p| std::fs::read(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display())))
         .collect();
     // Note: anon placeholder has len 1 with a zero byte; record real lengths below.
     let lens: Vec<usize> = paths
@@ -204,7 +197,7 @@ fn open_all(data: &Path) -> Inputs {
 #[inline(always)]
 fn file_bytes(f: usize) -> &'static [u8] {
     let lens: &'static Vec<usize> = unsafe { &*LENS.load(Ordering::Relaxed) };
-    let files: &'static Vec<Mmap> = unsafe { &*FILES.load(Ordering::Relaxed) };
+    let files: &'static Vec<Vec<u8>> = unsafe { &*FILES.load(Ordering::Relaxed) };
     &files[f][..lens[f]]
 }
 
