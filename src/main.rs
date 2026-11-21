@@ -1167,11 +1167,36 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
         let (cs, ce) = (sc.ck_cnt[pid] as usize, ck_pos[pid] as usize);
         let ev = &mut evs[es..ee];
         if ev.len() > 1 {
-            ev.sort_unstable_by_key(|e| e.ts);
+            if ev.len() <= 12 {
+                for i in 1..ev.len() {
+                    let x = ev[i];
+                    let mut j = i;
+                    while j > 0 && ev[j - 1].ts > x.ts {
+                        ev[j] = ev[j - 1];
+                        j -= 1;
+                    }
+                    ev[j] = x;
+                }
+            } else {
+                ev.sort_unstable_by_key(|e| e.ts);
+            }
         }
         let ck = &mut cks[cs..ce];
         if ck.len() > 1 {
-            ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
+            if ck.len() <= 12 {
+                for i in 1..ck.len() {
+                    let x = ck[i];
+                    let mut j = i;
+                    while j > 0 && (ck[j - 1].ts > x.ts ||
+                        (ck[j - 1].ts == x.ts && deref(ck[j - 1].cref) > deref(x.cref))) {
+                        ck[j] = ck[j - 1];
+                        j -= 1;
+                    }
+                    ck[j] = x;
+                }
+            } else {
+                ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
+            }
         }
         person_sessions(ctx, ev, ck, agg, sc);
     }
