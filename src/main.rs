@@ -1122,17 +1122,186 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
         let (es, ee) = (sc.ev_cnt[pid] as usize, ev_pos[pid] as usize);
         let (cs, ce) = (sc.ck_cnt[pid] as usize, ck_pos[pid] as usize);
         let ev = &mut evs[es..ee];
-        if ev.len() > 1 {
+        let no_sort = ev.len() >= 256;
+        if ev.len() > 1 && !no_sort {
             ev.sort_unstable_by_key(|e| e.ts);
         }
         let ck = &mut cks[cs..ce];
         if ck.len() > 1 {
             ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
         }
-        person_sessions(ctx, ev, ck, agg, sc);
+        if no_sort {
+            person_sessions_nosort(ctx, ev, ck, agg, sc);
+        } else {
+            person_sessions(ctx, ev, ck, agg, sc);
+        }
     }
     sc.evs_sorted = evs;
     sc.cks_sorted = cks;
+}
+
+
+/* Exact session reconstruction without timestamp sorting.
+ * Events from the same 30-minute bucket must be in the same session.
+ * Only the minimum and maximum timestamp of each occupied bucket are needed
+ * to decide whether consecutive occupied buckets join. Once the session
+ * boundaries are known, a second linear pass aggregates events directly. */
+fn person_sessions_nosort(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut Scratch) {
+    #[derive(Clone, Copy)]
+    struct Bin {min: u32, max: u32, n: u32}
+    struct QuickSession { start: i64, day: usize, revenue: i64, purchased: bool }
+    let gap = SESSION_GAP as u32;
+    let nb = evs.iter().map(|e| e.ts).max().unwrap() as usize / gap as usize + 1;
+    let mut bins = vec![Bin {min: u32::MAX, max: 0, n: 0}; nb];
+    for ev in evs {
+        let b = &mut bins[(ev.ts / gap) as usize];
+        b.min = b.min.min(ev.ts);
+        b.max = b.max.max(ev.ts);
+        b.n += 1;
+    }
+    let mut bin_session = vec![usize::MAX; nb];
+    let mut sessions: Vec<QuickSession> = Vec::new();
+    let mut last_max: Option<u32> = None;
+    let mut daily_sessions = vec![0u32; ctx.ndays];
+    let mut daily_events = vec![0u32; ctx.ndays];
+    let mut daily_revenue = vec![0i64; ctx.ndays];
+    let mut daily_cat = vec![0i64; ctx.ndays * ctx.ncat];
+    for (i, bin) in bins.iter().enumerate() {
+        if bin.n == 0 {
+            continue;
+        }
+        let starts_new = last_max.is_none_or(|max| bin.min as i64 - max as i64 > SESSION_GAP);
+        if starts_new {
+            let day = ((ctx.ws + bin.min as i64).div_euclid(DAY_MS) - ctx.ws_day) as usize;
+            sessions.push(QuickSession {start:bin.min as i64,day,revenue:0,purchased:false});
+            daily_sessions[day] += 1;
+        }
+        bin_session[i] = sessions.len() - 1;
+        last_max = Some(bin.max);
+    }
+    for e in evs {
+        let si = bin_session[(e.ts / gap) as usize];
+        let session = &mut sessions[si];
+        daily_events[session.day] += 1;
+        if e.pc >= 256 {
+            let price = (e.pc >> 8) as i64;
+            session.revenue += price;
+            session.purchased = true;
+            daily_revenue[session.day] += price;
+            daily_cat[session.day * ctx.ncat + (e.pc & 0xFF) as usize] += price;
+        }
+    }
+    let name = if evs[0].key & LINKED != 0 {
+        ctx.persons.names[(evs[0].key & !LINKED) as usize]
+    } else {
+        evs[0].uref
+    };
+    let (mut lo, mut hi) = (0usize, 0usize);
+    for session in &sessions {
+        let start = session.start;
+        while hi < cks.len() && cks[hi].ts <= start {
+            let c = cks[hi].camp as usize;
+            if sc.count[c] == 0 {
+                sc.pos[c] = sc.active.len() as u32;
+                sc.active.push(c as u32);
+            }
+            sc.count[c] += 1;
+            hi += 1;
+        }
+        while lo < hi && cks[lo].ts < start - CLICK_REACH {
+            let c = cks[lo].camp as usize;
+            sc.count[c] -= 1;
+            if sc.count[c] == 0 {
+                let p = sc.pos[c] as usize;
+                let lastc = *sc.active.last().unwrap();
+                sc.active[p] = lastc;
+                sc.pos[lastc as usize] = p as u32;
+                sc.active.pop();
+            }
+            lo += 1;
+        }
+        let credit = if lo < hi {
+            let t = cks[hi - 1].ts;
+            let mut f = hi - 1;
+            while f > lo && cks[f - 1].ts == t {
+                f -= 1;
+            }
+            cks[f].camp as usize
+        } else {
+            ctx.ncamp
+        };
+        let slot = &mut agg.camp[credit * ctx.ndays + session.day];
+        slot[0] += 1;
+        if session.purchased {
+            slot[1] += 1;
+            slot[2] += session.revenue;
+        }
+        for &c in &sc.active {
+            agg.camp[c as usize * ctx.ndays + session.day][3] += 1;
+        }
+    }
+    while lo < hi {
+        sc.count[cks[lo].camp as usize] = 0;
+        lo += 1;
+    }
+    sc.active.clear();
+    for day in 0..ctx.ndays {
+        if daily_sessions[day] == 0 {
+            continue;
+        }
+        let mut best = 0i64;
+        let mut top = 255u8;
+        for cat in 0..ctx.ncat {
+            let value = daily_cat[day * ctx.ncat + cat];
+            if value > best {
+                best = value;
+                top = cat as u8;
+            }
+        }
+        agg.rows.push(UserRow {
+            name,
+            day: (ctx.ws_day + day as i64) as i32,
+            sessions: daily_sessions[day],
+            events: daily_events[day],
+            revenue: daily_revenue[day],
+            top,
+        });
+    }
+}
+
+#[cfg(test)]
+mod nosort_session_tests {
+    use super::*;
+    #[test]
+    fn exact_vs_chronological_sessions() {
+        let prs = Persons {map: U64Map::with_capacity(1), names: Vec::new()};
+        let ctx = Ctx {ndays: 14, ncamp: 3, ncat: 3, ws: 0, ws_day: 0, persons: &prs};
+        let mut events: Vec<Ev2> = Vec::new();
+        for i in 0..3000u32 {
+            let ts = i.wrapping_mul(172_391) % (14 * DAY_MS as u32);
+            let pc = if i%17==0 {((i%500 + 1)<<8) | (i%3)} else {0};
+            events.push(Ev2 {key:17,uref:0,ts,pc});
+        }
+        for ts in [0, SESSION_GAP as u32, SESSION_GAP as u32+1, DAY_MS as u32-1,DAY_MS as u32] {
+            events.push(Ev2 {key:17,uref:0,ts,pc:0});
+        }
+        let mut clicks: Vec<Ck> = (0..250).map(|i| Ck {
+            key:17,cref:0,ts:(i as i64)*145_131-CLICK_REACH,
+            camp:(i%3) as u32,
+        }).collect();
+        clicks.sort_unstable_by_key(|c| c.ts);
+        let mut reference_events = events.clone();
+        reference_events.sort_unstable_by_key(|e| e.ts);
+        let mut a = Agg {rows:Vec::new(), camp:vec![[0i64;4];4*14]};
+        let mut b = Agg {rows:Vec::new(), camp:vec![[0i64;4];4*14]};
+        person_sessions(&ctx, &reference_events, &clicks, &mut a, &mut Scratch::new(3));
+        person_sessions_nosort(&ctx, &events, &clicks, &mut b, &mut Scratch::new(3));
+        assert_eq!(a.camp,b.camp);
+        let rows = |a: Agg| -> Vec<(i32,u32,u32,i64,u8)> {
+            a.rows.iter().map(|r|(r.day,r.sessions,r.events,r.revenue,r.top)).collect()
+        };
+        assert_eq!(rows(a),rows(b));
+    }
 }
 
 fn person_sessions(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut Scratch) {
