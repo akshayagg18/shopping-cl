@@ -85,7 +85,7 @@ impl U64Map {
     }
     #[inline(always)]
     fn slot(&self, k: u64) -> usize {
-        (k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 20) as usize & self.mask
+        k as usize & self.mask
     }
     #[inline(always)]
     fn prefetch(&self, k: u64) {
