@@ -56,13 +56,18 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
     std::fs::create_dir_all(&ud).expect("mkdir user_daily");
     std::fs::create_dir_all(&cd).expect("mkdir campaign_daily");
 
-    // merge campaign arrays (small)
-    let width = (info.ncamp + 1) * info.ndays;
-    let mut camp = vec![[0i64; 4]; width];
+    // merge campaign arrays (small) into [camp * ndays + day] order
+    let w = info.ncamp + 1;
+    let mut camp = vec![[0i64; 4]; w * info.ndays];
     for a in &aggs {
-        for (t, s) in camp.iter_mut().zip(&a.camp) {
-            for k in 0..4 {
-                t[k] += s[k];
+        for d in 0..info.ndays {
+            for c in 0..w {
+                let t = &mut camp[c * info.ndays + d];
+                let cr = a.credit[d * w + c];
+                t[0] += cr[0];
+                t[1] += cr[1];
+                t[2] += cr[2];
+                t[3] += a.assist[d * w + c] as i64;
             }
         }
     }

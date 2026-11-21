@@ -59,9 +59,61 @@ fn deref(r: u64) -> &'static [u8] {
 }
 
 #[inline(always)]
+fn mum(a: u64, b: u64) -> u64 {
+    let r = (a as u128) * (b as u128);
+    (r as u64) ^ ((r >> 64) as u64)
+}
+
+/// The two little-endian words of a <= 16 byte string, zero padded.
+#[inline(always)]
+fn words16(b: &[u8]) -> (u64, u64) {
+    let n = b.len();
+    debug_assert!(n <= 16);
+    let ld8 = |i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+    let ld4 = |i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap()) as u64;
+    if n >= 8 {
+        // overlapping loads; keep only bytes 8..n of the second word
+        let y = if n == 8 { 0 } else { ld8(n - 8) >> (8 * (16 - n)) };
+        (ld8(0), y)
+    } else if n >= 4 {
+        (ld4(0) | (ld4(n - 4) << (8 * (n - 4))), 0)
+    } else {
+        let mut x = 0u64;
+        for (i, &c) in b.iter().enumerate() {
+            x |= (c as u64) << (8 * i);
+        }
+        (x, 0)
+    }
+}
+
+/// 64-bit ID hash, never 0. Short IDs (the common case) take two 128-bit
+/// multiplies; longer ones use xxh3.
+#[inline(always)]
 fn h64(b: &[u8]) -> u64 {
-    let h = xxh3_64(b);
+    let h = if b.len() <= 16 {
+        let (x, y) = words16(b);
+        let l = b.len() as u64;
+        mum(x ^ 0xa076_1d64_78bd_642f, y ^ 0xe703_7ed1_a0b4_28db ^ (l << 56))
+            ^ mum(y ^ 0x8ebc_6af0_9c88_c6e3, x ^ 0x5899_65cc_7537_4cc3 ^ l).rotate_left(32)
+    } else {
+        xxh3_64(b)
+    };
     if h == 0 { 1 } else { h }
+}
+
+/// (hash, independent 32-bit check) of an event_id.
+#[inline(always)]
+fn h64_chk(b: &[u8]) -> (u64, u32) {
+    if b.len() <= 16 {
+        let (x, y) = words16(b);
+        let l = b.len() as u64;
+        let h = mum(x ^ 0xa076_1d64_78bd_642f, y ^ 0xe703_7ed1_a0b4_28db ^ (l << 56))
+            ^ mum(y ^ 0x8ebc_6af0_9c88_c6e3, x ^ 0x5899_65cc_7537_4cc3 ^ l).rotate_left(32);
+        let c = mum(x ^ 0x1d8e_4e27_c47d_124f, y ^ 0x9e37_79b9_7f4a_7c15 ^ l);
+        (if h == 0 { 1 } else { h }, (c >> 32) as u32)
+    } else {
+        (h64(b), xxh3_64_with_seed(b, 0x51_7C_C1_B7) as u32)
+    }
 }
 
 // ---------------------------------------------------------------- hash map u64 -> u64 (keys already hashed, never 0)
@@ -86,15 +138,6 @@ impl U64Map {
     #[inline(always)]
     fn slot(&self, k: u64) -> usize {
         (k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 20) as usize & self.mask
-    }
-    #[inline(always)]
-    fn prefetch(&self, k: u64) {
-        let i = self.slot(k);
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-            _mm_prefetch(self.slots.as_ptr().add(i) as *const i8, _MM_HINT_T0);
-        }
     }
     /// returns (slot index, existed)
     fn insert_or_get(&mut self, k: u64, v: u64) -> (usize, bool) {
@@ -172,7 +215,8 @@ fn open_all(data: &Path) -> Inputs {
                 // mmap of an empty file fails on some systems: map an anonymous empty region.
                 memmap2::MmapOptions::new().len(1).map_anon().unwrap().make_read_only().unwrap()
             } else {
-                unsafe { memmap2::MmapOptions::new().populate().map(&f) }.unwrap()
+                // no MAP_POPULATE: page-table work is spread over the workers
+                unsafe { memmap2::MmapOptions::new().map(&f) }.unwrap()
             }
         })
         .collect();
@@ -602,9 +646,81 @@ const LINKED: u64 = 1 << 63;
 /// key is its own hash with the top bit cleared.
 struct Persons {
     /// user hash -> person key, for every linked ID
-    map: U64Map,
+    map: PersonMap,
     /// component index -> ref of its byte-wise smallest ID
     names: Vec<u64>,
+}
+
+/// Open addressing keyed by the hash's top bits, built from keys sorted by hash
+/// (so construction is one streaming pass), with a 1-bit-per-slot filter that
+/// answers most "not linked" lookups from a few MiB.
+struct PersonMap {
+    shift: u32,
+    slots: Vec<Slot>,
+    filter: Vec<u64>,
+    fmask: u64,
+}
+
+impl PersonMap {
+    /// `sorted` must be sorted by key and contain distinct, non-zero keys.
+    fn build(sorted: &[(u64, u64)]) -> Self {
+        let n = sorted.len().max(1);
+        let bits = ((n + n / 3).next_power_of_two().max(64)).trailing_zeros();
+        let cap = 1usize << bits;
+        let mut slots = vec![Slot::default(); cap + 64];
+        let mut next = 0usize;
+        for &(k, v) in sorted {
+            let home = (k >> (64 - bits)) as usize;
+            let at = home.max(next);
+            if at >= slots.len() {
+                slots.resize(at + 64, Slot::default());
+            }
+            slots[at] = Slot { key: k, val: v };
+            next = at + 1;
+        }
+        let fbits = ((n * 24).next_power_of_two().max(1 << 12)) as u64;
+        let mut filter = vec![0u64; (fbits / 64) as usize];
+        let fmask = fbits - 1;
+        for &(k, _) in sorted {
+            let i = k & fmask;
+            filter[(i >> 6) as usize] |= 1 << (i & 63);
+        }
+        PersonMap { shift: 64 - bits, slots, filter, fmask }
+    }
+    #[inline(always)]
+    fn maybe(&self, k: u64) -> bool {
+        let i = k & self.fmask;
+        unsafe { (*self.filter.get_unchecked((i >> 6) as usize) >> (i & 63)) & 1 != 0 }
+    }
+    #[inline(always)]
+    fn prefetch(&self, k: u64) {
+        if self.maybe(k) {
+            let i = (k >> self.shift) as usize;
+            #[cfg(target_arch = "x86_64")]
+            unsafe {
+                use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+                _mm_prefetch(self.slots.as_ptr().add(i) as *const i8, _MM_HINT_T0);
+            }
+        }
+    }
+    #[inline(always)]
+    fn get(&self, k: u64) -> Option<u64> {
+        if !self.maybe(k) {
+            return None;
+        }
+        let mut i = (k >> self.shift) as usize;
+        loop {
+            let sl = unsafe { self.slots.get_unchecked(i) };
+            if sl.key == k {
+                return Some(sl.val);
+            }
+            // keys sit in sorted order: an empty slot or a larger key ends the run
+            if sl.key == 0 || sl.key > k {
+                return None;
+            }
+            i += 1;
+        }
+    }
 }
 
 #[inline(always)]
@@ -617,9 +733,31 @@ fn person_bucket(key: u64) -> usize {
     (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - P2_BITS)) as usize
 }
 
+/// Big-endian first 16 bytes and length: compares like the full byte string
+/// whenever the prefixes differ or both strings are at most 16 bytes.
+#[inline(always)]
+fn name_key(b: &[u8]) -> (u128, u32) {
+    let mut buf = [0u8; 16];
+    let n = b.len().min(16);
+    buf[..n].copy_from_slice(&b[..n]);
+    (u128::from_be_bytes(buf), b.len() as u32)
+}
+
+#[inline(always)]
+fn name_less(a: (u128, u32, u64), b: (u128, u32, u64)) -> bool {
+    if a.0 != b.0 {
+        return a.0 < b.0;
+    }
+    if a.1 <= 16 && b.1 <= 16 {
+        return a.1 < b.1;
+    }
+    deref(a.2) < deref(b.2)
+}
+
 fn links(inp: &Inputs) -> Persons {
     let units = chunks(&inp.links);
-    let pairs: Vec<Vec<(u64, u64, u64, u64)>> = units
+    // endpoints of every valid link line, in line order: (hash, ref)
+    let ends: Vec<Vec<(u64, u64)>> = units
         .par_iter()
         .map(|&(f, s, e)| {
             let mut v = Vec::new();
@@ -628,23 +766,25 @@ fn links(inp: &Inputs) -> Persons {
                     let (a0, a1) = (fs[0].0 as usize, fs[0].1 as usize);
                     let (b0, b1) = (fs[1].0 as usize, fs[1].1 as usize);
                     if a1 > a0 && b1 > b0 {
-                        v.push((
-                            h64(&line[a0..a1]),
-                            mkref(f, p + a0, a1 - a0),
-                            h64(&line[b0..b1]),
-                            mkref(f, p + b0, b1 - b0),
-                        ));
+                        v.push((h64(&line[a0..a1]), mkref(f, p + a0, a1 - a0)));
+                        v.push((h64(&line[b0..b1]), mkref(f, p + b0, b1 - b0)));
                     }
                 }
             });
             v
         })
         .collect();
-    let total: usize = pairs.iter().map(|v| v.len()).sum();
-    let mut index = U64Map::with_capacity(total * 2);
-    let mut parent: Vec<u32> = Vec::with_capacity(total);
-    let mut refs: Vec<u64> = Vec::with_capacity(total);
-    let mut hashes: Vec<u64> = Vec::with_capacity(total);
+    let ends: Vec<(u64, u64)> = ends.concat();
+    // dense ids: distinct hashes in sorted order
+    let mut uniq: Vec<(u64, u64)> = ends.clone();
+    uniq.par_sort_unstable_by_key(|x| x.0);
+    uniq.dedup_by_key(|x| x.0);
+    let n = uniq.len();
+    let id_of = |h: u64| uniq.binary_search_by_key(&h, |x| x.0).unwrap() as u32;
+    let edges: Vec<(u32, u32)> = ends.par_chunks(2).map(|c| (id_of(c[0].0), id_of(c[1].0))).collect();
+    drop(ends);
+    // union-find over the dense ids (small, cache resident)
+    let mut parent: Vec<u32> = (0..n as u32).collect();
     fn find(parent: &mut [u32], mut x: u32) -> u32 {
         while parent[x as usize] != x {
             let g = parent[parent[x as usize] as usize];
@@ -653,50 +793,48 @@ fn links(inp: &Inputs) -> Persons {
         }
         x
     }
-    let mut intern = |h: u64, r: u64, parent: &mut Vec<u32>| -> u32 {
-        let id = parent.len() as u64;
-        let (slot, existed) = index.insert_or_get(h, id);
-        if existed {
-            index.slots[slot].val as u32
-        } else {
-            parent.push(id as u32);
-            refs.push(r);
-            hashes.push(h);
-            id as u32
-        }
-    };
-    for v in &pairs {
-        for &(ha, ra, hb, rb) in v {
-            let a = intern(ha, ra, &mut parent);
-            let b = intern(hb, rb, &mut parent);
-            let (x, y) = (find(&mut parent, a), find(&mut parent, b));
-            if x != y {
-                if x < y {
-                    parent[y as usize] = x;
-                } else {
-                    parent[x as usize] = y;
-                }
+    for &(a, b) in &edges {
+        let (x, y) = (find(&mut parent, a), find(&mut parent, b));
+        if x != y {
+            if x < y {
+                parent[y as usize] = x;
+            } else {
+                parent[x as usize] = y;
             }
         }
     }
-    let n = parent.len();
-    // component index per root, smallest name per component
+    for i in 0..n {
+        let r = find(&mut parent, i as u32);
+        parent[i] = r;
+    }
+    // smallest name per component, from cached prefixes
+    let keys: Vec<(u128, u32, u64)> = uniq
+        .par_iter()
+        .map(|&(_, r)| {
+            let (k, l) = name_key(deref(r));
+            (k, l, r)
+        })
+        .collect();
+    let mut best: Vec<u32> = (0..n as u32).collect();
+    for i in 0..n {
+        let r = parent[i] as usize;
+        if name_less(keys[i], keys[best[r] as usize]) {
+            best[r] = i as u32;
+        }
+    }
     let mut comp: Vec<u32> = vec![u32::MAX; n];
     let mut names: Vec<u64> = Vec::new();
-    let mut map = U64Map::with_capacity(n);
+    let mut entries: Vec<(u64, u64)> = Vec::with_capacity(n);
     for i in 0..n {
-        let r = find(&mut parent, i as u32) as usize;
+        let r = parent[i] as usize;
         if comp[r] == u32::MAX {
             comp[r] = names.len() as u32;
-            names.push(refs[r]);
+            names.push(keys[best[r] as usize].2);
         }
-        let c = comp[r] as usize;
-        if deref(refs[i]) < deref(names[c]) {
-            names[c] = refs[i];
-        }
-        map.insert_or_get(hashes[i], LINKED | c as u64);
+        entries.push((uniq[i].0, LINKED | comp[r] as u64));
     }
-    Persons { map, names }
+    // `uniq` is sorted by hash, so `entries` is too
+    Persons { map: PersonMap::build(&entries), names }
 }
 
 // ---------------------------------------------------------------- records
@@ -777,13 +915,14 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
                     return;
                 }
                 let ingest_ms = timestamp(fld(3)).unwrap_or(i64::MAX / 2);
+                let (eid_h, eid_c) = h64_chk(eid);
                 let mut ev = Ev1 {
-                    eid: h64(eid),
+                    eid: eid_h,
                     user: 0,
                     uref: 0,
                     ts: INVALID,
                     ingest: (ingest_ms.div_euclid(1000)).clamp(0, u32::MAX as i64) as u32,
-                    chk: xxh3_64_with_seed(eid, 0x51_7C_C1_B7) as u32,
+                    chk: eid_c,
                     pc: 0,
                 };
                 'valid: {
@@ -1013,8 +1152,10 @@ pub struct UserRow {
 
 pub struct Agg {
     pub rows: Vec<UserRow>,
-    /// [(camp) * ndays + day] -> sessions, purchasing, revenue, assisted
-    pub camp: Vec<[i64; 4]>,
+    /// [day * (ncamp + 1) + camp] -> sessions, purchasing, revenue (credited)
+    pub credit: Vec<[i64; 3]>,
+    /// [day * (ncamp + 1) + camp] -> assisted sessions
+    pub assist: Vec<u32>,
 }
 
 struct Ctx<'a> {
@@ -1251,14 +1392,16 @@ fn person_sessions(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut S
         } else {
             ctx.ncamp
         };
-        let slot = &mut agg.camp[credit * ctx.ndays + du];
+        let row = du * (ctx.ncamp + 1);
+        let slot = &mut agg.credit[row + credit];
         slot[0] += 1;
         if purch {
             slot[1] += 1;
             slot[2] += rev;
         }
+        let arow = &mut agg.assist[row..row + ctx.ncamp + 1];
         for &c in &sc.active {
-            agg.camp[c as usize * ctx.ndays + du][3] += 1;
+            arow[c as usize] += 1;
         }
         d_sess += 1;
         d_evs += n;
@@ -1356,25 +1499,32 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let ncamp = lk.campaign_names.len();
     assert!(we - ws < u32::MAX as i64, "window too long");
     let ctx = Ctx { ndays, ncamp, ncat: lk.categories.len(), ws, ws_day, persons: &persons };
-    let aggs: Vec<Agg> = (0..P2)
-        .into_par_iter()
-        .fold(
-            || (Agg { rows: Vec::new(), camp: vec![[0i64; 4]; (ncamp + 1) * ndays] }, Scratch::new(ncamp)),
-            |(mut agg, mut sc), b| {
-                sc.ev_src.clear();
-                sc.ck_src.clear();
-                for (v, off) in &ev_scattered {
-                    sc.ev_src.push(&v[off[b] as usize..off[b + 1] as usize]);
-                }
-                for (v, off) in &ck_parts {
-                    sc.ck_src.push(&v[off[b] as usize..off[b + 1] as usize]);
-                }
-                process_bucket(&ctx, &mut agg, &mut sc);
-                (agg, sc)
-            },
-        )
-        .map(|(agg, _)| agg)
+    // exactly one accumulator per worker thread (rayon's fold would create one
+    // per split: hundreds of 0.8 MB counter arrays and output files at 8 threads)
+    let nthreads = rayon::current_num_threads();
+    let states: Vec<std::sync::Mutex<(Agg, Scratch)>> = (0..nthreads)
+        .map(|_| {
+            std::sync::Mutex::new((
+                Agg { rows: Vec::new(), credit: vec![[0i64; 3]; (ncamp + 1) * ndays], assist: vec![0u32; (ncamp + 1) * ndays] },
+                Scratch::new(ncamp),
+            ))
+        })
         .collect();
+    (0..P2).into_par_iter().for_each(|b| {
+        let i = rayon::current_thread_index().unwrap_or(0) % nthreads;
+        let mut guard = states[i].lock().unwrap();
+        let (agg, sc) = &mut *guard;
+        sc.ev_src.clear();
+        sc.ck_src.clear();
+        for (v, off) in &ev_scattered {
+            sc.ev_src.push(&v[off[b] as usize..off[b + 1] as usize]);
+        }
+        for (v, off) in &ck_parts {
+            sc.ck_src.push(&v[off[b] as usize..off[b + 1] as usize]);
+        }
+        process_bucket(&ctx, agg, sc);
+    });
+    let aggs: Vec<Agg> = states.into_iter().map(|m| m.into_inner().unwrap().0).collect();
     lap("sessionized");
     output::write(out, aggs, &lk, &ctx_info(&ctx, &lk));
     lap("written");
@@ -1419,5 +1569,121 @@ mod tests {
             }
             assert_eq!(prefix_xor(v), r);
         }
+    }
+}
+
+#[cfg(test)]
+mod tok_tests {
+    use super::*;
+
+    fn install(bytes: &[u8]) {
+        let mut m = memmap2::MmapMut::map_anon(bytes.len().max(1)).unwrap();
+        m[..bytes.len()].copy_from_slice(bytes);
+        let maps = vec![m.make_read_only().unwrap()];
+        FILES.store(Box::into_raw(Box::new(maps)), Ordering::Release);
+        LENS.store(Box::into_raw(Box::new(vec![bytes.len()])), Ordering::Release);
+    }
+
+    fn naive<const N: usize>(d: &[u8]) -> Vec<(usize, Option<Vec<(u32, u32)>>)> {
+        let mut out = Vec::new();
+        let mut p = match d.iter().position(|&c| c == b'\n') {
+            Some(i) => i + 1,
+            None => return out,
+        };
+        while p < d.len() {
+            let end = d[p..].iter().position(|&c| c == b'\n').map_or(d.len(), |i| p + i);
+            out.push((p, split::<N>(&d[p..end]).map(|f| f.to_vec())));
+            p = end + 1;
+        }
+        out
+    }
+
+    #[test]
+    fn tokenizer_matches_scalar() {
+        let mut x: u64 = 0x1234_5678;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let alpha = b"ab,,,\"\"\n\r xy0123456789";
+        for round in 0..3040 {
+            let big = round >= 3000;
+            let len = if big { 300_000 + (rnd() % 300_000) as usize } else { (rnd() % 3000) as usize + 1 };
+            let mut d: Vec<u8> = b"h1,h2,h3,h4\n".to_vec();
+            for _ in 0..len {
+                // mostly well-formed-ish lines
+                let r = rnd() % 100;
+                let mut c = if r < 70 { b"abcd"[(rnd() % 4) as usize] } else { alpha[(rnd() as usize) % alpha.len()] };
+                if big && c == b'\n' && rnd() % 64 != 0 {
+                    c = b'z'; // long lines, some past the 2 KiB look-ahead
+                }
+                d.push(c);
+            }
+            if round % 3 == 0 {
+                d.push(b'\n');
+            }
+            install(&d);
+            let want = naive::<4>(&d);
+            // random partition into units
+            let n = d.len();
+            let mut cuts: Vec<usize> = (0..(rnd() % 6)).map(|_| (rnd() as usize) % n).collect();
+            cuts.push(0);
+            cuts.push(n);
+            cuts.sort();
+            cuts.dedup();
+            let mut got = Vec::new();
+            for w in cuts.windows(2) {
+                for_records::<4>(0, w[0], w[1], |p, _line, fs| got.push((p, fs.map(|f| f.to_vec()))));
+            }
+            assert_eq!(got, want, "round {round}: {:?}", String::from_utf8_lossy(&d));
+        }
+    }
+}
+
+#[cfg(test)]
+mod hash_tests {
+    use super::*;
+    #[test]
+    fn words16_matches_copy() {
+        let src: Vec<u8> = (0u8..40).map(|i| i.wrapping_mul(37).wrapping_add(1)).collect();
+        for a in 0..20 {
+            for n in 0..=16 {
+                let b = &src[a..a + n];
+                let mut buf = [0u8; 16];
+                buf[..n].copy_from_slice(b);
+                let want = (u64::from_le_bytes(buf[..8].try_into().unwrap()), u64::from_le_bytes(buf[8..].try_into().unwrap()));
+                assert_eq!(words16(b), want, "a={a} n={n}");
+            }
+        }
+    }
+    #[test]
+    fn no_collisions_on_generator_like_ids() {
+        let mut seen = std::collections::HashSet::new();
+        let mut seen_full = std::collections::HashSet::new();
+        let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
+        for prefix in [b'u', b'e', b'k'] {
+            for i in 0..2_000_000u64 {
+                let mut v = (i.wrapping_mul(0x9E37_79B9_7F4B) ^ 0x5DEECE66D) & ((1 << 40) - 1);
+                let mut id = vec![prefix];
+                let mut tmp = Vec::new();
+                loop {
+                    tmp.push(digits[(v % 36) as usize]);
+                    v /= 36;
+                    if v == 0 {
+                        break;
+                    }
+                }
+                tmp.reverse();
+                id.extend(tmp);
+                assert!(seen.insert(h64(&id)), "64-bit collision at {i}");
+                assert!(seen_full.insert(h64_chk(&id)));
+            }
+        }
+        // short and empty-ish edge cases are all distinct
+        let edge: Vec<&[u8]> = vec![b"", b"\0", b"\0\0", b"a", b"a\0", b"0123456789abcdef", b"0123456789abcdeF"];
+        let hs: std::collections::HashSet<u64> = edge.iter().map(|e| h64(e)).collect();
+        assert_eq!(hs.len(), edge.len());
     }
 }

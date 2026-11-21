@@ -74,8 +74,8 @@ for folder, ts_cols in (("events", {2, 3}), ("clicks", {3}), ("links", set())):
         body = "\n".join(out)
         if rng.random() < 0.5:
             body += "\n"
-        if rng.random() < 0.1 and len(out) > 1:
-            body += "\r\n"
+        if folder != "clicks" and rng.random() < 0.1 and len(out) > 1:
+            body += "\r\n"  # click copies must stay identical (rules.md)
         with open(p, "w", encoding="utf-8", newline="") as fh:
             fh.write(body)
 # a CRLF file and an empty (0-byte) file

@@ -62,7 +62,7 @@ fn d2(b: &[u8], i: usize) -> Option<i64> {
     Some((a as i64) * 10 + c as i64)
 }
 
-pub fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+pub const fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = year.div_euclid(400);
     let yoe = year - era * 400;
@@ -71,7 +71,7 @@ pub fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 }
 
 #[inline(always)]
-fn days_in_month(y: i64, m: i64) -> i64 {
+const fn days_in_month(y: i64, m: i64) -> i64 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
@@ -88,28 +88,34 @@ fn days_in_month(y: i64, m: i64) -> i64 {
 const Y0: i64 = 1900;
 const YN: usize = 400;
 
-/// Days since epoch at the first of each month for years Y0..Y0+YN, and month lengths.
-struct Cal {
-    month_start: Vec<i32>,
-    month_len: Vec<u8>,
-}
-
-static CAL: std::sync::LazyLock<Cal> = std::sync::LazyLock::new(|| {
-    let mut month_start = Vec::with_capacity(YN * 16);
-    let mut month_len = Vec::with_capacity(YN * 16);
-    for y in 0..YN as i64 {
-        for m in 0..16i64 {
-            if (1..=12).contains(&m) {
-                month_start.push(days_from_civil(Y0 + y, m, 1) as i32);
-                month_len.push(days_in_month(Y0 + y, m) as u8);
-            } else {
-                month_start.push(0);
-                month_len.push(0); // month 0, 13..15: no valid day
-            }
+/// Days since epoch at the first of each month (index year * 16 + month) for
+/// years Y0..Y0+YN, and month lengths; months 0 and 13..15 have length 0.
+const MONTH_START: [i32; YN * 16] = {
+    let mut t = [0i32; YN * 16];
+    let mut y = 0;
+    while y < YN {
+        let mut m = 1;
+        while m <= 12 {
+            t[y * 16 + m] = days_from_civil(Y0 + y as i64, m as i64, 1) as i32;
+            m += 1;
         }
+        y += 1;
     }
-    Cal { month_start, month_len }
-});
+    t
+};
+const MONTH_LEN: [u8; YN * 16] = {
+    let mut t = [0u8; YN * 16];
+    let mut y = 0;
+    while y < YN {
+        let mut m = 1;
+        while m <= 12 {
+            t[y * 16 + m] = days_in_month(Y0 + y as i64, m as i64) as u8;
+            m += 1;
+        }
+        y += 1;
+    }
+    t
+};
 
 /// Reference version of `civil19` (kept for the equivalence test).
 #[allow(dead_code)]
@@ -134,11 +140,10 @@ fn civil19_slow(b: &[u8]) -> Option<i64> {
     }
     let days = if (Y0..Y0 + YN as i64).contains(&y) {
         let i = (y - Y0) as usize * 16 + mo;
-        let cal = &*CAL;
-        if day > cal.month_len[i] as u32 {
+        if day > MONTH_LEN[i] as u32 {
             return None;
         }
-        cal.month_start[i] as i64 + day as i64 - 1
+        MONTH_START[i] as i64 + day as i64 - 1
     } else {
         if !(1..=12).contains(&(mo as i64)) || day as i64 > days_in_month(y, mo as i64) {
             return None;
@@ -197,12 +202,11 @@ fn civil19(b: &[u8]) -> Option<i64> {
         return None;
     }
     let i = (y as i64 - Y0) as usize * 16 + mo;
-    let cal = &*CAL;
     let days = if (y as i64) >= Y0 && (y as i64) < Y0 + YN as i64 {
-        if day > cal.month_len[i] as u32 {
+        if day > MONTH_LEN[i] as u32 {
             return None;
         }
-        cal.month_start[i] as i64 + day as i64 - 1
+        MONTH_START[i] as i64 + day as i64 - 1
     } else {
         if mo == 0 || day as i64 > days_in_month(y as i64, mo as i64) {
             return None;
