@@ -756,6 +756,42 @@ impl EvChunk {
     }
 }
 
+
+/// Software write-combining: accumulate 8 event copies per hash partition in
+/// a small hot staging array, then copy contiguous runs into partition slabs.
+/// All bytes written to the slab are initialized by this function.
+#[inline(always)]
+fn flush_event_stage(
+    b: usize,
+    cap: usize,
+    stage: &[std::mem::MaybeUninit<Ev1>],
+    fill: &mut [u8],
+    data: &mut Vec<Ev1>,
+    len: &mut [u32],
+    overflow: &mut [Vec<Ev1>],
+) {
+    const STAGE: usize = 8;
+    let count = fill[b] as usize;
+    if count == 0 { return; }
+    let at = len[b] as usize;
+    let room = cap - at;
+    let fit = room.min(count);
+    if fit != 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                stage.as_ptr().add(b * STAGE) as *const Ev1,
+                data.as_mut_ptr().add(b * cap + at),
+                fit,
+            );
+        }
+        len[b] += fit as u32;
+    }
+    for j in fit..count {
+        overflow[b].push(unsafe { stage[b * STAGE + j].assume_init_read() });
+    }
+    fill[b] = 0;
+}
+
 fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64) -> Vec<EvChunk> {
     units
         .par_iter()
@@ -769,6 +805,10 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
             }
             let mut len = vec![0u32; P1];
             let mut overflow: Vec<Vec<Ev1>> = (0..P1).map(|_| Vec::new()).collect();
+            const STAGE: usize = 8;
+            let mut stage = vec![std::mem::MaybeUninit::<Ev1>::uninit(); P1 * STAGE];
+            let mut fill = vec![0u8; P1];
+
             for_records::<7>(f, s, e, |p, line, fs| {
                 let Some(fs) = fs else { return };
                 let fld = |i: usize| unsafe { line.get_unchecked(fs[i].0 as usize..fs[i].1 as usize) };
@@ -814,14 +854,18 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
                     ev.pc = pc;
                 }
                 let b = (ev.eid >> (64 - P1_BITS)) as usize;
-                let l = unsafe { len.get_unchecked_mut(b) };
-                if (*l as usize) < cap {
-                    unsafe { *data.get_unchecked_mut(b * cap + *l as usize) = ev };
-                    *l += 1;
-                } else {
-                    overflow[b].push(ev);
+                let n = fill[b] as usize;
+                stage[b * STAGE + n].write(ev);
+                fill[b] += 1;
+                if fill[b] as usize == STAGE {
+                    flush_event_stage(b, cap, &stage, &mut fill, &mut data, &mut len, &mut overflow);
                 }
             });
+            for b in 0..P1 {
+                if fill[b] != 0 {
+                    flush_event_stage(b, cap, &stage, &mut fill, &mut data, &mut len, &mut overflow);
+                }
+            }
             EvChunk { data, cap, len, overflow }
         })
         .collect()
