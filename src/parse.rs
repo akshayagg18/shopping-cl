@@ -111,9 +111,9 @@ static CAL: std::sync::LazyLock<Cal> = std::sync::LazyLock::new(|| {
     Cal { month_start, month_len }
 });
 
-/// F1/F2 calendar part `YYYY-MM-DDTHH:MM:SS` (first 19 bytes) -> epoch ms (UTC, no offset).
-#[inline(always)]
-fn civil19(b: &[u8]) -> Option<i64> {
+/// Reference version of `civil19` (kept for the equivalence test).
+#[allow(dead_code)]
+fn civil19_slow(b: &[u8]) -> Option<i64> {
     let g = |i: usize| unsafe { b.get_unchecked(i).wrapping_sub(b'0') } as u32;
     let d = [g(0), g(1), g(2), g(3), g(5), g(6), g(8), g(9), g(11), g(12), g(14), g(15), g(17), g(18)];
     let mut bad = 0u32;
@@ -144,6 +144,70 @@ fn civil19(b: &[u8]) -> Option<i64> {
             return None;
         }
         days_from_civil(y, mo as i64, day as i64)
+    };
+    Some((days * 86_400 + (h * 3_600 + mi * 60 + sec) as i64) * 1_000)
+}
+
+#[inline(always)]
+fn le64(b: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(b[at..at + 8].try_into().unwrap())
+}
+
+/// Bytes that are digits (per `mask`) -> 0..=9; None if any is not an ASCII digit.
+#[inline(always)]
+fn digits(w: u64, mask: u64) -> (u64, bool) {
+    let t = w ^ 0x3030_3030_3030_3030;
+    let bad = (t | t.wrapping_add(0x0606_0606_0606_0606)) & 0xF0F0_F0F0_F0F0_F0F0 & mask;
+    (t & mask, bad != 0)
+}
+
+#[inline(always)]
+fn pairs(t: u64) -> u64 {
+    // byte i -> 10 * t_i + t_{i+1}; inputs are 0..=9 so no byte overflows
+    t.wrapping_mul(10).wrapping_add(t >> 8)
+}
+
+/// F1/F2 calendar part `YYYY-MM-DDTHH:MM:SS` (first 19 of >= 20 bytes) -> epoch ms (UTC).
+#[inline(always)]
+fn civil19(b: &[u8]) -> Option<i64> {
+    debug_assert!(b.len() >= 20);
+    let w0 = le64(b, 0); // YYYY-MM-
+    let w1 = le64(b, 8); // DDTHH:MM
+    let w2 = u32::from_le_bytes(b[16..20].try_into().unwrap()) as u64; // :SS?
+    // separators: '-' at 4 and 7, 'T' at 10, ':' at 13 and 16
+    let sep_bad = ((w0 & 0xFF00_00FF_0000_0000) ^ 0x2D00_002D_0000_0000)
+        | ((w1 & 0x0000_FF00_00FF_0000) ^ 0x0000_3A00_0054_0000)
+        | ((w2 & 0xFF) ^ 0x3A);
+    let (t0, b0) = digits(w0, 0x00FF_FF00_FFFF_FFFF);
+    let (t1, b1) = digits(w1, 0xFFFF_00FF_FF00_FFFF);
+    let (t2, b2) = digits(w2, 0x0000_0000_00FF_FF00);
+    if sep_bad != 0 || b0 | b1 | b2 {
+        return None;
+    }
+    let p0 = pairs(t0);
+    let p1 = pairs(t1);
+    let p2 = pairs(t2);
+    let y = (p0 & 0xFF) * 100 + ((p0 >> 16) & 0xFF);
+    let mo = ((p0 >> 40) & 0xFF) as usize;
+    let day = (p1 & 0xFF) as u32;
+    let h = (p1 >> 24) & 0xFF;
+    let mi = (p1 >> 48) & 0xFF;
+    let sec = (p2 >> 8) & 0xFF;
+    if h > 23 || mi > 59 || sec > 59 || mo > 12 || day == 0 {
+        return None;
+    }
+    let i = (y as i64 - Y0) as usize * 16 + mo;
+    let cal = &*CAL;
+    let days = if (y as i64) >= Y0 && (y as i64) < Y0 + YN as i64 {
+        if day > cal.month_len[i] as u32 {
+            return None;
+        }
+        cal.month_start[i] as i64 + day as i64 - 1
+    } else {
+        if mo == 0 || day as i64 > days_in_month(y as i64, mo as i64) {
+            return None;
+        }
+        days_from_civil(y as i64, mo as i64, day as i64)
     };
     Some((days * 86_400 + (h * 3_600 + mi * 60 + sec) as i64) * 1_000)
 }
@@ -267,6 +331,58 @@ mod tests {
             assert_eq!(timestamp(s.as_bytes()), Some(v.min(i64::MAX as u64) as i64), "{s}");
         }
     }
+    #[test]
+    fn civil_fast_matches_slow() {
+        let mut x: u64 = 0x1234_5678_9abc_def1;
+        let mut rnd = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let alphabet = b"0123456789-T:Z+tz 9\xff";
+        let bases: [&[u8]; 6] = [
+            b"2026-10-03T23:58:10Z",
+            b"2028-02-29T00:00:00Z",
+            b"1999-12-31T23:59:59Z",
+            b"2027-02-28T12:30:45+05:30",
+            b"0000-01-01T00:00:00Z",
+            b"9999-12-31T23:59:59Z",
+        ];
+        for _ in 0..2_000_000 {
+            let base = bases[(rnd() % 6) as usize];
+            let mut v = base.to_vec();
+            let muts = rnd() % 4;
+            for _ in 0..muts {
+                let i = (rnd() as usize) % v.len();
+                v[i] = alphabet[(rnd() as usize) % alphabet.len()];
+            }
+            if v.len() >= 20 {
+                assert_eq!(civil19(&v), civil19_slow(&v), "{:?}", String::from_utf8_lossy(&v));
+            }
+        }
+        // every day of 1990..2100 round-trips
+        for d in days_from_civil(1990, 1, 1)..days_from_civil(2100, 1, 1) {
+            let ms = d * 86_400_000 + 3_723_000;
+            let mut y = 1970;
+            let _ = &mut y;
+            let s = {
+                let days = d;
+                let z = days + 719_468;
+                let era = z.div_euclid(146_097);
+                let doe = z - era * 146_097;
+                let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+                let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+                let mp = (5 * doy + 2) / 153;
+                let dd = doy - (153 * mp + 2) / 5 + 1;
+                let mm = if mp < 10 { mp + 3 } else { mp - 9 };
+                let yy = yoe + era * 400 + (mm <= 2) as i64;
+                format!("{yy:04}-{mm:02}-{dd:02}T01:02:03Z")
+            };
+            assert_eq!(timestamp(s.as_bytes()), Some(ms), "{s}");
+        }
+    }
+
     #[test]
     fn splitting() {
         let l = b"a,\"b\",,\"\"";

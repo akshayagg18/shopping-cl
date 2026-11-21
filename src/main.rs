@@ -11,6 +11,7 @@
 //!   5. Parquet files written in parallel.
 
 mod alloc;
+mod diag;
 mod output;
 mod parse;
 
@@ -19,7 +20,7 @@ static GLOBAL: alloc::HugeAlloc = alloc::HugeAlloc;
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -37,7 +38,10 @@ const CLICK_REACH: i64 = 7 * DAY_MS;
 
 // ---------------------------------------------------------------- file refs
 
-static FILES: OnceLock<Vec<Mmap>> = OnceLock::new();
+/// Input mappings of the current run (leaked so refs stay 'static; one run per process,
+/// or a few in diagnostic mode).
+static FILES: AtomicPtr<Vec<Mmap>> = AtomicPtr::new(std::ptr::null_mut());
+static LENS: AtomicPtr<Vec<usize>> = AtomicPtr::new(std::ptr::null_mut());
 
 /// file:12 | offset:36 | len:16
 #[inline(always)]
@@ -47,7 +51,7 @@ fn mkref(file: usize, off: usize, len: usize) -> u64 {
 
 #[inline(always)]
 fn deref(r: u64) -> &'static [u8] {
-    let files = FILES.get().unwrap();
+    let files = unsafe { &*FILES.load(Ordering::Relaxed) };
     let f = (r >> 52) as usize;
     let off = ((r >> 16) & ((1u64 << 36) - 1)) as usize;
     let len = (r & 0xFFFF) as usize;
@@ -177,8 +181,8 @@ fn open_all(data: &Path) -> Inputs {
         .iter()
         .map(|p| std::fs::metadata(p).map(|m| m.len() as usize).unwrap_or(0))
         .collect();
-    FILES.set(maps).ok();
-    LENS.set(lens).ok();
+    FILES.store(Box::into_raw(Box::new(maps)), Ordering::Release);
+    LENS.store(Box::into_raw(Box::new(lens)), Ordering::Release);
 
     let manifest = std::fs::read_to_string(data.join("manifest.json")).expect("manifest.json");
     let field = |key: &str| -> i64 {
@@ -196,12 +200,12 @@ fn open_all(data: &Path) -> Inputs {
     Inputs { events, clicks, links, products, campaigns, window_start, window_end }
 }
 
-static LENS: OnceLock<Vec<usize>> = OnceLock::new();
 
 #[inline(always)]
 fn file_bytes(f: usize) -> &'static [u8] {
-    let len = LENS.get().unwrap()[f];
-    &FILES.get().unwrap()[f][..len]
+    let lens: &'static Vec<usize> = unsafe { &*LENS.load(Ordering::Relaxed) };
+    let files: &'static Vec<Mmap> = unsafe { &*FILES.load(Ordering::Relaxed) };
+    &files[f][..lens[f]]
 }
 
 /// Line-aligned work units: (file, start, end). A line belongs to the unit
@@ -399,15 +403,31 @@ thread_local! {
 }
 
 #[inline(always)]
-fn prefix_xor(mut x: u128) -> u128 {
-    x ^= x << 1;
-    x ^= x << 2;
-    x ^= x << 4;
-    x ^= x << 8;
-    x ^= x << 16;
-    x ^= x << 32;
-    x ^= x << 64;
-    x
+fn prefix_xor64(x: u64) -> u64 {
+    #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+    unsafe {
+        use std::arch::x86_64::*;
+        let v = _mm_clmulepi64_si128(_mm_set_epi64x(0, x as i64), _mm_set1_epi8(-1), 0);
+        _mm_cvtsi128_si64(v) as u64
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "pclmulqdq")))]
+    {
+        let mut x = x;
+        x ^= x << 1;
+        x ^= x << 2;
+        x ^= x << 4;
+        x ^= x << 8;
+        x ^= x << 16;
+        x ^= x << 32;
+        x
+    }
+}
+
+#[inline(always)]
+fn prefix_xor(x: u128) -> u128 {
+    let lo = prefix_xor64(x as u64);
+    let hi = prefix_xor64((x >> 64) as u64) ^ (0u64.wrapping_sub(lo >> 63));
+    (lo as u128) | ((hi as u128) << 64)
 }
 
 /// Fields of a line of `len` (< 128) bytes from its comma and quote masks.
@@ -741,7 +761,7 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
         .par_iter()
         .map(|&(f, s, e)| {
             // events lines are >= ~60 bytes; per-bucket room with slack
-            let cap = (e - s) / 60 / P1 * 5 / 4 + 16;
+            let cap = (e - s) / 64 / P1 * 9 / 8 + 24;
             let mut data: Vec<Ev1> = Vec::with_capacity(cap * P1);
             #[allow(clippy::uninit_vec)]
             unsafe {
@@ -836,31 +856,37 @@ fn by_bucket<T: Copy>(items: &[T], key: impl Fn(&T) -> usize, ks: &mut Vec<u16>)
 
 #[derive(Default)]
 struct DedupScratch {
-    all: Vec<Ev1>,
     table: Vec<u64>,
     keep: Vec<u8>,
     out: Vec<Ev2>,
     ks: Vec<u16>,
+    bases: Vec<usize>,
 }
 
 thread_local! {
     static DEDUP: std::cell::RefCell<DedupScratch> = std::cell::RefCell::new(DedupScratch::default());
 }
 
-/// Dedup one event_id bucket, map users to persons, bucket by person.
+/// Dedup one event_id bucket in place over the parse chunks, map users to
+/// persons, bucket by person.
 fn dedup_bucket(parts: &[EvChunk], b: usize, persons: &Persons) -> (Vec<Ev2>, Vec<u32>) {
     DEDUP.with(|cell| {
         let mut guard = cell.borrow_mut();
         let sc = &mut *guard;
-        let n: usize = parts.iter().map(|p| p.bucket_len(b)).sum();
-        sc.all.clear();
+        // global index g over (chunk main slice, chunk overflow) in order
+        sc.bases.clear();
+        let mut n = 0usize;
         for p in parts {
-            let (a, o) = p.bucket(b);
-            sc.all.extend_from_slice(a);
-            sc.all.extend_from_slice(o);
+            sc.bases.push(n);
+            n += p.bucket_len(b);
         }
-        let all = &sc.all;
-        // table entry: (eid high 32 bits) << 32 | index + 1; 0 = empty
+        let bases = &sc.bases;
+        let at = |g: usize| -> &Ev1 {
+            let c = bases.partition_point(|&x| x <= g) - 1;
+            let (m, o) = parts[c].bucket(b);
+            let i = g - bases[c];
+            if i < m.len() { &m[i] } else { &o[i - m.len()] }
+        };
         let cap = (n * 2).next_power_of_two().max(16);
         let mask = cap - 1;
         sc.table.clear();
@@ -868,59 +894,67 @@ fn dedup_bucket(parts: &[EvChunk], b: usize, persons: &Persons) -> (Vec<Ev2>, Ve
         sc.keep.clear();
         sc.keep.resize(n, 0);
         let (table, keep) = (&mut sc.table, &mut sc.keep);
-        for i in 0..n {
-            let e = unsafe { all.get_unchecked(i) };
-            let fp = e.eid >> 32;
-            let mut s = (e.eid as usize) & mask;
-            loop {
-                let t = unsafe { *table.get_unchecked(s) };
-                if t == 0 {
-                    table[s] = (fp << 32) | (i as u64 + 1);
-                    keep[i] = 1;
-                    break;
-                }
-                if t >> 32 == fp {
-                    let j = (t & 0xFFFF_FFFF) as usize - 1;
-                    let o = unsafe { all.get_unchecked(j) };
-                    if o.eid == e.eid && o.chk == e.chk {
-                        if e.ingest < o.ingest {
-                            table[s] = (fp << 32) | (i as u64 + 1);
-                            keep[j] = 0;
-                            keep[i] = 1;
-                        }
+        let mut g = 0usize;
+        for p in parts {
+            let (m, o) = p.bucket(b);
+            for e in m.iter().chain(o.iter()) {
+                let fp = e.eid >> 32;
+                let mut s = (e.eid as usize) & mask;
+                loop {
+                    let t = unsafe { *table.get_unchecked(s) };
+                    if t == 0 {
+                        table[s] = (fp << 32) | (g as u64 + 1);
+                        keep[g] = 1;
                         break;
                     }
+                    if t >> 32 == fp {
+                        let j = (t & 0xFFFF_FFFF) as usize - 1;
+                        let old = at(j);
+                        if old.eid == e.eid && old.chk == e.chk {
+                            if e.ingest < old.ingest {
+                                table[s] = (fp << 32) | (g as u64 + 1);
+                                keep[j] = 0;
+                                keep[g] = 1;
+                            }
+                            break;
+                        }
+                    }
+                    s = (s + 1) & mask;
                 }
-                s = (s + 1) & mask;
+                g += 1;
             }
         }
         const AHEAD: usize = 16;
         sc.out.clear();
         let out = &mut sc.out;
-        let mut pending: [u32; AHEAD] = [0; AHEAD];
-        let mut np = 0usize;
-        let emit = |i: usize, out: &mut Vec<Ev2>| {
-            let e = &all[i];
+        let mut ring: [*const Ev1; AHEAD] = [std::ptr::null(); AHEAD];
+        let mut head = 0usize;
+        let mut filled = 0usize;
+        let emit = |e: &Ev1, out: &mut Vec<Ev2>| {
             let key = persons.map.get(e.user).unwrap_or_else(|| unlinked_key(e.user));
             out.push(Ev2 { key, uref: e.uref, ts: e.ts, pc: e.pc });
         };
-        for i in 0..n {
-            if keep[i] != 0 && all[i].ts != INVALID {
-                persons.map.prefetch(all[i].user);
-                if np == AHEAD {
-                    // ring: emit the oldest
-                    let j = pending[0] as usize;
-                    pending.copy_within(1.., 0);
-                    pending[AHEAD - 1] = i as u32;
-                    emit(j, out);
-                } else {
-                    pending[np] = i as u32;
-                    np += 1;
+        let mut g = 0usize;
+        for p in parts {
+            let (m, o) = p.bucket(b);
+            for e in m.iter().chain(o.iter()) {
+                if keep[g] != 0 && e.ts != INVALID {
+                    persons.map.prefetch(e.user);
+                    if filled == AHEAD {
+                        emit(unsafe { &*ring[head] }, out);
+                    } else {
+                        filled += 1;
+                    }
+                    ring[head] = e as *const Ev1;
+                    head = (head + 1) % AHEAD;
                 }
+                g += 1;
             }
         }
-        for &j in &pending[..np] {
-            emit(j as usize, out);
+        // drain in insertion order
+        let start = if filled == AHEAD { head } else { 0 };
+        for k in 0..filled {
+            emit(unsafe { &*ring[(start + k) % AHEAD] }, out);
         }
         by_bucket(&sc.out, |e| person_bucket(e.key), &mut sc.ks)
     })
@@ -931,6 +965,7 @@ fn parse_clicks(units: &[(usize, usize, usize)], lk: &Lookups, persons: &Persons
     units
         .par_iter()
         .map(|&(f, s, e)| {
+            // key holds the user hash until the batched person lookup below
             let mut v: Vec<Ck> = Vec::with_capacity((e - s) / 40 + 16);
             for_records::<4>(f, s, e, |p, line, fs| {
                 let Some(fs) = fs else { return };
@@ -940,16 +975,25 @@ fn parse_clicks(units: &[(usize, usize, usize)], lk: &Lookups, persons: &Persons
                 if cid.is_empty() || user.is_empty() {
                     return;
                 }
-                let uh = h64(user);
-                persons.map.prefetch(uh);
                 let Some(ts) = timestamp(fld(3)) else { return };
                 if ts < lo || ts >= we {
                     return;
                 }
                 let Some(camp) = lk.campaigns.get(h64(fld(2))) else { return };
-                let key = persons.map.get(uh).unwrap_or_else(|| unlinked_key(uh));
-                v.push(Ck { key, cref: mkref(f, p + fs[0].0 as usize, cid.len()), ts: ts - ws, camp: camp as u32 });
+                v.push(Ck { key: h64(user), cref: mkref(f, p + fs[0].0 as usize, cid.len()), ts: ts - ws, camp: camp as u32 });
             });
+            const AHEAD: usize = 16;
+            let n = v.len();
+            for i in 0..n.min(AHEAD) {
+                persons.map.prefetch(v[i].key);
+            }
+            for i in 0..n {
+                if i + AHEAD < n {
+                    persons.map.prefetch(v[i + AHEAD].key);
+                }
+                let uh = v[i].key;
+                v[i].key = persons.map.get(uh).unwrap_or_else(|| unlinked_key(uh));
+            }
             let mut ks = Vec::new();
             by_bucket(&v, |c| person_bucket(c.key), &mut ks)
         })
@@ -982,7 +1026,9 @@ struct Ctx<'a> {
     persons: &'a Persons,
 }
 
-struct Scratch {
+struct Scratch<'s> {
+    ev_src: Vec<&'s [Ev2]>,
+    ck_src: Vec<&'s [Ck]>,
     count: Vec<u32>,  // per campaign count within window
     active: Vec<u32>, // active campaign list
     pos: Vec<u32>,    // position in active list
@@ -994,15 +1040,15 @@ struct Scratch {
     ck_cnt: Vec<u32>,
     ev_local: Vec<u32>,
     ck_local: Vec<u32>,
-    evs: Vec<Ev2>,
-    cks: Vec<Ck>,
     evs_sorted: Vec<Ev2>,
     cks_sorted: Vec<Ck>,
 }
 
-impl Scratch {
+impl Scratch<'_> {
     fn new(ncamp: usize) -> Self {
         Scratch {
+            ev_src: Vec::new(),
+            ck_src: Vec::new(),
             count: vec![0; ncamp + 1],
             active: Vec::new(),
             pos: vec![0; ncamp + 1],
@@ -1013,8 +1059,6 @@ impl Scratch {
             ck_cnt: Vec::new(),
             ev_local: Vec::new(),
             ck_local: Vec::new(),
-            evs: Vec::new(),
-            cks: Vec::new(),
             evs_sorted: Vec::new(),
             cks_sorted: Vec::new(),
         }
@@ -1023,7 +1067,7 @@ impl Scratch {
 
 /// Group one person bucket's events and clicks by person, then sessionize.
 fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
-    let n = sc.evs.len();
+    let n: usize = sc.ev_src.iter().map(|s| s.len()).sum();
     if n == 0 {
         return;
     }
@@ -1037,7 +1081,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
     sc.ev_cnt.clear();
     sc.ev_local.clear();
     let slot_of = |k: u64| (k.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 32) as usize & mask;
-    for e in &sc.evs {
+    for e in sc.ev_src.iter().flat_map(|s| s.iter()) {
         let mut s = slot_of(e.key);
         let id = loop {
             let t = unsafe { sc.table.get_unchecked_mut(s) };
@@ -1059,7 +1103,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
     sc.ck_cnt.clear();
     sc.ck_cnt.resize(np, 0);
     sc.ck_local.clear();
-    for c in &sc.cks {
+    for c in sc.ck_src.iter().flat_map(|s| s.iter()) {
         let mut s = slot_of(c.key);
         let id = loop {
             let t = unsafe { sc.table.get_unchecked(s) };
@@ -1101,13 +1145,13 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
         sc.cks_sorted.set_len(cacc as usize);
     }
     let mut ev_pos = sc.ev_cnt.clone();
-    for (e, &id) in sc.evs.iter().zip(&sc.ev_local) {
+    for (e, &id) in sc.ev_src.iter().flat_map(|s| s.iter()).zip(&sc.ev_local) {
         let at = &mut ev_pos[id as usize];
         sc.evs_sorted[*at as usize] = *e;
         *at += 1;
     }
     let mut ck_pos = sc.ck_cnt.clone();
-    for (c, &id) in sc.cks.iter().zip(&sc.ck_local) {
+    for (c, &id) in sc.ck_src.iter().flat_map(|s| s.iter()).zip(&sc.ck_local) {
         if id != u32::MAX {
             let at = &mut ck_pos[id as usize];
             sc.cks_sorted[*at as usize] = *c;
@@ -1248,26 +1292,42 @@ fn flush_day(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, name: u64, day: i64, s:
 }
 
 fn main() {
-    let t0 = std::time::Instant::now();
+    if std::env::var("SS_NOHUGE").is_ok() {
+        alloc::HUGE_ON.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
     let data = PathBuf::from(env("DATA_DIR", "/data"));
     let out = PathBuf::from(env("OUTPUT_DIR", "/output"));
     let threads: usize = env("NCPU", "8").parse().unwrap_or(8);
     rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().unwrap();
-    let timing = std::env::var("SS_TIMING").is_ok();
-    let lap = |what: &str| {
-        if timing {
-            eprintln!("{:>8.1} ms  {what}", t0.elapsed().as_secs_f64() * 1e3);
+    if std::env::var("SS_DIAG").is_ok() {
+        diag::main(&data, &out, threads);
+        std::process::exit(1);
+    }
+    let laps = run(&data, &out, true);
+    if std::env::var("SS_TIMING").is_ok() {
+        for (what, ms) in laps {
+            eprintln!("{ms:>8.1} ms  {what}");
         }
-    };
+    }
+    // skip tearing down gigabytes of buffers: the kernel reclaims them at exit
+    std::process::exit(0);
+}
 
-    let inp = open_all(&data);
+/// One full pipeline run. Returns cumulative stage times in ms.
+pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
+    let t0 = std::time::Instant::now();
+    let mut laps: Vec<(&'static str, f64)> = Vec::new();
+    let mut lap = |what: &'static str| laps.push((what, t0.elapsed().as_secs_f64() * 1e3));
+
+    let inp = open_all(data);
     lap("open");
     let lk = lookups(&inp);
     let (ws, we) = (inp.window_start, inp.window_end);
     let ev_units = chunks(&inp.events);
     let ck_units = chunks(&inp.clicks);
-    let (persons, ev_parts) = if std::env::var("SS_SEQ").is_ok() {
+    let seq = std::env::var("SS_SEQ").is_ok();
+    let (persons, ev_parts) = if seq {
         let p = links(&inp);
         lap("links");
         let e = parse_events(&ev_units, &lk, ws, we);
@@ -1277,17 +1337,18 @@ fn main() {
         rayon::join(|| links(&inp), || parse_events(&ev_units, &lk, ws, we))
     };
     lap("links + events parsed");
-    let (ev_scattered, ck_parts) = if std::env::var("SS_SEQ").is_ok() {
+    let (ev_scattered, ck_parts) = if seq {
         let a = (0..P1).into_par_iter().map(|b| dedup_bucket(&ev_parts, b, &persons)).collect::<Vec<_>>();
         lap("dedup");
         let b = parse_clicks(&ck_units, &lk, &persons, ws, we);
         lap("clicks");
         (a, b)
-    } else { rayon::join(
-        || (0..P1).into_par_iter().map(|b| dedup_bucket(&ev_parts, b, &persons)).collect::<Vec<_>>(),
-        || parse_clicks(&ck_units, &lk, &persons, ws, we),
-    ) };
-    drop(ev_parts);
+    } else {
+        rayon::join(
+            || (0..P1).into_par_iter().map(|b| dedup_bucket(&ev_parts, b, &persons)).collect::<Vec<_>>(),
+            || parse_clicks(&ck_units, &lk, &persons, ws, we),
+        )
+    };
     lap("dedup + clicks");
 
     let ws_day = ws.div_euclid(DAY_MS);
@@ -1300,13 +1361,13 @@ fn main() {
         .fold(
             || (Agg { rows: Vec::new(), camp: vec![[0i64; 4]; (ncamp + 1) * ndays] }, Scratch::new(ncamp)),
             |(mut agg, mut sc), b| {
-                sc.evs.clear();
-                sc.cks.clear();
+                sc.ev_src.clear();
+                sc.ck_src.clear();
                 for (v, off) in &ev_scattered {
-                    sc.evs.extend_from_slice(&v[off[b] as usize..off[b + 1] as usize]);
+                    sc.ev_src.push(&v[off[b] as usize..off[b + 1] as usize]);
                 }
                 for (v, off) in &ck_parts {
-                    sc.cks.extend_from_slice(&v[off[b] as usize..off[b + 1] as usize]);
+                    sc.ck_src.push(&v[off[b] as usize..off[b + 1] as usize]);
                 }
                 process_bucket(&ctx, &mut agg, &mut sc);
                 (agg, sc)
@@ -1315,8 +1376,16 @@ fn main() {
         .map(|(agg, _)| agg)
         .collect();
     lap("sessionized");
-    output::write(&out, aggs, &lk, &ctx_info(&ctx, &lk));
+    output::write(out, aggs, &lk, &ctx_info(&ctx, &lk));
     lap("written");
+    if leak {
+        // the process is about to exit: skip unmapping gigabytes of buffers
+        std::mem::forget(ev_parts);
+        std::mem::forget(ev_scattered);
+        std::mem::forget(ck_parts);
+        std::mem::forget(persons);
+    }
+    laps
 }
 
 pub struct OutInfo {
@@ -1331,4 +1400,24 @@ fn ctx_info(ctx: &Ctx, _lk: &Lookups) -> OutInfo {
 
 pub fn name_bytes(r: u64) -> &'static [u8] {
     deref(r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn prefix_xor_matches() {
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        for _ in 0..100_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let v = ((x as u128) << 64) | (x.rotate_left(17) as u128);
+            let mut r = v;
+            for k in [1, 2, 4, 8, 16, 32, 64] {
+                r ^= r << k;
+            }
+            assert_eq!(prefix_xor(v), r);
+        }
+    }
 }
