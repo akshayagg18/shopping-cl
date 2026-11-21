@@ -172,7 +172,7 @@ fn open_all(data: &Path) -> Inputs {
                 // mmap of an empty file fails on some systems: map an anonymous empty region.
                 memmap2::MmapOptions::new().len(1).map_anon().unwrap().make_read_only().unwrap()
             } else {
-                unsafe { memmap2::MmapOptions::new().populate().map(&f) }.unwrap()
+                unsafe { memmap2::MmapOptions::new().map(&f) }.unwrap()
             }
         })
         .collect();
