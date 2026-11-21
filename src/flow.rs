@@ -339,7 +339,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
 struct PendC {
     uh: u64,
     cref: u64,
-    ts: i64,
+    ts: u32,
     camp: u32,
 }
 
@@ -373,7 +373,7 @@ pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
         let Some(camp) = lk.campaigns.get(h64(fld(2))) else { return };
         let uh = h64(user);
         persons.map.prefetch(uh);
-        let pd = PendC { uh, cref: mkref(f, p + fs.span(line, 0).0, cid.len()), ts: ts - ws, camp: camp as u32 };
+        let pd = PendC { uh, cref: mkref(f, p + fs.span(line, 0).0, cid.len()), ts: (ts - lo) as u32, camp: camp as u32 };
         if filled == AHEAD {
             emit_click(sink, persons, &ring[head]);
         } else {
@@ -489,12 +489,26 @@ pub fn dedup_part(b: usize, sinks: &[Sink], dead: &Dead) {
 /// The live event records of person partition `b`, appended to `out`.
 pub fn live_events(b: usize, sinks: &[Sink], dead: &Dead, out: &mut Vec<Ev2>) {
     out.clear();
+    let n: usize = sinks.iter().map(|s| s.ev.len(b)).sum();
+    out.reserve(n);
     for (t, s) in sinks.iter().enumerate() {
         let mut i = 0usize;
         for sl in s.ev.slices(b) {
-            for e in sl {
+            // records were streamed out of the cache: fetch ahead (the hardware
+            // prefetcher restarts at every 4 KiB)
+            for (j, e) in sl.iter().enumerate() {
+                if j % 4 == 0 {
+                    #[cfg(target_arch = "x86_64")]
+                    unsafe {
+                        std::arch::x86_64::_mm_prefetch(sl.as_ptr().wrapping_add(j + 24) as *const i8, std::arch::x86_64::_MM_HINT_T0)
+                    };
+                }
                 if (dead.word(t, b, i / 64) >> (i % 64)) & 1 == 0 {
-                    out.push(*e);
+                    unsafe {
+                        let len = out.len();
+                        out.as_mut_ptr().add(len).write(*e);
+                        out.set_len(len + 1);
+                    }
                 }
                 i += 1;
             }

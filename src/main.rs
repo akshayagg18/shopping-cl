@@ -738,7 +738,8 @@ impl PersonMap {
     /// `sorted` must be sorted by key and contain distinct, non-zero keys.
     fn build(sorted: &[(u64, u64)]) -> Self {
         let n = sorted.len().max(1);
-        let bits = ((n + n / 3).next_power_of_two().max(1 << 14)).trailing_zeros();
+        let load_x4: usize = std::env::var("SS_PMLOAD").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let bits = ((n * 4 / 3 * 4 / load_x4.max(1)).next_power_of_two().max(1 << 14)).trailing_zeros();
         let sub = bits - PM_PARTS_BITS;
         let range = (1usize << sub) + PM_MARGIN;
         let mut map = PersonMap { shift: 64 - bits, sub, slots: Vec::new() };
@@ -1067,7 +1068,7 @@ struct Ev2 {
 struct Ck {
     key: u64,
     cref: u64,
-    ts: i64, // ms relative to window start (may be negative)
+    ts: u32, // ms since window start - 7 days (CLICK_REACH): never negative
     camp: u32,
 }
 
@@ -1322,7 +1323,7 @@ fn parse_clicks(units: &[(usize, usize, usize)], lk: &Lookups, persons: &Persons
                     return;
                 }
                 let Some(camp) = lk.campaigns.get(h64(fld(2))) else { return };
-                v.push(Ck { key: h64(user), cref: mkref(f, p + fs.get(0).0, cid.len()), ts: ts - ws, camp: camp as u32 });
+                v.push(Ck { key: h64(user), cref: mkref(f, p + fs.get(0).0, cid.len()), ts: (ts - ws + CLICK_REACH) as u32, camp: camp as u32 });
             });
             const AHEAD: usize = 16;
             let n = v.len();
@@ -1355,8 +1356,8 @@ pub struct UserRow {
 
 pub struct Agg {
     pub rows: Vec<UserRow>,
-    /// [day * (ncamp + 1) + camp] -> sessions, purchasing, revenue (credited)
-    pub credit: Vec<[i64; 3]>,
+    /// [day * (ncamp + 1) + camp] -> (sessions | purchasing sessions << 32, revenue), credited
+    pub credit: Vec<(u64, i64)>,
     /// [day * (ncamp + 1) + camp] -> assisted sessions
     pub assist: Vec<u32>,
 }
@@ -1469,18 +1470,19 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evin: &[Ev2], ckin
     if n == 0 {
         return;
     }
-    // local person ids
-    let cap = (n * 2).next_power_of_two().max(64);
+    // local person ids; persons are ~30x fewer than events, so the table
+    // starts small (cache resident) and doubles when half full
+    let mut cap = (n / 8).next_power_of_two().max(256);
     if sc.table.len() < cap {
         sc.table.resize(cap, (0, u32::MAX));
     }
-    let mask = cap - 1;
+    let mut mask = cap - 1;
     sc.used.clear();
     sc.ev_cnt.clear();
     sc.ev_local.clear();
-    let slot_of = |k: u64| (k.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 32) as usize & mask;
+    let slot_of = |k: u64, mask: usize| (k.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 32) as usize & mask;
     for e in evin.iter() {
-        let mut s = slot_of(e.key);
+        let mut s = slot_of(e.key, mask);
         let id = loop {
             let t = unsafe { sc.table.get_unchecked_mut(s) };
             if t.1 == u32::MAX {
@@ -1496,13 +1498,34 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evin: &[Ev2], ckin
         };
         sc.ev_cnt[id as usize] += 1;
         sc.ev_local.push(id);
+        if sc.used.len() * 2 > cap {
+            // grow: clear the used slots, re-insert every person at twice the size
+            let entries: Vec<(u64, u32)> = sc.used.iter().map(|&u| sc.table[u as usize]).collect();
+            for &u in &sc.used {
+                sc.table[u as usize] = (0, u32::MAX);
+            }
+            cap *= 2;
+            mask = cap - 1;
+            if sc.table.len() < cap {
+                sc.table.resize(cap, (0, u32::MAX));
+            }
+            sc.used.clear();
+            for (k, id) in entries {
+                let mut s = slot_of(k, mask);
+                while sc.table[s].1 != u32::MAX {
+                    s = (s + 1) & mask;
+                }
+                sc.table[s] = (k, id);
+                sc.used.push(s as u32);
+            }
+        }
     }
     let np = sc.ev_cnt.len();
     sc.ck_cnt.clear();
     sc.ck_cnt.resize(np, 0);
     sc.ck_local.clear();
     for c in ckin.iter() {
-        let mut s = slot_of(c.key);
+        let mut s = slot_of(c.key, mask);
         let id = loop {
             let t = unsafe { sc.table.get_unchecked(s) };
             if t.1 == u32::MAX {
@@ -1686,7 +1709,8 @@ fn person_sessions(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut S
             }
         }
         // attribution window [start - 7d, start]
-        while hi < cks.len() && cks[hi].ts <= start {
+        // click times are shifted by +CLICK_REACH: ts <= start and ts >= start - 7d
+        while hi < cks.len() && (cks[hi].ts as i64) <= start + CLICK_REACH {
             let c = cks[hi].camp as usize;
             if sc.count[c] == 0 {
                 sc.pos[c] = sc.active.len() as u32;
@@ -1695,7 +1719,7 @@ fn person_sessions(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut S
             sc.count[c] += 1;
             hi += 1;
         }
-        while lo < hi && cks[lo].ts < start - CLICK_REACH {
+        while lo < hi && (cks[lo].ts as i64) < start {
             let c = cks[lo].camp as usize;
             sc.count[c] -= 1;
             if sc.count[c] == 0 {
@@ -1720,11 +1744,8 @@ fn person_sessions(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut S
         };
         let row = du * (ctx.ncamp + 1);
         let slot = &mut agg.credit[row + credit];
-        slot[0] += 1;
-        if purch {
-            slot[1] += 1;
-            slot[2] += rev;
-        }
+        slot.0 += 1 | ((purch as u64) << 32);
+        slot.1 += rev;
         let arow = &mut agg.assist[row..row + ctx.ncamp + 1];
         for &c in &sc.active {
             arow[c as usize] += 1;
@@ -1907,7 +1928,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let ws_day = ws.div_euclid(DAY_MS);
     let ndays = ((we - 1).div_euclid(DAY_MS) - ws_day + 1) as usize;
     let ncamp = lk.campaign_names.len();
-    assert!(we - ws < u32::MAX as i64, "window too long");
+    assert!(we - ws + CLICK_REACH < u32::MAX as i64, "window too long");
     let nbins = ((we - ws) as u64 / SESSION_GAP as u64) as usize + 1;
     let ctx = Ctx { ndays, nbins, ncamp, ncat: lk.categories.len(), ws, ws_day, persons: &persons };
     // exactly one accumulator per worker thread (rayon's fold would create one
@@ -1915,7 +1936,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let states: Vec<std::sync::Mutex<(Agg, Scratch, Vec<Ev2>, Vec<Ck>)>> = (0..nthreads)
         .map(|_| {
             std::sync::Mutex::new((
-                Agg { rows: Vec::new(), credit: vec![[0i64; 3]; (ncamp + 1) * ndays], assist: vec![0u32; (ncamp + 1) * ndays] },
+                Agg { rows: Vec::new(), credit: vec![(0u64, 0i64); (ncamp + 1) * ndays], assist: vec![0u32; (ncamp + 1) * ndays] },
                 Scratch::new(ncamp),
                 Vec::new(),
                 Vec::new(),

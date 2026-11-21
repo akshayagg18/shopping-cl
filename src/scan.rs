@@ -223,6 +223,24 @@ fn any_bits(bm: &[u64], from: usize, to: usize) -> bool {
     }
 }
 
+/// A line that runs past the bitmap: the scalar splitter (rare, kept out of line).
+#[cold]
+#[inline(never)]
+fn long_line<const N: usize>(data: &[u8], p: usize, fl: &mut Flds<N>) -> (usize, bool) {
+    let n = data.len();
+    let end = match memchr(b'\n', &data[p..]) {
+        Some(i) => p + i,
+        None => n,
+    };
+    match parse::split::<N>(&data[p..end]) {
+        Some(fs) => {
+            fl.e = fs.ends;
+            (end, true)
+        }
+        None => (end, false),
+    }
+}
+
 /// Iterate records starting in [s, e) (a file's header skipped), split into N
 /// fields: `each(line_start, line, fields)`, fields None for a malformed line.
 #[inline(always)]
@@ -299,18 +317,7 @@ fn scan_block<const N: usize>(f: usize, s: usize, e: usize, each: &mut impl FnMu
                 (base + endr, ok)
             } else {
                 // no newline before the bitmap's end (a line over 2 KiB long)
-                let end = match memchr(b'\n', &data[p..]) {
-                    Some(i) => p + i,
-                    None => n,
-                };
-                let line = &data[p..end];
-                let ok = match parse::split::<N>(line) {
-                    Some(fs) => {
-                        fl.e = fs.ends;
-                        true
-                    }
-                    None => false,
-                };
+                let (end, ok) = long_line::<N>(data, p, &mut fl);
                 // past the bitmap: this is the last line of the block
                 cur = 0;
                 w = words;

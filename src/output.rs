@@ -21,9 +21,9 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
             for c in 0..w {
                 let t = &mut camp[c * info.ndays + d];
                 let cr = a.credit[d * w + c];
-                t[0] += cr[0];
-                t[1] += cr[1];
-                t[2] += cr[2];
+                t[0] += (cr.0 & 0xFFFF_FFFF) as i64;
+                t[1] += (cr.0 >> 32) as i64;
+                t[2] += cr.1;
                 t[3] += a.assist[d * w + c] as i64;
             }
         }
