@@ -20,3 +20,12 @@ jobs:
           grep -R -n -E 'event_id|user_id|click_id|base36|format.*[euk]|fn.*id\(' generator/src | head -150
           echo "LINK_DISTRIBUTION_SITES"
           grep -R -n -E 'link|person|users|id_range|duplicate|user_count|whale' generator/src | head -140
+          echo "SCRAMBLE_IMPL"
+          sed -n '1,230p' generator/src/text.rs
+          echo "USER_KEY_DERIVATION"
+          grep -R -n -E 'event_key|user_key|click_key|scramble\(' generator/src/*.rs | head -110
+          echo "GENERATOR_USER_ID_SOURCE"
+          sed -n '115,143p' generator/src/user.rs
+          echo "DATASET_SEED"
+          sed -n '1,180p' generator/src/plan.rs
+
