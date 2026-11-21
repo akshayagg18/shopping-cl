@@ -761,7 +761,7 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
         .par_iter()
         .map(|&(f, s, e)| {
             // events lines are >= ~60 bytes; per-bucket room with slack
-            let cap = (e - s) / 64 / P1 * 9 / 8 + 24;
+            let cap = (e - s) / 72 / P1 + 20;
             let mut data: Vec<Ev1> = Vec::with_capacity(cap * P1);
             #[allow(clippy::uninit_vec)]
             unsafe {
