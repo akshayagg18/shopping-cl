@@ -255,12 +255,16 @@ fn file_bytes(f: usize) -> &'static [u8] {
 /// Line-aligned work units: (file, start, end). A line belongs to the unit
 /// holding its first byte; the header (first line of each file) is skipped.
 fn chunks(files: &[usize]) -> Vec<(usize, usize, usize)> {
+    chunks_of(files, CHUNK)
+}
+
+fn chunks_of(files: &[usize], size: usize) -> Vec<(usize, usize, usize)> {
     let mut out = Vec::new();
     for &f in files {
         let n = file_bytes(f).len();
         let mut s = 0;
         while s < n {
-            let e = (s + CHUNK).min(n);
+            let e = (s + size).min(n);
             out.push((f, s, e));
             s = e;
         }
@@ -755,7 +759,10 @@ fn name_less(a: (u128, u32, u64), b: (u128, u32, u64)) -> bool {
 }
 
 fn links(inp: &Inputs) -> Persons {
-    let units = chunks(&inp.links);
+    let t0 = std::time::Instant::now();
+    let tl = std::env::var_os("SS_LT").is_some();
+    let lt = |w: &str| if tl { eprintln!("  links {w}: {:.1} ms", t0.elapsed().as_secs_f64() * 1e3) };
+    let units = chunks_of(&inp.links, 256 << 10);
     // endpoints of every valid link line, in line order: (hash, ref)
     let ends: Vec<Vec<(u64, u64)>> = units
         .par_iter()
@@ -775,14 +782,26 @@ fn links(inp: &Inputs) -> Persons {
         })
         .collect();
     let ends: Vec<(u64, u64)> = ends.concat();
-    // dense ids: distinct hashes in sorted order
-    let mut uniq: Vec<(u64, u64)> = ends.clone();
-    uniq.par_sort_unstable_by_key(|x| x.0);
-    uniq.dedup_by_key(|x| x.0);
+    lt("parsed");
+    // dense ids from one sort of (hash, position)
+    let mut order: Vec<(u64, u32)> = ends.par_iter().enumerate().map(|(i, x)| (x.0, i as u32)).collect();
+    order.par_sort_unstable();
+    let mut ids: Vec<u32> = vec![0; ends.len()];
+    let mut uniq: Vec<(u64, u64)> = Vec::with_capacity(ends.len() / 2 + 1);
+    let mut prev = 0u64;
+    for &(h, pos) in &order {
+        if h != prev || uniq.is_empty() {
+            uniq.push((h, ends[pos as usize].1));
+            prev = h;
+        }
+        ids[pos as usize] = (uniq.len() - 1) as u32;
+    }
+    drop(order);
     let n = uniq.len();
-    let id_of = |h: u64| uniq.binary_search_by_key(&h, |x| x.0).unwrap() as u32;
-    let edges: Vec<(u32, u32)> = ends.par_chunks(2).map(|c| (id_of(c[0].0), id_of(c[1].0))).collect();
+    let edges: Vec<(u32, u32)> = ids.chunks(2).map(|c| (c[0], c[1])).collect();
+    drop(ids);
     drop(ends);
+    lt("ids");
     // union-find over the dense ids (small, cache resident)
     let mut parent: Vec<u32> = (0..n as u32).collect();
     fn find(parent: &mut [u32], mut x: u32) -> u32 {
@@ -807,6 +826,7 @@ fn links(inp: &Inputs) -> Persons {
         let r = find(&mut parent, i as u32);
         parent[i] = r;
     }
+    lt("uf");
     // smallest name per component, from cached prefixes
     let keys: Vec<(u128, u32, u64)> = uniq
         .par_iter()
@@ -815,6 +835,7 @@ fn links(inp: &Inputs) -> Persons {
             (k, l, r)
         })
         .collect();
+    lt("keys");
     let mut best: Vec<u32> = (0..n as u32).collect();
     for i in 0..n {
         let r = parent[i] as usize;
@@ -833,8 +854,11 @@ fn links(inp: &Inputs) -> Persons {
         }
         entries.push((uniq[i].0, LINKED | comp[r] as u64));
     }
+    lt("names");
     // `uniq` is sorted by hash, so `entries` is too
-    Persons { map: PersonMap::build(&entries), names }
+    let map = PersonMap::build(&entries);
+    lt("map");
+    Persons { map, names }
 }
 
 // ---------------------------------------------------------------- records
