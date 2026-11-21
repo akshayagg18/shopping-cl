@@ -778,11 +778,26 @@ fn flush_event_stage(
     let fit = room.min(count);
     if fit != 0 {
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                stage.as_ptr().add(b * STAGE) as *const Ev1,
-                data.as_mut_ptr().add(b * cap + at),
-                fit,
-            );
+            let src = stage.as_ptr().add(b * STAGE) as *const Ev1;
+            let dst = data.as_mut_ptr().add(b * cap + at);
+            // Streaming into full cache-line runs avoids fetching each destination
+            // cache line before overwriting it. Partial final records use memcpy.
+            #[cfg(target_arch = "x86_64")]
+            if (dst as usize & 15) == 0 {
+                use std::arch::x86_64::*;
+                let streamed = fit & !1;
+                for i in 0..streamed * (std::mem::size_of::<Ev1>() / 16) {
+                    let v = _mm_loadu_si128((src as *const __m128i).add(i));
+                    _mm_stream_si128((dst as *mut __m128i).add(i), v);
+                }
+                if (fit & 1) != 0 {
+                    std::ptr::copy_nonoverlapping(src.add(streamed), dst.add(streamed), 1);
+                }
+            } else {
+                std::ptr::copy_nonoverlapping(src, dst, fit);
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            std::ptr::copy_nonoverlapping(src, dst, fit);
         }
         len[b] += fit as u32;
     }
@@ -797,7 +812,7 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
         .par_iter()
         .map(|&(f, s, e)| {
             // events lines are >= ~60 bytes; per-bucket room with slack
-            let cap = (e - s) / 64 / P1 * 9 / 8 + 24;
+            let cap = ((e - s) / 64 / P1 * 9 / 8 + 25) & !1;
             let mut data: Vec<Ev1> = Vec::with_capacity(cap * P1);
             #[allow(clippy::uninit_vec)]
             unsafe {
@@ -866,6 +881,8 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
                     flush_event_stage(b, cap, &stage, &mut fill, &mut data, &mut len, &mut overflow);
                 }
             }
+            #[cfg(target_arch = "x86_64")]
+            unsafe { std::arch::x86_64::_mm_sfence() };
             EvChunk { data, cap, len, overflow }
         })
         .collect()
