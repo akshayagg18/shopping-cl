@@ -956,6 +956,124 @@ fn parse_clicks(units: &[(usize, usize, usize)], lk: &Lookups, persons: &Persons
         .collect()
 }
 
+
+/* Experimental sort optimizations: preserve chronological order exactly.
+ * Events in separate 30-minute buckets have strictly ordered timestamps.
+ * Retain comparison sort for small/dense groups to avoid bucket overhead. */
+fn sort_events_hybrid(events: &mut [Ev2], spare: &mut Vec<Ev2>, counts: &mut Vec<u32>) {
+    const GAP: u32 = SESSION_GAP as u32;
+    if events.len() < 192 {
+        events.sort_unstable_by_key(|e| e.ts);
+        return;
+    }
+    let min_ts = events.iter().map(|e| e.ts).min().unwrap();
+    let max_ts = events.iter().map(|e| e.ts).max().unwrap();
+    let first = min_ts / GAP;
+    let buckets = (max_ts / GAP - first + 1) as usize;
+    if buckets < 8 {
+        events.sort_unstable_by_key(|e| e.ts);
+        return;
+    }
+    counts.clear();
+    counts.resize(buckets + 1, 0);
+    for e in events.iter() {
+        counts[(e.ts / GAP - first) as usize + 1] += 1;
+    }
+    for b in 1..=buckets {
+        counts[b] += counts[b - 1];
+    }
+    spare.clear();
+    spare.resize(events.len(), events[0]);
+    for &e in events.iter() {
+        let b = (e.ts / GAP - first) as usize;
+        let pos = counts[b] as usize;
+        spare[pos] = e;
+        counts[b] += 1;
+    }
+    let mut begin = 0usize;
+    for b in 0..buckets {
+        let end = counts[b] as usize;
+        if end - begin > 1 {
+            spare[begin..end].sort_unstable_by_key(|e| e.ts);
+        }
+        begin = end;
+    }
+    events.copy_from_slice(&spare[..events.len()]);
+}
+
+/* Timestamp-only sort with a linear tie-group pass. The first record at a
+ * given timestamp must be the byte-wise smallest click_id; downstream
+ * attribution selects that first record when timestamps are tied. */
+fn sort_clicks_hybrid(clicks: &mut [Ck]) {
+    if clicks.len() <= 64 {
+        clicks.sort_unstable_by(|a, b|
+            a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
+        return;
+    }
+    clicks.sort_unstable_by_key(|c| c.ts);
+    let mut i = 0usize;
+    while i < clicks.len() {
+        let t = clicks[i].ts;
+        let mut j = i + 1;
+        while j < clicks.len() && clicks[j].ts == t {
+            j += 1;
+        }
+        if j > i + 1 {
+            let mut first = i;
+            for k in (i + 1)..j {
+                if deref(clicks[k].cref) < deref(clicks[first].cref) {
+                    first = k;
+                }
+            }
+            clicks.swap(i, first);
+        }
+        i = j;
+    }
+}
+
+#[cfg(test)]
+mod hybrid_sort_tests {
+    use super::*;
+
+    #[test]
+    fn bucket_sort_matches_timestamp_sort_across_boundaries() {
+        let mut data = Vec::new();
+        for i in 0..3000u32 {
+            let t = (i.wrapping_mul(1_371_113) % (14 * DAY_MS as u32))
+                .saturating_add(i % 3);
+            data.push(Ev2 { key: 17, uref: 0, ts: t, pc: i });
+        }
+        data.extend([
+            Ev2 {key: 17, uref: 0, ts: 0, pc: 0},
+            Ev2 {key: 17, uref: 0, ts: SESSION_GAP as u32, pc: 0},
+            Ev2 {key: 17, uref: 0, ts: SESSION_GAP as u32 + 1, pc: 0},
+            Ev2 {key: 17, uref: 0, ts: 14 * DAY_MS as u32 - 1, pc: 0},
+        ]);
+        let mut reference = data.clone();
+        reference.sort_unstable_by_key(|e| e.ts);
+        sort_events_hybrid(&mut data, &mut Vec::new(), &mut Vec::new());
+        let got: Vec<u32> = data.iter().map(|x| x.ts).collect();
+        let expected: Vec<u32> = reference.iter().map(|x| x.ts).collect();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn bucket_sort_small_and_same_bucket() {
+        for n in [0usize, 1, 10, 191, 192, 500] {
+            let mut data: Vec<Ev2> = (0..n).rev().map(|i| Ev2 {
+                key: 99, uref: 0, ts: 100_000 + (i % 500) as u32, pc: i as u32
+            }).collect();
+            let mut expected = data.clone();
+            expected.sort_unstable_by_key(|e| e.ts);
+            sort_events_hybrid(&mut data, &mut Vec::new(), &mut Vec::new());
+            assert_eq!(
+                data.iter().map(|e| e.ts).collect::<Vec<_>>(),
+                expected.iter().map(|e| e.ts).collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------- aggregation
 
 pub struct UserRow {
@@ -998,6 +1116,8 @@ struct Scratch {
     cks: Vec<Ck>,
     evs_sorted: Vec<Ev2>,
     cks_sorted: Vec<Ck>,
+    sort_buffer: Vec<Ev2>,
+    sort_counts: Vec<u32>,
 }
 
 impl Scratch {
@@ -1017,6 +1137,8 @@ impl Scratch {
             cks: Vec::new(),
             evs_sorted: Vec::new(),
             cks_sorted: Vec::new(),
+            sort_buffer: Vec::new(),
+            sort_counts: Vec::new(),
         }
     }
 }
@@ -1123,11 +1245,11 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
         let (cs, ce) = (sc.ck_cnt[pid] as usize, ck_pos[pid] as usize);
         let ev = &mut evs[es..ee];
         if ev.len() > 1 {
-            ev.sort_unstable_by_key(|e| e.ts);
+            sort_events_hybrid(ev, &mut sc.sort_buffer, &mut sc.sort_counts);
         }
         let ck = &mut cks[cs..ce];
         if ck.len() > 1 {
-            ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
+            sort_clicks_hybrid(ck);
         }
         person_sessions(ctx, ev, ck, agg, sc);
     }
