@@ -1,0 +1,78 @@
+name: P1 and P2 partition cache-locality sweep
+on:
+  push:
+    branches: [gpt6-partition-sweep]
+  workflow_dispatch:
+env:
+  RUSTFLAGS: "-C target-cpu=x86-64-v3"
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile baseline and partition count variants
+        run: |
+          git show bc272b815059c02dd95edfeb0217b34c65667d34:src/main.rs > /tmp/shop-source.rs
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('/tmp/shop-source.rs').read_text()
+          assert 'const P1_BITS: u32 = 9;' in src and 'const P2_BITS: u32 = 10;' in src
+          Path('/tmp/source-base.rs').write_text(src)
+          Path('/tmp/source-p1_10.rs').write_text(src.replace('const P1_BITS: u32 = 9;', 'const P1_BITS: u32 = 10;'))
+          Path('/tmp/source-p1_11.rs').write_text(src.replace('const P1_BITS: u32 = 9;', 'const P1_BITS: u32 = 11;'))
+          Path('/tmp/source-p2_11.rs').write_text(src.replace('const P2_BITS: u32 = 10;', 'const P2_BITS: u32 = 11;'))
+          PY
+          for key in base p1_10 p1_11 p2_11; do
+            cp "/tmp/source-${key}.rs" src/main.rs
+            cargo build --release --locked
+            cp target/release/ssp "/tmp/shop-${key}"
+          done
+      - name: Generate 20M events and 5M clicks
+        run: |
+          curl --retry 3 -fsSL https://www.joinbuilders.org/buildathon/tracks/shopping-sessions/files/generator.zip -o /tmp/gen.zip
+          mkdir -p /tmp/gen
+          cd /tmp/gen
+          unzip -q /tmp/gen.zip
+          cargo build --release --locked --manifest-path generator/Cargo.toml
+          generator/target/release/generate --seed 20 --events 20000000 --clicks 5000000 --threads 4 --output /tmp/shop-perf
+      - name: A/B partition variants with four interleaved runs each
+        run: |
+          python3 - <<'PY'
+          import pathlib,subprocess,statistics,time,os,shutil
+          variants=['base','p1_10','p1_11','p2_11']
+          times={k:[] for k in variants}
+          root=pathlib.Path('/tmp/shop-partitions')
+          root.mkdir()
+          for round in range(4):
+              order=variants[round:]+variants[:round]
+              if round%2:order.reverse()
+              for key in order:
+                  out=root/f'{key}-{round}'
+                  out.mkdir()
+                  env=dict(os.environ,DATA_DIR='/tmp/shop-perf',OUTPUT_DIR=str(out),NCPU='4',SS_TIMING='1')
+                  t=time.perf_counter()
+                  r=subprocess.run([f'/tmp/shop-{key}'],env=env,text=True,capture_output=True)
+                  elapsed=time.perf_counter()-t
+                  if r.returncode:raise RuntimeError(f'{key} error {r.returncode}: {r.stderr[-3000:]}')
+                  times[key].append(elapsed)
+                  print(f'RUN {key} #{round} TIME={elapsed:.6f}',flush=True)
+                  if round != 3:shutil.rmtree(out)
+          for k,v in times.items():
+              print(f'MEDIAN_{k.upper()}={statistics.median(v):.6f} MEAN_{k.upper()}={statistics.mean(v):.6f} SAMPLES={v}',flush=True)
+          PY
+      - name: Validate every candidate against the full 20M baseline
+        run: |
+          python3 -m pip install --quiet pyarrow
+          for key in p1_10 p1_11 p2_11; do
+            python3 tools/check.py "/tmp/shop-partitions/${key}-3" --other /tmp/shop-partitions/base-3
+          done
+          /tmp/gen/generator/target/release/generate --seed 1 --events 1000000 --clicks 250000 --threads 4 --output /tmp/shop-dev
+          for key in base p1_10 p1_11 p2_11; do
+            mkdir "/tmp/shop-dev-${key}"
+            DATA_DIR=/tmp/shop-dev OUTPUT_DIR="/tmp/shop-dev-${key}" NCPU=4 "/tmp/shop-${key}"
+            python3 tools/check.py "/tmp/shop-dev-${key}" --hash
+          done
