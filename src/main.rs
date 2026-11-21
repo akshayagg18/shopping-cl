@@ -23,7 +23,7 @@ use std::sync::OnceLock;
 
 use memmap2::Mmap;
 use rayon::prelude::*;
-use xxhash_rust::xxh3::{xxh3_64, xxh3_64_with_seed};
+use xxhash_rust::xxh3::{xxh3_64, xxh3_128};
 
 use parse::{DAY_MS, split, timestamp};
 
@@ -757,13 +757,14 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
                     return;
                 }
                 let ingest_ms = timestamp(fld(3)).unwrap_or(i64::MAX / 2);
+                let full_hash = xxh3_128(eid);
                 let mut ev = Ev1 {
-                    eid: h64(eid),
+                    eid: full_hash as u64,
                     user: 0,
                     uref: 0,
                     ts: INVALID,
                     ingest: (ingest_ms.div_euclid(1000)).clamp(0, u32::MAX as i64) as u32,
-                    chk: xxh3_64_with_seed(eid, 0x51_7C_C1_B7) as u32,
+                    chk: (full_hash >> 64) as u32,
                     pc: 0,
                 };
                 'valid: {
