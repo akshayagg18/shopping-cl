@@ -1,0 +1,6 @@
+/target
+/data
+/out
+/dev
+/scratch
+*.parquet

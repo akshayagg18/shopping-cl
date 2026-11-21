@@ -1,0 +1,8 @@
+target
+data
+out
+dev
+scratch
+*.parquet
+*.csv
+.git
