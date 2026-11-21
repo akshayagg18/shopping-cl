@@ -7,7 +7,7 @@ permissions:
   contents: read
   checks: write
 env:
-  CANDIDATE_SHA: 1ffcf309d044cf44d38ed49c071308b73b46118c
+  CANDIDATE_SHA: fef07368caf2e161fbf91dbf67e8176574fcfaa9
 jobs:
   measure:
     runs-on: ubuntu-latest
