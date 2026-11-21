@@ -37,6 +37,10 @@ const P2_BITS: u32 = 10; // person buckets
 #[allow(dead_code)]
 const P2: usize = 1 << P2_BITS;
 
+/// Target events per person partition and per dedup partition.
+const P2_PER: usize = 16 << 10;
+const PD_PER: usize = 16 << 10;
+
 /// Person partitions of this run (bits), set once before any record is routed.
 pub static P2B: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(P2_BITS);
 
@@ -104,18 +108,40 @@ fn words16(b: &[u8]) -> (u64, u64) {
     }
 }
 
-/// 64-bit ID hash, never 0. Short IDs (the common case) take two 128-bit
-/// multiplies; longer ones use xxh3.
+/// Two AES rounds over a <= 16 byte ID, zero padded, with its length in the
+/// first round key. Each round is a bijection of the 128-bit block, so two
+/// distinct IDs of one length never collide in the full output, and the
+/// rounds diffuse every input byte into every output byte.
+#[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
+#[inline(always)]
+fn aes16(b: &[u8]) -> (u64, u64) {
+    use std::arch::x86_64::*;
+    let (x, y) = words16(b);
+    unsafe {
+        let v = _mm_set_epi64x(y as i64, x as i64);
+        let k0 = _mm_set_epi64x(0x243F_6A88_85A3_08D3u64 as i64, (0x1319_8A2E_0370_7344u64 ^ b.len() as u64) as i64);
+        let k1 = _mm_set_epi64x(0xA409_3822_299F_31D0u64 as i64, 0x082E_FA98_EC4E_6C89u64 as i64);
+        let k2 = _mm_set_epi64x(0x4528_21E6_38D0_1377u64 as i64, 0xBE54_66CF_34E9_0C6Cu64 as i64);
+        let r = _mm_aesenc_si128(_mm_aesenc_si128(_mm_xor_si128(v, k0), k1), k2);
+        (_mm_cvtsi128_si64(r) as u64, _mm_extract_epi64(r, 1) as u64)
+    }
+}
+
+#[cfg(not(all(target_arch = "x86_64", target_feature = "aes")))]
+#[inline(always)]
+fn aes16(b: &[u8]) -> (u64, u64) {
+    let (x, y) = words16(b);
+    let l = b.len() as u64;
+    let h = mum(x ^ 0xa076_1d64_78bd_642f, y ^ 0xe703_7ed1_a0b4_28db ^ (l << 56))
+        ^ mum(y ^ 0x8ebc_6af0_9c88_c6e3, x ^ 0x5899_65cc_7537_4cc3 ^ l).rotate_left(32);
+    (h, mum(x ^ 0x1d8e_4e27_c47d_124f, y ^ 0x9e37_79b9_7f4a_7c15 ^ l))
+}
+
+/// 64-bit ID hash, never 0. Short IDs (the common case) take two AES rounds;
+/// longer ones use xxh3.
 #[inline(always)]
 fn h64(b: &[u8]) -> u64 {
-    let h = if b.len() <= 16 {
-        let (x, y) = words16(b);
-        let l = b.len() as u64;
-        mum(x ^ 0xa076_1d64_78bd_642f, y ^ 0xe703_7ed1_a0b4_28db ^ (l << 56))
-            ^ mum(y ^ 0x8ebc_6af0_9c88_c6e3, x ^ 0x5899_65cc_7537_4cc3 ^ l).rotate_left(32)
-    } else {
-        xxh3_64(b)
-    };
+    let h = if b.len() <= 16 { aes16(b).0 } else { xxh3_64(b) };
     if h == 0 { 1 } else { h }
 }
 
@@ -123,11 +149,7 @@ fn h64(b: &[u8]) -> u64 {
 #[inline(always)]
 fn h64_chk(b: &[u8]) -> (u64, u32) {
     if b.len() <= 16 {
-        let (x, y) = words16(b);
-        let l = b.len() as u64;
-        let h = mum(x ^ 0xa076_1d64_78bd_642f, y ^ 0xe703_7ed1_a0b4_28db ^ (l << 56))
-            ^ mum(y ^ 0x8ebc_6af0_9c88_c6e3, x ^ 0x5899_65cc_7537_4cc3 ^ l).rotate_left(32);
-        let c = mum(x ^ 0x1d8e_4e27_c47d_124f, y ^ 0x9e37_79b9_7f4a_7c15 ^ l);
+        let (h, c) = aes16(b);
         (if h == 0 { 1 } else { h }, (c >> 32) as u32)
     } else {
         (h64(b), xxh3_64_with_seed(b, 0x51_7C_C1_B7) as u32)
@@ -1792,7 +1814,7 @@ fn main() {
                             1 => (0..7).map(|i| fs.get(line, i).len() as u64).sum::<u64>(),
                             2 => timestamp(fs.get(line, 2)).unwrap_or(0) as u64,
                             3 => parse::ts_fast_ni(fs.get(line, 2)).unwrap_or(0) as u64,
-                            4 => parse::ingest_ni(fs.get(line, 3)).unwrap_or(0) as u64,
+                            4 => { let mut m = parse::Memo::new(); parse::ingest_memo_ni(fs.get(line, 3), &mut m).unwrap_or(0) as u64 },
                             5 => h64_chk(fs.get(line, 0)).0 ^ h64(fs.get(line, 1)),
                             _ => fs.e[3] as u64 ^ p as u64,
                         };
@@ -1845,11 +1867,16 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let mut laps: Vec<(&'static str, f64)> = Vec::new();
     let mut lap = |what: &'static str| laps.push((what, t0.elapsed().as_secs_f64() * 1e3));
 
-    let envbits = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(d).clamp(6, 14);
-    P2B.store(envbits("SS_P2B", P2_BITS), Ordering::Relaxed);
-    flow::PDB.store(envbits("SS_PDB", flow::PD_BITS), Ordering::Relaxed);
     flow::WC.store(std::env::var("SS_WC").map_or(flow::WC_DEFAULT, |v| v == "1"), Ordering::Relaxed);
     let inp = open_all(data);
+    // partition counts follow the input size, so a partition's working set
+    // stays about the same from the 20M practice set to the 60M final
+    let ev_bytes: usize = inp.events.iter().map(|&f| file_bytes(f).len()).sum();
+    let est_events = (ev_bytes / 75).max(1);
+    let auto = |per: usize| (usize::BITS - 1 - (est_events / per).max(1).leading_zeros()).clamp(9, 12);
+    let envbits = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(d).clamp(6, 14);
+    P2B.store(envbits("SS_P2B", auto(P2_PER)), Ordering::Relaxed);
+    flow::PDB.store(envbits("SS_PDB", auto(PD_PER)), Ordering::Relaxed);
     lap("open");
     let (ws, we) = (inp.window_start, inp.window_end);
     let ev_units = chunks(&inp.events);
