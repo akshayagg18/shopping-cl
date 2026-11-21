@@ -14,7 +14,12 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - name: Show available CPUs\n        run: |\n          nproc\n          cat /sys/fs/cgroup/cpu.max || true\n          lscpu -e=CPU,CORE,SOCKET | head -20\n      - name: Build both binaries
+      - name: Show available CPUs
+        run: |
+          nproc
+          cat /sys/fs/cgroup/cpu.max || true
+          lscpu -e=CPU,CORE,SOCKET | head -20
+      - name: Build both binaries
         run: |
           cargo build --release --locked
           cp target/release/ssp /tmp/shopping-hybrid
