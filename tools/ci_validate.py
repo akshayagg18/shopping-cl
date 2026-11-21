@@ -14,7 +14,15 @@ if '--publish' in sys.argv:
  path=e/'check-request.json';path.write_text(json.dumps(payload))
  subprocess.run(['gh','api','--method','POST','repos/'+repo+'/check-runs','--input',str(path)],check=True)
  raise SystemExit()
-def run(args,**kw):return subprocess.run(list(map(str,args)),check=True,**kw)
+def run(args,**kw):
+ args=list(map(str,args))
+ if 'stdout' in kw:return subprocess.run(args,check=True,**kw)
+ process=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,**kw)
+ print(process.stdout,flush=True)
+ if process.returncode:
+  report['last_failed_output']=process.stdout[-12000:];save()
+  raise subprocess.CalledProcessError(process.returncode,args)
+ return process
 def capture(args):return subprocess.check_output(list(map(str,args)),text=True)
 def save():result.write_text(json.dumps(report,indent=2)+'\n')
 report={'success':False,'candidate':target,'baseline':'d2dc441e6bed67a57572a7c1f12b06dad7f163cc','official_score':False,'run_url':'https://github.com/'+repo+'/actions/runs/'+os.environ.get('GITHUB_RUN_ID',''),'started_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'measurements':{}}
