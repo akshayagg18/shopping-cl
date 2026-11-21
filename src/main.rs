@@ -1349,6 +1349,9 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
             || parse_clicks(&ck_units, &lk, &persons, ws, we),
         )
     };
+    // Release the large event slab allocations across Rayon workers, rather than
+    // deferring single-threaded virtual-memory teardown to process exit.
+    ev_parts.into_par_iter().for_each(drop);
     lap("dedup + clicks");
 
     let ws_day = ws.div_euclid(DAY_MS);
@@ -1375,14 +1378,16 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         )
         .map(|(agg, _)| agg)
         .collect();
+    // These scattered arrays are no longer referenced after sessionization.
+    rayon::join(
+        || ev_scattered.into_par_iter().for_each(drop),
+        || ck_parts.into_par_iter().for_each(drop),
+    );
     lap("sessionized");
     output::write(out, aggs, &lk, &ctx_info(&ctx, &lk));
     lap("written");
     if leak {
         // the process is about to exit: skip unmapping gigabytes of buffers
-        std::mem::forget(ev_parts);
-        std::mem::forget(ev_scattered);
-        std::mem::forget(ck_parts);
         std::mem::forget(persons);
     }
     laps
