@@ -1,0 +1,30 @@
+name: Codex same-artifact scaling study
+on:
+  push:
+    branches: [codex/scaling]
+  workflow_dispatch:
+permissions:
+  contents: read
+  checks: write
+env:
+  SOURCE_SHA: fef07368caf2e161fbf91dbf67e8176574fcfaa9
+jobs:
+  study:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.100.0
+      - run: python -m pip install pyarrow==26.0.1
+      - run: sudo swapoff -a
+      - name: Measure thread scaling, partitions, and stages
+        run: python tools/ci_scaling.py
+      - name: Publish evidence
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/ci_scaling.py --publish
