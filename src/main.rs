@@ -74,13 +74,17 @@ pub fn open_input(f: usize) -> File {
     File::open(&paths[f]).unwrap_or_else(|e| panic!("open {}: {e}", paths[f].display()))
 }
 
-/// Read bytes [lo, hi) of `file` into `buf`.
+/// Read bytes [lo, hi) of `file` into `buf[..hi - lo]`. The buffer only ever
+/// grows (zeroed once), so a refill costs no memset.
 pub fn read_range(file: &File, lo: usize, hi: usize, buf: &mut Vec<u8>) {
     use std::os::unix::fs::FileExt;
-    buf.clear();
-    buf.resize(hi - lo, 0);
+    let n = hi - lo;
+    if buf.len() < n {
+        buf.resize(n, 0);
+    }
+    let buf = &mut buf[..n];
     let mut got = 0;
-    while got < buf.len() {
+    while got < n {
         match file.read_at(&mut buf[got..], (lo + got) as u64) {
             Ok(0) => panic!("short read"),
             Ok(k) => got += k,
@@ -1624,10 +1628,20 @@ fn main() {
 pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let t0 = std::time::Instant::now();
     let mut laps: Vec<(&'static str, f64)> = Vec::new();
-    let mut lap = |what: &'static str| laps.push((what, t0.elapsed().as_secs_f64() * 1e3));
+    let rss = std::env::var("SS_RSS").is_ok();
+    let mut lap = |what: &'static str| {
+        laps.push((what, t0.elapsed().as_secs_f64() * 1e3));
+        if rss {
+            let st = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+            let g = |k: &str| st.lines().find(|l| l.starts_with(k)).map(|l| l[k.len()..].trim().to_string()).unwrap_or_default();
+            eprintln!("rss {what}: anon {} file {} shmem {}", g("RssAnon:"), g("RssFile:"), g("RssShmem:"));
+        }
+    };
 
     flow::WC.store(std::env::var("SS_WC").map_or(flow::WC_DEFAULT, |v| v == "1"), Ordering::Relaxed);
     READ.store(std::env::var("SS_READ").map_or(true, |v| v != "0"), Ordering::Relaxed);
+    flow::EXP.store(std::env::var("SS_EXP").is_ok(), Ordering::Relaxed);
+    flow::EXPL.store(std::env::var("SS_EXPL").ok().and_then(|v| v.parse().ok()).unwrap_or(0), Ordering::Relaxed);
     let inp = open_all(data);
     // partition counts follow the input size, so a partition's working set
     // stays about the same from the 20M practice set to the 60M final

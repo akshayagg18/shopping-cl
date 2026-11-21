@@ -5,6 +5,8 @@
 use super::*;
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicU64;
+pub static EXP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static EXPL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 pub const PD_BITS: u32 = 10; // event-id partitions of the copy records (default)
 pub static PDB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(PD_BITS);
@@ -101,7 +103,7 @@ impl<T: Copy + Default> Stream<T> {
     /// Records per staging flush: a whole number of cache lines.
     const K: usize = if std::mem::size_of::<T>() == 24 { 8 } else if std::mem::size_of::<T>() == 32 { 4 } else { 1 };
     /// Records per block, a multiple of K.
-    const CAP: usize = BLOCK_BYTES / std::mem::size_of::<T>() / Self::K * Self::K;
+    pub const CAP: usize = BLOCK_BYTES / std::mem::size_of::<T>() / Self::K * Self::K;
 
     fn new(parts: usize) -> Self {
         let wc = WC.load(Ordering::Relaxed) && Self::K > 1;
@@ -258,7 +260,7 @@ struct PendE {
 
 #[inline(always)]
 fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
-    let key = persons.map.get(pd.uh).unwrap_or_else(|| unlinked_key(pd.uh));
+    let key = if EXP.load(Ordering::Relaxed) { unlinked_key(pd.uh) } else { persons.map.get(pd.uh).unwrap_or_else(|| unlinked_key(pd.uh)) };
     let pb = person_bucket(key);
     let i = sink.ev.push(&mut sink.arena, pb, Ev2 { key, uref: pd.uref, ts: pd.ts, pc: pd.pc });
     let loc = (tid << 48) | ((pb as u64) << 32) | i as u64;
@@ -273,8 +275,13 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
     let mut memo = parse::Memo::new();
     let mut head = 0usize;
     let mut filled = 0usize;
+    let lvl = EXPL.load(Ordering::Relaxed);
+    if lvl == 5 { return; }
+    let lvl = if lvl == 4 { 2 } else { lvl };
+    let mut sink_acc = 0u64;
     crate::scan::scan_records::<7>(f, s, e, |p, line, fs| {
         let Some(fs) = fs else { return };
+        if lvl == 2 { sink_acc = sink_acc.wrapping_add(fs.e[6] as u64); return; }
         let fld = |i: usize| fs.get(line, i);
         let eid = fld(0);
         if eid.is_empty() {
@@ -306,7 +313,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
                 break 'valid;
             };
             let uh = h64(user);
-            persons.map.prefetch(uh);
+            if !EXP.load(Ordering::Relaxed) { persons.map.prefetch(uh); }
             let pd = PendE {
                 uh,
                 uref: mkref(f, p + fs.span(line, 1).0, user.len()),
@@ -316,6 +323,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
                 ts: (ts - ws) as u32,
                 pc,
             };
+            if lvl == 3 { sink_acc = sink_acc.wrapping_add(pd.uh ^ pd.eid ^ pd.ts as u64 ^ pd.pc as u64 ^ pd.ingest as u64 ^ pd.uref); return; }
             if filled == AHEAD {
                 emit_event(sink, persons, tid, &ring[head]);
             } else {
@@ -333,6 +341,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
         let pd = ring[(start + k) % AHEAD];
         emit_event(sink, persons, tid, &pd);
     }
+    std::hint::black_box(sink_acc);
 }
 
 #[derive(Clone, Copy, Default)]
@@ -345,7 +354,7 @@ struct PendC {
 
 #[inline(always)]
 fn emit_click(sink: &mut Sink, persons: &Persons, pd: &PendC) {
-    let key = persons.map.get(pd.uh).unwrap_or_else(|| unlinked_key(pd.uh));
+    let key = if EXP.load(Ordering::Relaxed) { unlinked_key(pd.uh) } else { persons.map.get(pd.uh).unwrap_or_else(|| unlinked_key(pd.uh)) };
     sink.ck.push(&mut sink.arena, person_bucket(key), Ck { key, cref: pd.cref, ts: pd.ts, camp: pd.camp });
 }
 
@@ -354,6 +363,7 @@ fn emit_click(sink: &mut Sink, persons: &Persons, pd: &PendC) {
 pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons, ws: i64, we: i64, sink: &mut Sink) {
     const AHEAD: usize = 16;
     let lo = ws - CLICK_REACH;
+    if EXPL.load(Ordering::Relaxed) >= 4 { return; }
     let mut ring = [PendC::default(); AHEAD];
     let mut memo = parse::Memo::new();
     let mut head = 0usize;
@@ -372,7 +382,7 @@ pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
         }
         let Some(camp) = lk.campaigns.get(h64(fld(2))) else { return };
         let uh = h64(user);
-        persons.map.prefetch(uh);
+        if !EXP.load(Ordering::Relaxed) { persons.map.prefetch(uh); }
         let pd = PendC { uh, cref: mkref(f, p + fs.span(line, 0).0, cid.len()), ts: (ts - lo) as u32, camp: camp as u32 };
         if filled == AHEAD {
             emit_click(sink, persons, &ring[head]);
@@ -428,7 +438,7 @@ impl Dead {
 
 #[derive(Default)]
 struct DedupScratch2 {
-    buf: Vec<CopyR>,
+    blocks: Vec<(usize, usize)>,
     table: Vec<u64>,
 }
 
@@ -442,46 +452,59 @@ pub fn dedup_part(b: usize, sinks: &[Sink], dead: &Dead) {
     DEDUP2.with(|cell| {
         let mut guard = cell.borrow_mut();
         let sc = &mut *guard;
-        sc.buf.clear();
+        // the copy records stay in their blocks: a table entry names a copy by
+        // block << 9 | offset (a block holds fewer than 512)
+        const OB: u32 = 9;
+
+        sc.blocks.clear();
+        let mut n = 0usize;
         for s in sinks {
             for sl in s.cp.slices(b) {
-                sc.buf.extend_from_slice(sl);
+                n += sl.len();
+                sc.blocks.push((sl.as_ptr() as usize, sl.len()));
             }
         }
-        let n = sc.buf.len();
         let cap = (n * 2).next_power_of_two().max(16);
         let mask = cap - 1;
         sc.table.clear();
         sc.table.resize(cap, 0);
-        let (buf, table) = (&sc.buf, &mut sc.table);
-        for g in 0..n {
-            let e = unsafe { buf.get_unchecked(g) };
-            let fp = e.eid >> 32;
-            let mut s = (e.eid as usize) & mask;
-            loop {
-                let t = unsafe { *table.get_unchecked(s) };
-                if t == 0 {
-                    unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
-                    break;
-                }
-                if t >> 32 == fp {
-                    let j = (t & 0xFFFF_FFFF) as usize - 1;
-                    let old = unsafe { buf.get_unchecked(j) };
-                    if old.eid == e.eid && old.chk == e.chk {
-                        // equal ingest_ts means identical copies (rules.md): keep the first
-                        if e.ingest < old.ingest {
-                            unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
-                            if old.loc != NOLOC {
-                                dead.kill(old.loc);
-                            }
-                        } else if e.loc != NOLOC {
-                            dead.kill(e.loc);
-                        }
+        let (blocks, table) = (&sc.blocks, &mut sc.table);
+        let rec = |g: usize| -> &CopyR {
+            let (p, _) = unsafe { *blocks.get_unchecked(g >> OB) };
+            unsafe { &*(p as *const CopyR).add(g & ((1 << OB) - 1)) }
+        };
+        for (bi, &(p, len)) in blocks.iter().enumerate() {
+            let blk = unsafe { std::slice::from_raw_parts(p as *const CopyR, len) };
+            for (o, e) in blk.iter().enumerate() {
+                let g = (bi << OB) | o;
+                let fp = e.eid >> 32;
+                let mut s = (e.eid as usize) & mask;
+                loop {
+                    let t = unsafe { *table.get_unchecked(s) };
+                    if t == 0 {
+                        unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
                         break;
                     }
+                    if t >> 32 == fp {
+                        let j = (t & 0xFFFF_FFFF) as usize - 1;
+                        let old = rec(j);
+                        if old.eid == e.eid && old.chk == e.chk {
+                            // equal ingest_ts means identical copies (rules.md): keep the first
+                            if e.ingest < old.ingest {
+                                unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
+                                if old.loc != NOLOC {
+                                    dead.kill(old.loc);
+                                }
+                            } else if e.loc != NOLOC {
+                                dead.kill(e.loc);
+                            }
+                            break;
+                        }
+                    }
+                    s = (s + 1) & mask;
                 }
-                s = (s + 1) & mask;
             }
         }
     })
 }
+const _: () = assert!(Stream::<CopyR>::CAP < 512, "dedup names a copy by block << 9 | offset");

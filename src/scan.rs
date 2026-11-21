@@ -270,7 +270,7 @@ fn scan_block<const N: usize>(f: usize, file: Option<&std::fs::File>, s: usize, 
         WINDOW.with(|w| {
             let mut win = w.borrow_mut();
             crate::read_range(file, off, lim, &mut win);
-            scan_window::<N>(f, &win, off, n, s, e, lim, each);
+            scan_window::<N>(f, &win[..lim - off], off, n, s, e, lim, each);
         });
     } else {
         scan_window::<N>(f, file_bytes(f), 0, n, s, e, lim, each);
