@@ -20,7 +20,7 @@ static GLOBAL: alloc::HugeAlloc = alloc::HugeAlloc;
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -756,12 +756,44 @@ impl EvChunk {
     }
 }
 
-fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64) -> Vec<EvChunk> {
+
+// Two-pass conservative duplicate filter. No false negatives: if two good
+// records have the same event ID, the second encounter sets its Bloom bit.
+// Hash collisions only make more events take the exact slow path.
+const BLOOM_LOG2: usize = 27;
+#[inline(always)]
+fn event_bloom_slot(h: u64) -> (usize, u64) {
+    let x = h.wrapping_mul(0xD6E8_FEB8_6659_FD93);
+    let bit = (x >> (64 - BLOOM_LOG2)) as usize;
+    (bit >> 6, 1u64 << (bit & 63))
+}
+fn event_duplicate_bitmap(units: &[(usize, usize, usize)]) -> Vec<u64> {
+    let words = (1usize << BLOOM_LOG2) / 64;
+    let seen: Vec<AtomicU64> = (0..words).map(|_| AtomicU64::new(0)).collect();
+    let duplicates: Vec<AtomicU64> = (0..words).map(|_| AtomicU64::new(0)).collect();
+    units.par_iter().for_each(|&(f, s, e)| {
+        for_records::<7>(f, s, e, |_, line, fields| {
+            if let Some(fs) = fields {
+                let (a, b) = fs[0];
+                let eid = &line[a as usize..b as usize];
+                if !eid.is_empty() {
+                    let (i, m) = event_bloom_slot(h64(eid));
+                    if seen[i].fetch_or(m, Ordering::Relaxed) & m != 0 {
+                        duplicates[i].fetch_or(m, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+    });
+    duplicates.iter().map(|w| w.load(Ordering::Relaxed)).collect()
+}
+
+fn parse_events_bloom(units: &[(usize, usize, usize)], lk: &Lookups, persons: &Persons, duplicates: &[u64], ws: i64, we: i64) -> Vec<(EvChunk, (Vec<Ev2>, Vec<u32>))> {
     units
         .par_iter()
         .map(|&(f, s, e)| {
             // events lines are >= ~60 bytes; per-bucket room with slack
-            let cap = (e - s) / 64 / P1 * 9 / 8 + 24;
+            let cap = (e - s) / 64 / P1 / 12 + 12;
             let mut data: Vec<Ev1> = Vec::with_capacity(cap * P1);
             #[allow(clippy::uninit_vec)]
             unsafe {
@@ -769,6 +801,7 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
             }
             let mut len = vec![0u32; P1];
             let mut overflow: Vec<Vec<Ev1>> = (0..P1).map(|_| Vec::new()).collect();
+            let mut direct = Vec::<Ev2>::with_capacity((e - s) / 90);
             for_records::<7>(f, s, e, |p, line, fs| {
                 let Some(fs) = fs else { return };
                 let fld = |i: usize| unsafe { line.get_unchecked(fs[i].0 as usize..fs[i].1 as usize) };
@@ -813,16 +846,30 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
                     ev.ts = (ts - ws) as u32;
                     ev.pc = pc;
                 }
-                let b = (ev.eid >> (64 - P1_BITS)) as usize;
-                let l = unsafe { len.get_unchecked_mut(b) };
-                if (*l as usize) < cap {
-                    unsafe { *data.get_unchecked_mut(b * cap + *l as usize) = ev };
-                    *l += 1;
-                } else {
-                    overflow[b].push(ev);
+                let (wi, mask) = event_bloom_slot(ev.eid);
+                if duplicates[wi] & mask != 0 {
+                    // A Bloom hit is only a suspicion: the existing exact
+                    // per-event-ID hash table resolves all collisions and
+                    // keeps the earliest ingestion, even if its row is bad.
+                    let b = (ev.eid >> (64 - P1_BITS)) as usize;
+                    let l = unsafe { len.get_unchecked_mut(b) };
+                    if (*l as usize) < cap {
+                        unsafe { *data.get_unchecked_mut(b * cap + *l as usize) = ev };
+                        *l += 1;
+                    } else {
+                        overflow[b].push(ev);
+                    }
+                } else if ev.ts != INVALID {
+                    // This event-ID bitmap bit occurred only once. It cannot
+                    // have a second structurally valid occurrence, so it is
+                    // safe to emit the validated event without exact dedup.
+                    let key = persons.map.get(ev.user).unwrap_or_else(|| unlinked_key(ev.user));
+                    direct.push(Ev2 { key, uref: ev.uref, ts: ev.ts, pc: ev.pc });
                 }
             });
-            EvChunk { data, cap, len, overflow }
+            let mut ks = Vec::<u16>::new();
+            let direct = by_bucket(&direct, |e| person_bucket(e.key), &mut ks);
+            (EvChunk { data, cap, len, overflow }, direct)
         })
         .collect()
 }
@@ -1326,29 +1373,24 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let (ws, we) = (inp.window_start, inp.window_end);
     let ev_units = chunks(&inp.events);
     let ck_units = chunks(&inp.clicks);
-    let seq = std::env::var("SS_SEQ").is_ok();
-    let (persons, ev_parts) = if seq {
-        let p = links(&inp);
-        lap("links");
-        let e = parse_events(&ev_units, &lk, ws, we);
-        lap("events parsed");
-        (p, e)
-    } else {
-        rayon::join(|| links(&inp), || parse_events(&ev_units, &lk, ws, we))
-    };
-    lap("links + events parsed");
-    let (ev_scattered, ck_parts) = if seq {
-        let a = (0..P1).into_par_iter().map(|b| dedup_bucket(&ev_parts, b, &persons)).collect::<Vec<_>>();
-        lap("dedup");
-        let b = parse_clicks(&ck_units, &lk, &persons, ws, we);
-        lap("clicks");
-        (a, b)
-    } else {
-        rayon::join(
-            || (0..P1).into_par_iter().map(|b| dedup_bucket(&ev_parts, b, &persons)).collect::<Vec<_>>(),
-            || parse_clicks(&ck_units, &lk, &persons, ws, we),
-        )
-    };
+    // Run link graph resolution while scanning event IDs for possible
+    // duplicates. This overlaps the otherwise serial links stage.
+    let (persons, duplicate_bitmap) = rayon::join(
+        || links(&inp),
+        || event_duplicate_bitmap(&ev_units),
+    );
+    lap("links + duplicate prescan");
+    let (parsed, ck_parts) = rayon::join(
+        || parse_events_bloom(&ev_units, &lk, &persons, &duplicate_bitmap, ws, we),
+        || parse_clicks(&ck_units, &lk, &persons, ws, we),
+    );
+    lap("main event + click parse");
+    let (ev_parts, direct_parts): (Vec<EvChunk>, Vec<(Vec<Ev2>, Vec<u32>)>) =
+        parsed.into_iter().unzip();
+    let ev_scattered = (0..P1)
+        .into_par_iter()
+        .map(|b| dedup_bucket(&ev_parts, b, &persons))
+        .collect::<Vec<_>>();
     lap("dedup + clicks");
 
     let ws_day = ws.div_euclid(DAY_MS);
@@ -1364,6 +1406,9 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
                 sc.ev_src.clear();
                 sc.ck_src.clear();
                 for (v, off) in &ev_scattered {
+                    sc.ev_src.push(&v[off[b] as usize..off[b + 1] as usize]);
+                }
+                for (v, off) in &direct_parts {
                     sc.ev_src.push(&v[off[b] as usize..off[b + 1] as usize]);
                 }
                 for (v, off) in &ck_parts {
@@ -1382,6 +1427,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         // the process is about to exit: skip unmapping gigabytes of buffers
         std::mem::forget(ev_parts);
         std::mem::forget(ev_scattered);
+        std::mem::forget(direct_parts);
         std::mem::forget(ck_parts);
         std::mem::forget(persons);
     }
