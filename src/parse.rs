@@ -438,12 +438,30 @@ pub fn ts_memo(b: &[u8], m: &mut Memo) -> Option<i64> {
     ts_fast(b)
 }
 
-/// `ingest` with dates looked up in `m`: identical results.
+const D1900: i64 = days_from_civil(Y0, 1, 1);
+const D2300: i64 = days_from_civil(Y0 + YN as i64, 1, 1);
+
+/// `ingest` with dates looked up in `m`: identical results. Like `ingest`, the
+/// time of day is taken without range checks (rules.md: always valid F1).
 #[inline(always)]
 pub fn ingest_memo(b: &[u8], m: &mut Memo) -> Option<i64> {
     if b.len() == 20 && b[19] == b'Z' {
-        if let (Some(s), Some(d)) = (tod(b), memo_days(b, m)) {
-            return Some((d * 86_400 + s) * 1_000);
+        let w0 = le64(b, 0);
+        let w1 = le64(b, 8);
+        let w2 = unsafe { std::ptr::read_unaligned(b.as_ptr().add(16) as *const u32) }.to_le() as u64;
+        let sep_bad = ((w0 & 0xFF00_00FF_0000_0000) ^ 0x2D00_002D_0000_0000)
+            | ((w1 & 0x0000_FF00_00FF_0000) ^ 0x0000_3A00_0054_0000)
+            | ((w2 & 0xFF) ^ 0x3A);
+        if sep_bad == 0 {
+            // the lean `ingest` takes only years 1900..2300 this way
+            if let Some(d) = memo_days(b, m).filter(|&d| (D1900..D2300).contains(&d)) {
+                let p1 = pairs((w1 ^ 0x3030_3030_3030_3030) & 0xFFFF_00FF_FF00_FFFF);
+                let p2 = pairs((w2 ^ 0x3030_3030) & 0x00FF_FF00);
+                let h = ((p1 >> 24) & 0xFF) as i64;
+                let mi = ((p1 >> 48) & 0xFF) as i64;
+                let sec = ((p2 >> 8) & 0xFF) as i64;
+                return Some((d * 86_400 + h * 3_600 + mi * 60 + sec) * 1_000);
+            }
         }
     }
     ingest(b)
@@ -589,7 +607,7 @@ mod tests {
 
     #[test]
     fn ts_fast_matches_timestamp() {
-        let mut x: u64 = 0x5151_2323_9999_abcd;
+        let mut x: u64 = 0x5151_2323_9999_abcd ^ std::env::var("SS_TSEED").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0).wrapping_mul(0x9E37_79B9_7F4A_7C15);
         let mut rnd = || {
             x ^= x << 13;
             x ^= x >> 7;
@@ -628,7 +646,7 @@ mod tests {
 
     #[test]
     fn memo_matches_timestamp() {
-        let mut x: u64 = 0x7777_1234_5678_9999;
+        let mut x: u64 = 0x7777_1234_5678_9999 ^ std::env::var("SS_TSEED").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0).wrapping_mul(0x9E37_79B9_7F4A_7C15);
         let mut rnd = || {
             x ^= x << 13;
             x ^= x >> 7;
@@ -711,10 +729,15 @@ mod tests {
 }
 
 #[inline(never)]
+#[allow(dead_code)]
 pub fn ingest_ni(b: &[u8]) -> Option<i64> {
     ingest(b)
 }
 #[inline(never)]
 pub fn ts_fast_ni(b: &[u8]) -> Option<i64> {
     ts_fast(b)
+}
+#[inline(never)]
+pub fn ingest_memo_ni(b: &[u8], m: &mut Memo) -> Option<i64> {
+    ingest_memo(b, m)
 }

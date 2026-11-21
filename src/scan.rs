@@ -223,44 +223,87 @@ fn any_bits(bm: &[u64], from: usize, to: usize) -> bool {
     }
 }
 
+/// A line that runs past the bitmap: the scalar splitter (rare, kept out of line).
+#[cold]
+#[inline(never)]
+fn long_line<const N: usize>(data: &[u8], p: usize, fl: &mut Flds<N>) -> (usize, bool) {
+    let n = data.len();
+    let end = match memchr(b'\n', &data[p..]) {
+        Some(i) => p + i,
+        None => n,
+    };
+    match parse::split::<N>(&data[p..end]) {
+        Some(fs) => {
+            fl.e = fs.ends;
+            (end, true)
+        }
+        None => (end, false),
+    }
+}
+
 /// Iterate records starting in [s, e) (a file's header skipped), split into N
 /// fields: `each(line_start, line, fields)`, fields None for a malformed line.
 #[inline(always)]
-pub fn scan_records<const N: usize>(f: usize, s: usize, e: usize, mut each: impl FnMut(usize, &'static [u8], Option<&Flds<N>>)) {
+pub fn scan_records<const N: usize>(f: usize, s: usize, e: usize, mut each: impl FnMut(usize, &[u8], Option<&Flds<N>>)) {
     const SUB: usize = 192 << 10;
+    let file = if crate::READ.load(Ordering::Relaxed) { Some(crate::open_input(f)) } else { None };
     let mut a = s;
     while a < e {
         let b = (a + SUB).min(e);
-        scan_block::<N>(f, a, b, &mut each);
+        scan_block::<N>(f, file.as_ref(), a, b, &mut each);
         a = b;
     }
 }
 
+thread_local! {
+    static WINDOW: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::new());
+}
+
 #[inline(never)]
-fn scan_block<const N: usize>(f: usize, s: usize, e: usize, each: &mut impl FnMut(usize, &'static [u8], Option<&Flds<N>>)) {
-    let data = file_bytes(f);
-    let n = data.len();
+fn scan_block<const N: usize>(f: usize, file: Option<&std::fs::File>, s: usize, e: usize, each: &mut impl FnMut(usize, &[u8], Option<&Flds<N>>)) {
+    let n = file_bytes(f).len();
+    let lim = (e + 2048).min(n);
+    if let Some(file) = file {
+        // the bytes this block needs, copied into a small buffer that stays in
+        // cache; positions below stay file offsets, shifted by `off`
+        let off = s.saturating_sub(1) & !63;
+        WINDOW.with(|w| {
+            let mut win = w.borrow_mut();
+            crate::read_range(file, off, lim, &mut win);
+            scan_window::<N>(f, &win, off, n, s, e, lim, each);
+        });
+    } else {
+        scan_window::<N>(f, file_bytes(f), 0, n, s, e, lim, each);
+    }
+}
+
+/// `d` holds file bytes [off, off + d.len()), covering [s - 1, lim); `n` is the
+/// file length. Positions are file offsets; byte x is d[x - off].
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn scan_window<const N: usize>(f: usize, d: &[u8], off: usize, n: usize, s: usize, e: usize, lim: usize, each: &mut impl FnMut(usize, &[u8], Option<&Flds<N>>)) {
+    let at = |x: usize| d[x - off];
     let mut p = s;
     if s == 0 {
-        p = match memchr(b'\n', data) {
+        p = match memchr(b'\n', &d[..lim - off]) {
             Some(i) => i + 1,
-            None => n,
+            None => lim,
         };
-    } else if data[s - 1] != b'\n' {
-        p = match memchr(b'\n', &data[s..]) {
+    } else if at(s - 1) != b'\n' {
+        p = match memchr(b'\n', &d[s - off..lim - off]) {
             Some(i) => s + i + 1,
-            None => n,
+            None => lim,
         };
     }
     if p >= e {
         return;
     }
     let base = p & !63;
-    let lim = (e + 2048).min(n);
+    let data = &d[..lim - off];
     SCANBUF.with(|cell| {
         let mut guard = cell.borrow_mut();
         let buf = &mut *guard;
-        let words = stage1(&data[base..lim], p - base, lim == n, buf);
+        let words = stage1(&data[base - off..lim - off], p - base, lim == n, buf);
         let (nlb, bad, sep) = (&buf.nl[..], &buf.bad[..], &buf.sep[..]);
         let (nlp, badp, sepp, nsep) = (nlb.as_ptr(), bad.as_ptr(), sep.as_ptr(), sep.len());
         // first separator at or after p
@@ -298,25 +341,13 @@ fn scan_block<const N: usize>(f: usize, s: usize, e: usize, each: &mut impl FnMu
                 }
                 (base + endr, ok)
             } else {
-                // no newline before the bitmap's end (a line over 2 KiB long)
-                let end = match memchr(b'\n', &data[p..]) {
-                    Some(i) => p + i,
-                    None => n,
-                };
-                let line = &data[p..end];
-                let ok = match parse::split::<N>(line) {
-                    Some(fs) => {
-                        fl.e = fs.ends;
-                        true
-                    }
-                    None => false,
-                };
-                // past the bitmap: this is the last line of the block
-                cur = 0;
-                w = words;
-                (end, ok)
+                // no newline before the bitmap's end (a line over 2 KiB long):
+                // the rare scalar path reads the mapping, then the block is done
+                let (end, ok) = long_line::<N>(file_bytes(f), p, &mut fl);
+                each(p, &file_bytes(f)[p..end], if ok { Some(&fl) } else { None });
+                break;
             };
-            let line = &data[p..end.min(n)];
+            let line = &data[p - off..end.min(n) - off];
             each(p, line, if ok { Some(&fl) } else { None });
             p = end + 1;
             if p >= e || w >= words {
