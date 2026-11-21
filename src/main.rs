@@ -1179,7 +1179,103 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
     sc.cks_sorted = cks;
 }
 
+
+// Adaptive exact bitset assist path for unusually active identity components.
+// For each valid ad click, mark the session-start range covered by [ts,ts+7days].
+// OR ensures duplicate clicks and overlapping coverage never double-count assists.
+fn person_sessions_bitmap(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut Scratch) {
+    #[derive(Clone, Copy)]
+    struct BSession { start: i64, day: usize, revenue: i64, purchasing: bool }
+    let key = evs[0].key;
+    let name = if key & LINKED != 0 { ctx.persons.names[(key & !LINKED) as usize] } else { evs[0].uref };
+    let mut sessions: Vec<BSession> = Vec::with_capacity(evs.len() / 6 + 1);
+    let mut cur_day = i64::MIN;
+    let (mut daily_s, mut daily_e, mut daily_r) = (0u32, 0u32, 0i64);
+    let mut daily_p = false;
+    let mut k = 0usize;
+    while k < evs.len() {
+        let start = evs[k].ts as i64;
+        let day = (ctx.ws + start).div_euclid(DAY_MS) - ctx.ws_day;
+        if day != cur_day {
+            if cur_day != i64::MIN {
+                flush_day(ctx, agg, sc, name, cur_day, daily_s, daily_e, daily_r, daily_p);
+            }
+            cur_day = day;
+            daily_s = 0; daily_e = 0; daily_r = 0; daily_p = false;
+        }
+        let mut last = start;
+        let (mut n, mut rev, mut purch) = (0u32, 0i64, false);
+        while k < evs.len() && evs[k].ts as i64 - last <= SESSION_GAP {
+            let e = &evs[k];
+            last = e.ts as i64;
+            n += 1;
+            if e.pc >= 256 {
+                let price = (e.pc >> 8) as i64;
+                rev += price;
+                purch = true;
+                sc.cat[(e.pc & 255) as usize] += price;
+            }
+            k += 1;
+        }
+        sessions.push(BSession { start, day: day as usize, revenue: rev, purchasing: purch });
+        daily_s += 1;
+        daily_e += n;
+        daily_r += rev;
+        daily_p |= purch;
+    }
+    flush_day(ctx, agg, sc, name, cur_day, daily_s, daily_e, daily_r, daily_p);
+
+    let words = sessions.len().div_ceil(64);
+    let mut masks: std::collections::HashMap<u32, Vec<u64>> = std::collections::HashMap::new();
+    for c in cks {
+        let first = sessions.partition_point(|s| s.start <= c.ts);
+        if first == sessions.len() { continue; }
+        let stop = sessions.partition_point(|s| s.start <= c.ts + CLICK_REACH);
+        if first >= stop { continue; }
+        let bits = masks.entry(c.camp).or_insert_with(|| vec![0u64; words]);
+        let first_word = first >> 6;
+        let last_word = (stop - 1) >> 6;
+        for w in first_word..=last_word {
+            let mut word = !0u64;
+            if w == first_word { word &= !0u64 << (first & 63); }
+            if w == last_word { word &= !0u64 >> (63 - ((stop - 1) & 63)); }
+            bits[w] |= word;
+        }
+    }
+    for (campaign, coverage) in masks {
+        for (w, mut bits) in coverage.into_iter().enumerate() {
+            while bits != 0 {
+                let idx = w * 64 + bits.trailing_zeros() as usize;
+                let day = sessions[idx].day;
+                agg.camp[campaign as usize * ctx.ndays + day][3] += 1;
+                bits &= bits - 1;
+            }
+        }
+    }
+
+    // Clicks are sorted by (ts, bytewise click_id). The first record at
+    // the newest timestamp wins the exact tie-break, including duplicates.
+    let (mut next, mut best) = (0usize, None::<usize>);
+    for s in &sessions {
+        while next < cks.len() && cks[next].ts <= s.start {
+            if next == 0 || cks[next].ts != cks[next - 1].ts {
+                best = Some(next);
+            }
+            next += 1;
+        }
+        let credit = best.filter(|&i| s.start - cks[i].ts <= CLICK_REACH)
+                         .map(|i| cks[i].camp as usize).unwrap_or(ctx.ncamp);
+        let stat = &mut agg.camp[credit * ctx.ndays + s.day];
+        stat[0] += 1;
+        stat[1] += s.purchasing as i64;
+        stat[2] += s.revenue;
+    }
+}
 fn person_sessions(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut Scratch) {
+    if evs.len() >= 4096 && cks.len() >= 512 {
+        person_sessions_bitmap(ctx, evs, cks, agg, sc);
+        return;
+    }
     let key = evs[0].key;
     let name = if key & LINKED != 0 { ctx.persons.names[(key & !LINKED) as usize] } else { evs[0].uref };
     let (mut lo, mut hi) = (0usize, 0usize);
