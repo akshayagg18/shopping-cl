@@ -5,15 +5,15 @@ use std::io::BufWriter;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Date32Array, Int64Array, RecordBatch, StringArray};
 use arrow_array::builder::StringBuilder;
+use arrow_array::{ArrayRef, Date32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
 use rayon::prelude::*;
 
-use crate::{Agg, Lookups, OutInfo, name_bytes};
+use crate::{Agg, Lookups, OutInfo, name_bytes, name_len};
 
 fn props() -> WriterProperties {
     WriterProperties::builder()
@@ -28,10 +28,16 @@ fn props() -> WriterProperties {
 }
 
 fn write_batch(path: &Path, batch: RecordBatch) {
+    let span = crate::profile::Span::new("parquet_encode", batch.num_rows());
+    let rows = batch.num_rows();
     let f = BufWriter::with_capacity(4 << 20, File::create(path).expect("create parquet"));
     let mut w = ArrowWriter::try_new(f, batch.schema(), Some(props())).expect("writer");
     w.write(&batch).expect("write");
     w.close().expect("close");
+    span.finish(
+        rows,
+        std::fs::metadata(path).map_or(0, |m| m.len() as usize),
+    );
 }
 
 fn user_schema() -> Arc<Schema> {
@@ -110,7 +116,10 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
             Arc::new(Int64Array::from(r)),
             Arc::new(Int64Array::from(a)),
         ];
-        write_batch(&cd.join("part-0.parquet"), RecordBatch::try_new(schema, cols).unwrap());
+        write_batch(
+            &cd.join("part-0.parquet"),
+            RecordBatch::try_new(schema, cols).unwrap(),
+        );
     };
 
     let user_jobs = || {
@@ -118,14 +127,20 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
             if a.rows.is_empty() && i > 0 {
                 return;
             }
+            let span = crate::profile::Span::new("arrow_construct", i);
             let n = a.rows.len();
-            let bytes: usize = a.rows.iter().map(|r| (r.name & 0xFFFF) as usize).sum();
+            let bytes: usize = a.rows.iter().map(|r| name_len(r.name, info)).sum();
             let mut ids = StringBuilder::with_capacity(n, bytes);
             let mut top = StringBuilder::with_capacity(n, n * 4);
             let mut day = Vec::with_capacity(n);
-            let (mut s, mut e, mut r) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
+            let (mut s, mut e, mut r) = (
+                Vec::with_capacity(n),
+                Vec::with_capacity(n),
+                Vec::with_capacity(n),
+            );
+            let mut name_buf = [0u8; 9];
             for row in &a.rows {
-                ids.append_value(utf8(name_bytes(row.name)));
+                ids.append_value(utf8(name_bytes(row.name, info, &mut name_buf)));
                 day.push(row.day);
                 s.push(row.sessions as i64);
                 e.push(row.events as i64);
@@ -144,7 +159,11 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
                 Arc::new(Int64Array::from(r)),
                 Arc::new(top.finish() as StringArray),
             ];
-            write_batch(&ud.join(format!("part-{i}.parquet")), RecordBatch::try_new(schema.clone(), cols).unwrap());
+            span.finish(n, bytes);
+            write_batch(
+                &ud.join(format!("part-{i}.parquet")),
+                RecordBatch::try_new(schema.clone(), cols).unwrap(),
+            );
         });
     };
     rayon::join(campaign_job, user_jobs);

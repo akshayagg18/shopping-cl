@@ -1,0 +1,628 @@
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -13,6 +13,7 @@
+ mod alloc;
+ mod output;
+ mod parse;
++mod profile;
+ 
+ #[global_allocator]
+ static GLOBAL: alloc::HugeAlloc = alloc::HugeAlloc;
+@@ -23,7 +24,7 @@
+ 
+ use memmap2::Mmap;
+ use rayon::prelude::*;
+-use xxhash_rust::xxh3::{xxh3_64, xxh3_64_with_seed};
++use xxhash_rust::xxh3::xxh3_64;
+ 
+ use parse::{DAY_MS, split, timestamp};
+ 
+@@ -159,6 +160,7 @@
+     let links: Vec<usize> = csvs(&data.join("links")).into_iter().map(&mut push).collect();
+     let products = push(data.join("products.csv"));
+     let campaigns = push(data.join("campaigns.csv"));
++    let populate = std::env::var_os("SS_LAZY").is_none();
+     let maps: Vec<Mmap> = paths
+         .par_iter()
+         .map(|p| {
+@@ -168,7 +170,11 @@
+                 // mmap of an empty file fails on some systems: map an anonymous empty region.
+                 memmap2::MmapOptions::new().len(1).map_anon().unwrap().make_read_only().unwrap()
+             } else {
+-                unsafe { memmap2::MmapOptions::new().populate().map(&f) }.unwrap()
++                unsafe {
++                    let mut opts = memmap2::MmapOptions::new();
++                    if populate { opts.populate(); }
++                    opts.map(&f)
++                }.unwrap()
+             }
+         })
+         .collect();
+@@ -598,6 +604,7 @@
+ }
+ 
+ fn links(inp: &Inputs) -> Persons {
++    let span = profile::Span::new("links", 0);
+     let units = chunks(&inp.links);
+     let pairs: Vec<Vec<(u64, u64, u64, u64)>> = units
+         .par_iter()
+@@ -676,17 +683,17 @@
+         }
+         map.insert_or_get(hashes[i], LINKED | c as u64);
+     }
++    span.finish(n, total * 32);
+     Persons { map, names }
+ }
+ 
+ // ---------------------------------------------------------------- records
+ 
+-/// A parsed event copy, before dedup. 40 bytes.
++/// A parsed event copy, before dedup. 32 bytes; user bytes stay in the mmap.
+ #[derive(Clone, Copy)]
+ #[repr(C)]
+ struct Ev1 {
+     eid: u64,
+-    user: u64,
+     uref: u64,
+     ts: u32, // ms since window start; INVALID when the copy fails validation
+     ingest: u32,
+@@ -740,8 +747,11 @@
+     units
+         .par_iter()
+         .map(|&(f, s, e)| {
+-            // events lines are >= ~60 bytes; per-bucket room with slack
+-            let cap = (e - s) / 60 / P1 * 5 / 4 + 16;
++            let span = profile::Span::new("parse_events", s);
++            // Keep a full 4MiB parse chunk below one 2MiB allocation at
++            // 32 bytes/event. The estimate is not a correctness bound:
++            // arbitrary short/skewed records go through overflow vectors.
++            let cap = (e - s) / 90 / P1 + 24;
+             let mut data: Vec<Ev1> = Vec::with_capacity(cap * P1);
+             #[allow(clippy::uninit_vec)]
+             unsafe {
+@@ -756,14 +766,14 @@
+                 if eid.is_empty() {
+                     return;
+                 }
+-                let ingest_ms = timestamp(fld(3)).unwrap_or(i64::MAX / 2);
++                let ingest_ms = parse::ingest_timestamp(fld(3));
++                let eid_hash = h64(eid);
+                 let mut ev = Ev1 {
+-                    eid: h64(eid),
+-                    user: 0,
++                    eid: mkref(f, p + fs[0].0 as usize, eid.len()),
+                     uref: 0,
+                     ts: INVALID,
+                     ingest: (ingest_ms.div_euclid(1000)).clamp(0, u32::MAX as i64) as u32,
+-                    chk: xxh3_64_with_seed(eid, 0x51_7C_C1_B7) as u32,
++                    chk: eid_hash as u32,
+                     pc: 0,
+                 };
+                 'valid: {
+@@ -788,12 +798,11 @@
+                     } else {
+                         break 'valid;
+                     };
+-                    ev.user = h64(user);
+                     ev.uref = mkref(f, p + fs[1].0 as usize, user.len());
+                     ev.ts = (ts - ws) as u32;
+                     ev.pc = pc;
+                 }
+-                let b = (ev.eid >> (64 - P1_BITS)) as usize;
++                let b = (eid_hash >> (64 - P1_BITS)) as usize;
+                 let l = unsafe { len.get_unchecked_mut(b) };
+                 if (*l as usize) < cap {
+                     unsafe { *data.get_unchecked_mut(b * cap + *l as usize) = ev };
+@@ -802,6 +811,7 @@
+                     overflow[b].push(ev);
+                 }
+             });
++            span.finish(len.iter().map(|&v| v as usize).sum::<usize>() + overflow.iter().map(Vec::len).sum::<usize>(), e-s);
+             EvChunk { data, cap, len, overflow }
+         })
+         .collect()
+@@ -849,6 +859,7 @@
+ 
+ /// Dedup one event_id bucket, map users to persons, bucket by person.
+ fn dedup_bucket(parts: &[EvChunk], b: usize, persons: &Persons) -> (Vec<Ev2>, Vec<u32>) {
++    let span = profile::Span::new("dedup", b);
+     DEDUP.with(|cell| {
+         let mut guard = cell.borrow_mut();
+         let sc = &mut *guard;
+@@ -860,7 +871,8 @@
+             sc.all.extend_from_slice(o);
+         }
+         let all = &sc.all;
+-        // table entry: (eid high 32 bits) << 32 | index + 1; 0 = empty
++        // table entry: full 32-bit probe hash << 32 | index + 1; 0 = empty.
++        // Fingerprint matches compare the original ID bytes, including duplicates.
+         let cap = (n * 2).next_power_of_two().max(16);
+         let mask = cap - 1;
+         sc.table.clear();
+@@ -870,8 +882,8 @@
+         let (table, keep) = (&mut sc.table, &mut sc.keep);
+         for i in 0..n {
+             let e = unsafe { all.get_unchecked(i) };
+-            let fp = e.eid >> 32;
+-            let mut s = (e.eid as usize) & mask;
++            let fp = e.chk as u64;
++            let mut s = e.chk as usize & mask;
+             loop {
+                 let t = unsafe { *table.get_unchecked(s) };
+                 if t == 0 {
+@@ -882,7 +894,7 @@
+                 if t >> 32 == fp {
+                     let j = (t & 0xFFFF_FFFF) as usize - 1;
+                     let o = unsafe { all.get_unchecked(j) };
+-                    if o.eid == e.eid && o.chk == e.chk {
++                    if deref(o.eid) == deref(e.eid) {
+                         if e.ingest < o.ingest {
+                             table[s] = (fp << 32) | (i as u64 + 1);
+                             keep[j] = 0;
+@@ -897,32 +909,37 @@
+         const AHEAD: usize = 16;
+         sc.out.clear();
+         let out = &mut sc.out;
+-        let mut pending: [u32; AHEAD] = [0; AHEAD];
++        let mut pending: [(u32, u64); AHEAD] = [(0, 0); AHEAD];
+         let mut np = 0usize;
+-        let emit = |i: usize, out: &mut Vec<Ev2>| {
++        let mut head = 0usize;
++        let emit = |i: usize, user_hash: u64, out: &mut Vec<Ev2>| {
+             let e = &all[i];
+-            let key = persons.map.get(e.user).unwrap_or_else(|| unlinked_key(e.user));
++            let key = persons.map.get(user_hash).unwrap_or_else(|| unlinked_key(user_hash));
+             out.push(Ev2 { key, uref: e.uref, ts: e.ts, pc: e.pc });
+         };
+         for i in 0..n {
+             if keep[i] != 0 && all[i].ts != INVALID {
+-                persons.map.prefetch(all[i].user);
++                let user_hash = h64(deref(all[i].uref));
++                persons.map.prefetch(user_hash);
+                 if np == AHEAD {
+                     // ring: emit the oldest
+-                    let j = pending[0] as usize;
+-                    pending.copy_within(1.., 0);
+-                    pending[AHEAD - 1] = i as u32;
+-                    emit(j, out);
++                    let (j, h) = pending[head];
++                    pending[head] = (i as u32, user_hash);
++                    head = (head + 1) & (AHEAD - 1);
++                    emit(j as usize, h, out);
+                 } else {
+-                    pending[np] = i as u32;
++                    pending[np] = (i as u32, user_hash);
+                     np += 1;
+                 }
+             }
+         }
+-        for &j in &pending[..np] {
+-            emit(j as usize, out);
+-        }
+-        by_bucket(&sc.out, |e| person_bucket(e.key), &mut sc.ks)
++        for k in 0..np {
++            let (j, h) = pending[(head + k) & (AHEAD - 1)];
++            emit(j as usize, h, out);
++        }
++        let result = by_bucket(&sc.out, |e| person_bucket(e.key), &mut sc.ks);
++        span.finish(n, n * std::mem::size_of::<Ev1>());
++        result
+     })
+ }
+ 
+@@ -931,6 +948,7 @@
+     units
+         .par_iter()
+         .map(|&(f, s, e)| {
++            let span = profile::Span::new("parse_clicks", s);
+             let mut v: Vec<Ck> = Vec::with_capacity((e - s) / 40 + 16);
+             for_records::<4>(f, s, e, |p, line, fs| {
+                 let Some(fs) = fs else { return };
+@@ -951,7 +969,9 @@
+                 v.push(Ck { key, cref: mkref(f, p + fs[0].0 as usize, cid.len()), ts: ts - ws, camp: camp as u32 });
+             });
+             let mut ks = Vec::new();
+-            by_bucket(&v, |c| person_bucket(c.key), &mut ks)
++            let result = by_bucket(&v, |c| person_bucket(c.key), &mut ks);
++            span.finish(v.len(), e-s);
++            result
+         })
+         .collect()
+ }
+@@ -1027,6 +1047,7 @@
+     if n == 0 {
+         return;
+     }
++    let grouping = profile::Span::new("grouping", n);
+     // local person ids
+     let cap = (n * 2).next_power_of_two().max(64);
+     if sc.table.len() < cap {
+@@ -1118,10 +1139,12 @@
+     let cks = std::mem::take(&mut sc.cks_sorted);
+     let mut evs = evs;
+     let mut cks = cks;
++    grouping.finish(n, np);
+     for pid in 0..np {
+         let (es, ee) = (sc.ev_cnt[pid] as usize, ev_pos[pid] as usize);
+         let (cs, ce) = (sc.ck_cnt[pid] as usize, ck_pos[pid] as usize);
+         let ev = &mut evs[es..ee];
++        let sorting = if ev.len() > 10000 { Some(profile::Span::new("heavy_sort", ev.len())) } else { None };
+         if ev.len() > 1 {
+             ev.sort_unstable_by_key(|e| e.ts);
+         }
+@@ -1129,6 +1152,7 @@
+         if ck.len() > 1 {
+             ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
+         }
++        if let Some(sorting) = sorting { sorting.finish(ev.len(), ck.len()); }
+         person_sessions(ctx, ev, ck, agg, sc);
+     }
+     sc.evs_sorted = evs;
+@@ -1248,6 +1272,7 @@
+ }
+ 
+ fn main() {
++    profile::init();
+     let t0 = std::time::Instant::now();
+     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
+     let data = PathBuf::from(env("DATA_DIR", "/data"));
+@@ -1261,9 +1286,13 @@
+         }
+     };
+ 
++    let span = profile::Span::new("open", 0);
+     let inp = open_all(&data);
++    span.finish(LENS.get().unwrap().len(), LENS.get().unwrap().iter().sum());
+     lap("open");
++    let span = profile::Span::new("lookups", 0);
+     let lk = lookups(&inp);
++    span.finish(lk.products.slots.len(), 0);
+     let (ws, we) = (inp.window_start, inp.window_end);
+     let ev_units = chunks(&inp.events);
+     let ck_units = chunks(&inp.clicks);
+@@ -1295,28 +1324,38 @@
+     let ncamp = lk.campaign_names.len();
+     assert!(we - ws < u32::MAX as i64, "window too long");
+     let ctx = Ctx { ndays, ncamp, ncat: lk.categories.len(), ws, ws_day, persons: &persons };
+-    let aggs: Vec<Agg> = (0..P2)
+-        .into_par_iter()
+-        .fold(
+-            || (Agg { rows: Vec::new(), camp: vec![[0i64; 4]; (ncamp + 1) * ndays] }, Scratch::new(ncamp)),
+-            |(mut agg, mut sc), b| {
+-                sc.evs.clear();
+-                sc.cks.clear();
+-                for (v, off) in &ev_scattered {
+-                    sc.evs.extend_from_slice(&v[off[b] as usize..off[b + 1] as usize]);
+-                }
+-                for (v, off) in &ck_parts {
+-                    sc.cks.extend_from_slice(&v[off[b] as usize..off[b + 1] as usize]);
+-                }
+-                process_bucket(&ctx, &mut agg, &mut sc);
+-                (agg, sc)
+-            },
+-        )
+-        .map(|(agg, _)| agg)
+-        .collect();
++    // A bounded set of long-lived workers owns aggregation and scratch state.
++    // Acquire partitions dynamically: retain balancing without Rayon's many
++    // fold states (and one Parquet file per state).
++    let next = std::sync::atomic::AtomicUsize::new(0);
++    let aggs: Vec<Agg> = (0..threads).into_par_iter().map(|_| {
++        let mut agg = Agg { rows: Vec::new(), camp: vec![[0i64; 4]; (ncamp + 1) * ndays] };
++        let mut sc = Scratch::new(ncamp);
++        loop {
++            let b = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++            if b >= P2 { break; }
++            let span = profile::Span::new("session_bucket", b);
++            let gather = profile::Span::new("session_gather", b);
++            sc.evs.clear();
++            sc.cks.clear();
++            for (v, off) in &ev_scattered {
++                sc.evs.extend_from_slice(&v[off[b] as usize..off[b + 1] as usize]);
++            }
++            for (v, off) in &ck_parts {
++                sc.cks.extend_from_slice(&v[off[b] as usize..off[b + 1] as usize]);
++            }
++            gather.finish(sc.evs.len(), sc.evs.len()*24 + sc.cks.len()*32);
++            process_bucket(&ctx, &mut agg, &mut sc);
++            span.finish(sc.evs.len(), sc.cks.len());
++        }
++        agg
++    }).collect();
+     lap("sessionized");
++    let span = profile::Span::new("output", 0);
+     output::write(&out, aggs, &lk, &ctx_info(&ctx, &lk));
++    span.finish(0, 0);
+     lap("written");
++    profile::summary();
+ }
+ 
+ pub struct OutInfo {
+--- a/src/parse.rs
++++ b/src/parse.rs
+@@ -108,14 +108,32 @@
+             }
+         }
+     }
+-    Cal { month_start, month_len }
++    Cal {
++        month_start,
++        month_len,
++    }
+ });
+ 
+ /// F1/F2 calendar part `YYYY-MM-DDTHH:MM:SS` (first 19 bytes) -> epoch ms (UTC, no offset).
+ #[inline(always)]
+ fn civil19(b: &[u8]) -> Option<i64> {
+     let g = |i: usize| unsafe { b.get_unchecked(i).wrapping_sub(b'0') } as u32;
+-    let d = [g(0), g(1), g(2), g(3), g(5), g(6), g(8), g(9), g(11), g(12), g(14), g(15), g(17), g(18)];
++    let d = [
++        g(0),
++        g(1),
++        g(2),
++        g(3),
++        g(5),
++        g(6),
++        g(8),
++        g(9),
++        g(11),
++        g(12),
++        g(14),
++        g(15),
++        g(17),
++        g(18),
++    ];
+     let mut bad = 0u32;
+     for x in d {
+         bad |= (x > 9) as u32;
+@@ -128,7 +146,11 @@
+     let h = d[8] * 10 + d[9];
+     let mi = d[10] * 10 + d[11];
+     let sec = d[12] * 10 + d[13];
+-    bad |= (h > 23) as u32 | (mi > 59) as u32 | (sec > 59) as u32 | (mo > 15) as u32 | (day == 0) as u32;
++    bad |= (h > 23) as u32
++        | (mi > 59) as u32
++        | (sec > 59) as u32
++        | (mo > 15) as u32
++        | (day == 0) as u32;
+     if bad != 0 {
+         return None;
+     }
+@@ -146,6 +168,23 @@
+         days_from_civil(y, mo as i64, day as i64)
+     };
+     Some((days * 86_400 + (h * 3_600 + mi * 60 + sec) as i64) * 1_000)
++}
++
++/// `ingest_ts` is guaranteed valid F1 by the input contract. Avoid repeating
++/// digit, punctuation, calendar and zone validation for every event copy.
++#[inline(always)]
++pub fn ingest_timestamp(b: &[u8]) -> i64 {
++    debug_assert_eq!(b.len(), 20);
++    let pair = |i: usize| ((b[i] - b'0') as i64) * 10 + (b[i + 1] - b'0') as i64;
++    let y = pair(0) * 100 + pair(2);
++    let mo = pair(5);
++    let d = pair(8);
++    let days = if (Y0..Y0 + YN as i64).contains(&y) {
++        CAL.month_start[(y - Y0) as usize * 16 + mo as usize] as i64 + d - 1
++    } else {
++        days_from_civil(y, mo, d)
++    };
++    (days * 86_400 + pair(11) * 3600 + pair(14) * 60 + pair(17)) * 1000
+ }
+ 
+ /// Any of F1, F2, F3 -> epoch ms. None for a bad timestamp (window not checked).
+@@ -166,7 +205,11 @@
+             return None;
+         }
+         let off = (oh * 60 + om) * 60_000;
+-        return Some(if b[19] == b'+' { base - off } else { base + off });
++        return Some(if b[19] == b'+' {
++            base - off
++        } else {
++            base + off
++        });
+     }
+     // F3: digits only. Fast path for 9..=19 digits: a short scalar prefix,
+     // then the last 8 digits in one SWAR step.
+@@ -188,7 +231,11 @@
+         let lo = eight_digits(x);
+         // n - 8 <= 11 digits in `hi`, so hi * 1e8 + lo fits in u64 (< 1e19)
+         let v = hi * 100_000_000 + lo;
+-        return Some(if v > i64::MAX as u64 { i64::MAX } else { v as i64 });
++        return Some(if v > i64::MAX as u64 {
++            i64::MAX
++        } else {
++            v as i64
++        });
+     }
+     let mut v: u64 = 0;
+     for &c in b {
+@@ -202,7 +249,11 @@
+             None => return Some(i64::MAX),
+         };
+     }
+-    Some(if v > i64::MAX as u64 { i64::MAX } else { v as i64 })
++    Some(if v > i64::MAX as u64 {
++        i64::MAX
++    } else {
++        v as i64
++    })
+ }
+ 
+ /// Eight digit values (one per byte, first digit lowest) -> number (fast_float's trick).
+@@ -240,7 +291,10 @@
+     use super::*;
+     #[test]
+     fn ts_forms() {
+-        assert_eq!(timestamp(b"2026-10-03T23:58:10Z"), timestamp(b"2026-10-03T19:58:10-04:00"));
++        assert_eq!(
++            timestamp(b"2026-10-03T23:58:10Z"),
++            timestamp(b"2026-10-03T19:58:10-04:00")
++        );
+         assert_eq!(timestamp(b"1791071890000"), Some(1791071890000));
+         assert_eq!(timestamp(b"0001791071890000"), Some(1791071890000));
+         assert_eq!(timestamp(b"2026-10-03T23:58:10Z"), Some(1791071890000));
+@@ -264,7 +318,11 @@
+         for n in 1..=19u32 {
+             let v = 10u64.pow(n - 1) + 7;
+             let s = v.to_string();
+-            assert_eq!(timestamp(s.as_bytes()), Some(v.min(i64::MAX as u64) as i64), "{s}");
++            assert_eq!(
++                timestamp(s.as_bytes()),
++                Some(v.min(i64::MAX as u64) as i64),
++                "{s}"
++            );
+         }
+     }
+     #[test]
+--- a/src/alloc.rs
++++ b/src/alloc.rs
+@@ -47,12 +47,27 @@
+ unsafe impl GlobalAlloc for HugeAlloc {
+     #[inline]
+     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+-        unsafe { if l.size() >= BIG && l.align() <= HUGE { map(l.size()) } else { System.alloc(l) } }
++        crate::profile::allocation(l.size());
++        unsafe {
++            if l.size() >= BIG && l.align() <= HUGE {
++                map(l.size())
++            } else {
++                System.alloc(l)
++            }
++        }
+     }
+     #[inline]
+     unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
++        crate::profile::allocation(l.size());
+         // fresh anonymous mappings are already zero
+-        unsafe { if l.size() >= BIG && l.align() <= HUGE { map(l.size()) } else { System.alloc_zeroed(l) } }
++        crate::profile::allocation(l.size());
++        unsafe {
++            if l.size() >= BIG && l.align() <= HUGE {
++                map(l.size())
++            } else {
++                System.alloc_zeroed(l)
++            }
++        }
+     }
+     #[inline]
+     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+--- /dev/null
++++ b/src/profile.rs
+@@ -0,0 +1,83 @@
++//! Opt-in diagnostics. No per-record counters or atomics on the normal hot path.
++use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
++use std::time::Instant;
++static ENABLED: AtomicBool = AtomicBool::new(false);
++static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
++pub static ALLOCS: AtomicU64 = AtomicU64::new(0);
++pub static BYTES: AtomicU64 = AtomicU64::new(0);
++pub fn init() {
++    ORIGIN.set(Instant::now()).ok();
++    ENABLED.store(std::env::var_os("SS_PROFILE").is_some(), Ordering::Relaxed);
++}
++#[inline]
++pub fn enabled() -> bool {
++    ENABLED.load(Ordering::Relaxed)
++}
++#[inline]
++pub fn allocation(n: usize) {
++    if enabled() {
++        ALLOCS.fetch_add(1, Ordering::Relaxed);
++        BYTES.fetch_add(n as u64, Ordering::Relaxed);
++    }
++}
++fn cpu(clock: libc::clockid_t) -> f64 {
++    let mut t = libc::timespec {
++        tv_sec: 0,
++        tv_nsec: 0,
++    };
++    unsafe {
++        libc::clock_gettime(clock, &mut t);
++    }
++    t.tv_sec as f64 * 1000.0 + t.tv_nsec as f64 / 1e6
++}
++pub struct Span {
++    data: Option<(Instant, f64, f64, &'static str, usize)>,
++}
++impl Span {
++    #[inline]
++    pub fn new(stage: &'static str, id: usize) -> Self {
++        Self {
++            data: if enabled() {
++                Some((
++                    Instant::now(),
++                    cpu(libc::CLOCK_THREAD_CPUTIME_ID),
++                    cpu(libc::CLOCK_PROCESS_CPUTIME_ID),
++                    stage,
++                    id,
++                ))
++            } else {
++                None
++            },
++        }
++    }
++    pub fn finish(self, records: usize, bytes: usize) {
++        if let Some((start, thread, process, stage, id)) = self.data {
++            let wall = start.elapsed().as_secs_f64() * 1000.0;
++            let thread = cpu(libc::CLOCK_THREAD_CPUTIME_ID) - thread;
++            let process = cpu(libc::CLOCK_PROCESS_CPUTIME_ID) - process;
++            let end = ORIGIN.get().unwrap().elapsed().as_secs_f64() * 1000.0;
++            eprintln!(
++                "PROFILE stage={stage} id={id} end_ms={end:.3} wall_ms={wall:.3} thread_ms={thread:.3} process_ms={process:.3} records={records} bytes={bytes} worker={}",
++                rayon::current_thread_index().unwrap_or(usize::MAX)
++            );
++        }
++    }
++}
++pub fn summary() {
++    if enabled() {
++        let mut r: libc::rusage = unsafe { std::mem::zeroed() };
++        unsafe {
++            libc::getrusage(libc::RUSAGE_SELF, &mut r);
++        }
++        eprintln!(
++            "PROFILE_SUMMARY allocations={} requested_bytes={} peak_rss_kib={} minor_faults={} major_faults={} voluntary_cs={} involuntary_cs={}",
++            ALLOCS.load(Ordering::Relaxed),
++            BYTES.load(Ordering::Relaxed),
++            r.ru_maxrss,
++            r.ru_minflt,
++            r.ru_majflt,
++            r.ru_nvcsw,
++            r.ru_nivcsw
++        );
++    }
++}
+--- a/src/output.rs
++++ b/src/output.rs
+@@ -28,10 +28,13 @@
+ }
+ 
+ fn write_batch(path: &Path, batch: RecordBatch) {
++    let span = crate::profile::Span::new("parquet_encode", batch.num_rows());
++    let rows = batch.num_rows();
+     let f = BufWriter::with_capacity(4 << 20, File::create(path).expect("create parquet"));
+     let mut w = ArrowWriter::try_new(f, batch.schema(), Some(props())).expect("writer");
+     w.write(&batch).expect("write");
+     w.close().expect("close");
++    span.finish(rows, std::fs::metadata(path).map_or(0, |m| m.len() as usize));
+ }
+ 
+ fn user_schema() -> Arc<Schema> {
+@@ -118,6 +121,7 @@
+             if a.rows.is_empty() && i > 0 {
+                 return;
+             }
++            let span = crate::profile::Span::new("arrow_construct", i);
+             let n = a.rows.len();
+             let bytes: usize = a.rows.iter().map(|r| (r.name & 0xFFFF) as usize).sum();
+             let mut ids = StringBuilder::with_capacity(n, bytes);
+@@ -144,6 +148,7 @@
+                 Arc::new(Int64Array::from(r)),
+                 Arc::new(top.finish() as StringArray),
+             ];
++            span.finish(n, bytes);
+             write_batch(&ud.join(format!("part-{i}.parquet")), RecordBatch::try_new(schema.clone(), cols).unwrap());
+         });
+     };

@@ -1,0 +1,4 @@
+{"run": 0, "container_ms": 1014.381, "cli_ms": 1126.1398329997974, "exit_code": 0, "output_bytes": 6578683}
+{"run": 1, "container_ms": 331.847, "cli_ms": 393.9243719996739, "exit_code": 0, "output_bytes": 6578639}
+{"run": 2, "container_ms": 350.534, "cli_ms": 410.00827999960165, "exit_code": 0, "output_bytes": 6578633}
+{'median': 350.534, 'mean': 565.5873333333333, 'sd': 388.7790084641059, 'min': 331.847, 'max': 1014.381}

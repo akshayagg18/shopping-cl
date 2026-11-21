@@ -1,0 +1,576 @@
+[
+  {
+    "variant": "baseline",
+    "run": 0,
+    "wall_ms": 182.54449500000192,
+    "user_ms": 268.003,
+    "sys_ms": 62.346,
+    "peak_rss_kib": 238988,
+    "avg_rss_kib": 134191,
+    "minor_faults": 21532,
+    "major_faults": 0,
+    "voluntary_cs": 98,
+    "involuntary_cs": 13,
+    "input_blocks": 0,
+    "output_blocks": 13056,
+    "output_bytes": 6607560,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.059,
+        92
+      ],
+      [
+        52.315,
+        163396
+      ],
+      [
+        102.583,
+        218332
+      ],
+      [
+        152.882,
+        154944
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-baseline-0.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 0,
+    "wall_ms": 165.38524999941728,
+    "user_ms": 250.056,
+    "sys_ms": 40.836999999999996,
+    "peak_rss_kib": 187100,
+    "avg_rss_kib": 114286,
+    "minor_faults": 15025,
+    "major_faults": 0,
+    "voluntary_cs": 96,
+    "involuntary_cs": 10,
+    "input_blocks": 0,
+    "output_blocks": 12856,
+    "output_bytes": 6570567,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.404,
+        92
+      ],
+      [
+        52.675,
+        138912
+      ],
+      [
+        102.959,
+        174884
+      ],
+      [
+        153.213,
+        143256
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-final-0.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 1,
+    "wall_ms": 166.16950099978567,
+    "user_ms": 266.695,
+    "sys_ms": 24.358999999999998,
+    "peak_rss_kib": 187028,
+    "avg_rss_kib": 114808,
+    "minor_faults": 14516,
+    "major_faults": 0,
+    "voluntary_cs": 90,
+    "involuntary_cs": 19,
+    "input_blocks": 0,
+    "output_blocks": 12880,
+    "output_bytes": 6570608,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.651,
+        412
+      ],
+      [
+        52.867,
+        138904
+      ],
+      [
+        103.156,
+        177648
+      ],
+      [
+        153.391,
+        142268
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-final-1.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "baseline",
+    "run": 1,
+    "wall_ms": 193.54270999974688,
+    "user_ms": 301.0,
+    "sys_ms": 51.608000000000004,
+    "peak_rss_kib": 238932,
+    "avg_rss_kib": 131231,
+    "minor_faults": 21223,
+    "major_faults": 0,
+    "voluntary_cs": 101,
+    "involuntary_cs": 20,
+    "input_blocks": 0,
+    "output_blocks": 13064,
+    "output_bytes": 6607560,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.116,
+        88
+      ],
+      [
+        52.348,
+        159264
+      ],
+      [
+        102.671,
+        215380
+      ],
+      [
+        152.944,
+        150192
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-baseline-1.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "baseline",
+    "run": 2,
+    "wall_ms": 178.2235689997833,
+    "user_ms": 287.254,
+    "sys_ms": 31.991,
+    "peak_rss_kib": 238864,
+    "avg_rss_kib": 132549,
+    "minor_faults": 18138,
+    "major_faults": 0,
+    "voluntary_cs": 96,
+    "involuntary_cs": 16,
+    "input_blocks": 0,
+    "output_blocks": 12936,
+    "output_bytes": 6589329,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        3.133,
+        92
+      ],
+      [
+        53.379,
+        159248
+      ],
+      [
+        103.675,
+        216596
+      ],
+      [
+        153.943,
+        154260
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-baseline-2.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 2,
+    "wall_ms": 167.8649960003895,
+    "user_ms": 245.865,
+    "sys_ms": 39.989999999999995,
+    "peak_rss_kib": 187120,
+    "avg_rss_kib": 114501,
+    "minor_faults": 14516,
+    "major_faults": 0,
+    "voluntary_cs": 82,
+    "involuntary_cs": 16,
+    "input_blocks": 0,
+    "output_blocks": 12856,
+    "output_bytes": 6570578,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.183,
+        88
+      ],
+      [
+        52.484,
+        136900
+      ],
+      [
+        102.739,
+        174528
+      ],
+      [
+        152.992,
+        146488
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-final-2.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 3,
+    "wall_ms": 172.81152800023847,
+    "user_ms": 232.036,
+    "sys_ms": 67.899,
+    "peak_rss_kib": 187072,
+    "avg_rss_kib": 114378,
+    "minor_faults": 14643,
+    "major_faults": 0,
+    "voluntary_cs": 93,
+    "involuntary_cs": 8,
+    "input_blocks": 0,
+    "output_blocks": 12856,
+    "output_bytes": 6570526,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.174,
+        92
+      ],
+      [
+        52.779,
+        136860
+      ],
+      [
+        103.032,
+        174108
+      ],
+      [
+        153.263,
+        146452
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-final-3.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "baseline",
+    "run": 3,
+    "wall_ms": 188.15548099973967,
+    "user_ms": 269.893,
+    "sys_ms": 71.021,
+    "peak_rss_kib": 239048,
+    "avg_rss_kib": 136290,
+    "minor_faults": 21459,
+    "major_faults": 0,
+    "voluntary_cs": 94,
+    "involuntary_cs": 13,
+    "input_blocks": 0,
+    "output_blocks": 13304,
+    "output_bytes": 6608866,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.238,
+        92
+      ],
+      [
+        52.476,
+        163396
+      ],
+      [
+        102.767,
+        222540
+      ],
+      [
+        153.034,
+        159132
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-baseline-3.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "baseline",
+    "run": 4,
+    "wall_ms": 206.0749999991458,
+    "user_ms": 244.34,
+    "sys_ms": 120.97,
+    "peak_rss_kib": 239084,
+    "avg_rss_kib": 131823,
+    "minor_faults": 19667,
+    "major_faults": 0,
+    "voluntary_cs": 102,
+    "involuntary_cs": 12,
+    "input_blocks": 0,
+    "output_blocks": 12984,
+    "output_bytes": 6598517,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.918,
+        92
+      ],
+      [
+        53.18,
+        163400
+      ],
+      [
+        103.497,
+        219492
+      ],
+      [
+        153.818,
+        144308
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-baseline-4.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 4,
+    "wall_ms": 173.68272899966541,
+    "user_ms": 238.539,
+    "sys_ms": 72.41799999999999,
+    "peak_rss_kib": 186860,
+    "avg_rss_kib": 113329,
+    "minor_faults": 14728,
+    "major_faults": 0,
+    "voluntary_cs": 91,
+    "involuntary_cs": 17,
+    "input_blocks": 0,
+    "output_blocks": 12848,
+    "output_bytes": 6570590,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.24,
+        92
+      ],
+      [
+        52.489,
+        136984
+      ],
+      [
+        102.749,
+        169940
+      ],
+      [
+        152.997,
+        146300
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-final-4.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 5,
+    "wall_ms": 178.14487800023926,
+    "user_ms": 269.78799999999995,
+    "sys_ms": 54.639,
+    "peak_rss_kib": 186728,
+    "avg_rss_kib": 115587,
+    "minor_faults": 14546,
+    "major_faults": 0,
+    "voluntary_cs": 88,
+    "involuntary_cs": 11,
+    "input_blocks": 0,
+    "output_blocks": 12856,
+    "output_bytes": 6570556,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        4.541,
+        2416
+      ],
+      [
+        54.773,
+        140892
+      ],
+      [
+        106.046,
+        172920
+      ],
+      [
+        156.372,
+        146120
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-final-5.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "baseline",
+    "run": 5,
+    "wall_ms": 186.81104799998138,
+    "user_ms": 279.981,
+    "sys_ms": 60.583,
+    "peak_rss_kib": 238924,
+    "avg_rss_kib": 132946,
+    "minor_faults": 18151,
+    "major_faults": 0,
+    "voluntary_cs": 104,
+    "involuntary_cs": 11,
+    "input_blocks": 0,
+    "output_blocks": 12936,
+    "output_bytes": 6589329,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.911,
+        92
+      ],
+      [
+        53.23,
+        161316
+      ],
+      [
+        103.482,
+        217516
+      ],
+      [
+        153.784,
+        152860
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-baseline-5.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "baseline",
+    "run": 6,
+    "wall_ms": 192.96207200022764,
+    "user_ms": 246.245,
+    "sys_ms": 99.035,
+    "peak_rss_kib": 239116,
+    "avg_rss_kib": 133390,
+    "minor_faults": 21842,
+    "major_faults": 0,
+    "voluntary_cs": 94,
+    "involuntary_cs": 14,
+    "input_blocks": 0,
+    "output_blocks": 13088,
+    "output_bytes": 6608866,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.13,
+        88
+      ],
+      [
+        52.373,
+        163424
+      ],
+      [
+        102.614,
+        218120
+      ],
+      [
+        152.875,
+        151928
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-baseline-6.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 6,
+    "wall_ms": 174.3077050005013,
+    "user_ms": 236.80399999999997,
+    "sys_ms": 60.047999999999995,
+    "peak_rss_kib": 187220,
+    "avg_rss_kib": 114768,
+    "minor_faults": 14567,
+    "major_faults": 0,
+    "voluntary_cs": 92,
+    "involuntary_cs": 15,
+    "input_blocks": 0,
+    "output_blocks": 12880,
+    "output_bytes": 6570602,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.221,
+        92
+      ],
+      [
+        52.507,
+        136872
+      ],
+      [
+        102.759,
+        175344
+      ],
+      [
+        153.017,
+        146764
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-dev-final-6.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  }
+]

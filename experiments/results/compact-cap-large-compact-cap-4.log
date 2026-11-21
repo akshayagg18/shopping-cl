@@ -1,0 +1,5 @@
+    33.3 ms  open
+  1329.7 ms  links + events parsed
+  2866.9 ms  dedup + clicks
+  3493.8 ms  sessionized
+  3768.1 ms  written

@@ -1,0 +1,70 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 781B done
+#1 WARN: FromPlatformFlagConstDisallowed: FROM --platform flag should not use constant value "linux/amd64" (line 3)
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/rust:1-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 85B done
+#3 DONE 0.0s
+
+#4 [build 1/5] FROM docker.io/library/rust:1-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 106.97kB done
+#5 DONE 0.0s
+
+#6 [build 2/5] WORKDIR /src
+#6 DONE 5.3s
+
+#7 [build 3/5] COPY Cargo.toml Cargo.lock ./
+#7 DONE 2.6s
+
+#8 [build 4/5] COPY src ./src
+#8 DONE 1.1s
+
+#9 [build 5/5] RUN cargo build --release --locked --target x86_64-unknown-linux-gnu  && cp target/x86_64-unknown-linux-gnu/release/ssp /ssp
+#9 1.060     Updating crates.io index
+#9 1.301 error: failed to get `arrow-array` as a dependency of package `ssp v0.1.0 (/src)`
+#9 1.301 
+#9 1.301 Caused by:
+#9 1.301   failed to load source for dependency `arrow-array`
+#9 1.301 
+#9 1.301 Caused by:
+#9 1.301   unable to update registry `crates-io`
+#9 1.301 
+#9 1.301 Caused by:
+#9 1.301   download of config.json failed
+#9 1.301 
+#9 1.301 Caused by:
+#9 1.301   [60] SSL peer certificate or SSH remote key was not OK (SSL certificate OpenSSL verify result: self-signed certificate in certificate chain (19))
+#9 ERROR: process "/bin/sh -c cargo build --release --locked --target x86_64-unknown-linux-gnu  && cp target/x86_64-unknown-linux-gnu/release/ssp /ssp" did not complete successfully: exit code: 101
+------
+ > [build 5/5] RUN cargo build --release --locked --target x86_64-unknown-linux-gnu  && cp target/x86_64-unknown-linux-gnu/release/ssp /ssp:
+1.301   failed to load source for dependency `arrow-array`
+1.301 
+1.301 Caused by:
+1.301   unable to update registry `crates-io`
+1.301 
+1.301 Caused by:
+1.301   download of config.json failed
+1.301 
+1.301 Caused by:
+1.301   [60] SSL peer certificate or SSH remote key was not OK (SSL certificate OpenSSL verify result: self-signed certificate in certificate chain (19))
+------
+
+ [33m1 warning found (use docker --debug to expand):
+[0m - FromPlatformFlagConstDisallowed: FROM --platform flag should not use constant value "linux/amd64" (line 3)
+Dockerfile:11
+--------------------
+  10 |         CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+  11 | >>> RUN cargo build --release --locked --target x86_64-unknown-linux-gnu \
+  12 | >>>  && cp target/x86_64-unknown-linux-gnu/release/ssp /ssp
+  13 |     
+--------------------
+ERROR: failed to build: failed to solve: process "/bin/sh -c cargo build --release --locked --target x86_64-unknown-linux-gnu  && cp target/x86_64-unknown-linux-gnu/release/ssp /ssp" did not complete successfully: exit code: 101

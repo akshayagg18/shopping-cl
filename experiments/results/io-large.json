@@ -1,0 +1,118 @@
+{
+  "dataset": "experiments/data-large",
+  "csv_sha256": "d953dedb755f3cff80eb09e4a353c5b8e141ec3e1a0c2813281095f7d2db5bc4",
+  "csv_bytes": 1883811848,
+  "counts": {
+    "campaigns.csv": {
+      "files": 1,
+      "bytes": 28047,
+      "physical_data_lines": 2000
+    },
+    "clicks": {
+      "files": 24,
+      "bytes": 240319655,
+      "physical_data_lines": 5110028
+    },
+    "events": {
+      "files": 69,
+      "bytes": 1624407598,
+      "physical_data_lines": 21124188
+    },
+    "links": {
+      "files": 16,
+      "bytes": 18347905,
+      "physical_data_lines": 890024
+    },
+    "products.csv": {
+      "files": 1,
+      "bytes": 708643,
+      "physical_data_lines": 50000
+    }
+  },
+  "manifest": {
+    "window_start": "2026-04-15T00:00:00Z",
+    "window_end": "2026-04-29T00:00:00Z"
+  },
+  "input": [
+    {
+      "seconds": 0.568328476,
+      "checksum": 953771659602237956,
+      "bytes_plus_tail_checksum": 1883812480,
+      "input_bytes": 1883811848,
+      "gb_s": 3.3146532815997767
+    },
+    {
+      "seconds": 0.283814134,
+      "checksum": 953771659602237956,
+      "bytes_plus_tail_checksum": 1883812480,
+      "input_bytes": 1883811848,
+      "gb_s": 6.63748426285211
+    },
+    {
+      "seconds": 0.277097939,
+      "checksum": 953771659602237956,
+      "bytes_plus_tail_checksum": 1883812480,
+      "input_bytes": 1883811848,
+      "gb_s": 6.79836109499176
+    },
+    {
+      "seconds": 0.27654429,
+      "checksum": 953771659602237956,
+      "bytes_plus_tail_checksum": 1883812480,
+      "input_bytes": 1883811848,
+      "gb_s": 6.811971594134161
+    },
+    {
+      "seconds": 0.300575118,
+      "checksum": 953771659602237956,
+      "bytes_plus_tail_checksum": 1883812480,
+      "input_bytes": 1883811848,
+      "gb_s": 6.267357925482043
+    },
+    {
+      "seconds": 0.702015977,
+      "checksum": 953771659602237956,
+      "bytes_plus_tail_checksum": 1883812480,
+      "input_bytes": 1883811848,
+      "gb_s": 2.683431588053444
+    },
+    {
+      "seconds": 0.282026775,
+      "checksum": 953771659602237956,
+      "bytes_plus_tail_checksum": 1883812480,
+      "input_bytes": 1883811848,
+      "gb_s": 6.67954965623388
+    }
+  ],
+  "output_bytes": 97031818,
+  "output": [
+    {
+      "seconds": 0.04047890600031678,
+      "gb_s": 2.3970958602300327
+    },
+    {
+      "seconds": 0.02284739999959129,
+      "gb_s": 4.246952300994239
+    },
+    {
+      "seconds": 0.0638869659996999,
+      "gb_s": 1.518804602498353
+    },
+    {
+      "seconds": 0.055931846000021324,
+      "gb_s": 1.7348223765037722
+    },
+    {
+      "seconds": 0.05834401699939917,
+      "gb_s": 1.6630980002799471
+    },
+    {
+      "seconds": 0.05778657700011536,
+      "gb_s": 1.6791411264904357
+    },
+    {
+      "seconds": 0.05779755200001091,
+      "gb_s": 1.678822279531522
+    }
+  ]
+}

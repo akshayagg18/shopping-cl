@@ -1,0 +1,3 @@
+# Preserve meaningful unified-diff context spaces and verbatim measurement logs.
+experiments/patches/*.patch -whitespace
+experiments/results/** -whitespace

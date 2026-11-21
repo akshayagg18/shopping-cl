@@ -1,0 +1,11 @@
+{
+  "baseline_commit": "d2dc441e6bed67a57572a7c1f12b06dad7f163cc",
+  "rust": "1.100.0 (0ef1bc386 2026-11-09)",
+  "normal_target": "x86-64-v3, release fat LTO, panic abort",
+  "docker_target": "same plus crt-static, x86_64-unknown-linux-gnu",
+  "artifacts": {
+    "baseline": "88b8f6c9d7d68b9958412b246ec1661c9d0c7ddab2c6338861bef4f848ed7779",
+    "final": "502e8172c04187a24013f77dd9a92f400bc8a2f652567a2ccbffe3ec19121e42",
+    "ssp": "65502817f9f65f19a0eb7fba64b81b5dd1f0cc63939374b75844715fe1365e75"
+  }
+}

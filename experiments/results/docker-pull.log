@@ -1,0 +1,11 @@
+1-slim: Pulling from library/rust
+37fb86c2a767: Pulling fs layer
+24f4b2aef92c: Pulling fs layer
+37fb86c2a767: Download complete
+37fb86c2a767: Pull complete
+24f4b2aef92c: Verifying Checksum
+24f4b2aef92c: Download complete
+24f4b2aef92c: Pull complete
+Digest: sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe
+Status: Downloaded newer image for rust:1-slim
+docker.io/library/rust:1-slim

@@ -1,0 +1,47 @@
+   Compiling libm v0.2.16
+   Compiling cfg-if v1.0.5
+   Compiling zerocopy v0.8.64
+   Compiling num-traits v0.2.19
+   Compiling num-integer v0.1.47
+   Compiling libc v0.2.191
+   Compiling num-bigint v0.5.1
+   Compiling half v2.7.1
+   Compiling bytes v1.12.2
+   Compiling arrow-buffer v60.1.0
+   Compiling getrandom v0.3.4
+   Compiling iana-time-zone v0.1.65
+   Compiling arrow-schema v60.1.0
+   Compiling once_cell v1.21.4
+   Compiling ahash v0.8.12
+   Compiling arrow-data v60.1.0
+   Compiling chrono v0.4.45
+   Compiling num-complex v0.4.6
+   Compiling hashbrown v0.17.1
+   Compiling crossbeam-utils v0.8.23
+   Compiling arrow-array v60.1.0
+   Compiling crossbeam-epoch v0.9.21
+   Compiling bitflags v2.13.2
+   Compiling flatbuffers v25.12.19
+   Compiling crossbeam-deque v0.8.8
+   Compiling rayon-core v1.13.0
+   Compiling either v1.19.0
+   Compiling twox-hash v2.1.5
+   Compiling base64 v0.23.1
+   Compiling rayon v1.12.0
+   Compiling arrow-cmp v60.1.0
+   Compiling arrow-select v60.1.0
+   Compiling arrow-ipc v60.1.0
+   Compiling parquet v60.1.0
+   Compiling memmap2 v0.9.12
+   Compiling xxhash-rust v0.8.21
+   Compiling ssp v0.1.0 (/workspace/hack22/02-shopping-sessions)
+    Finished `release` profile [optimized] target(s) in 1m 30s
+     Running unittests src/main.rs (target/release/build/ssp/4271efca74d5fb4d/out/ssp-4271efca74d5fb4d)
+
+running 3 tests
+test parse::tests::splitting ... ok
+test parse::tests::ts_forms ... ok
+test pipeline_tests::forced_collisions_and_lossless_refs ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,62 @@
+
+RESULT experiments/results/ring-large.json
+exact-events
+wall_ms {'median': 3604.725, 'mean': 3658.653, 'sd': 253.562, 'min': 3390.427, 'max': 4154.464}
+user_ms {'median': 5750.438, 'mean': 5817.617, 'sd': 281.013, 'min': 5524.021, 'max': 6349.705}
+sys_ms {'median': 1105.795, 'mean': 1158.654, 'sd': 174.723, 'min': 976.685, 'max': 1506.073}
+peak_rss_kib {'median': 4269156, 'mean': 4269084.571, 'sd': 198.95, 'min': 4268828, 'max': 4269352}
+avg_rss_kib {'median': 3070845.519, 'mean': 3065696.747, 'sd': 22228.613, 'min': 3025057.076, 'max': 3087753.821}
+minor_faults {'median': 157844, 'mean': 157937.857, 'sd': 296.973, 'min': 157636, 'max': 158452}
+major_faults {'median': 0, 'mean': 0, 'sd': 0.0, 'min': 0, 'max': 0}
+output_bytes {'median': 97024327, 'mean': 97024289.857, 'sd': 93.38, 'min': 97024080, 'max': 97024338}
+barrier_delta open 28.0
+barrier_delta links + events parsed 1512.1
+barrier_delta dedup + clicks 1121.4
+barrier_delta sessionized 614.0
+barrier_delta written 294.5
+ring
+wall_ms {'median': 3535.807, 'mean': 3489.566, 'sd': 99.037, 'min': 3355.431, 'max': 3590.569}
+user_ms {'median': 5555.242, 'mean': 5591.673, 'sd': 136.731, 'min': 5402.036, 'max': 5790.086}
+sys_ms {'median': 1014.177, 'mean': 1016.361, 'sd': 34.492, 'min': 971.664, 'max': 1075.771}
+peak_rss_kib {'median': 4268936, 'mean': 4268852.571, 'sd': 126.5, 'min': 4268644, 'max': 4268976}
+avg_rss_kib {'median': 3067056.772, 'mean': 3063430.12, 'sd': 13992.644, 'min': 3036547.812, 'max': 3076624.121}
+minor_faults {'median': 157668, 'mean': 157877.714, 'sd': 514.242, 'min': 157197, 'max': 158607}
+major_faults {'median': 0, 'mean': 0, 'sd': 0.0, 'min': 0, 'max': 0}
+output_bytes {'median': 97024331, 'mean': 97024328.857, 'sd': 22.297, 'min': 97024289, 'max': 97024352}
+barrier_delta open 30.2
+barrier_delta links + events parsed 1515.2
+barrier_delta dedup + clicks 1008.8
+barrier_delta sessionized 580.7
+barrier_delta written 281.0
+
+RESULT experiments/results/compact-large.json
+ring
+wall_ms {'median': 3397.112, 'mean': 3533.43, 'sd': 424.442, 'min': 3301.237, 'max': 4491.333}
+user_ms {'median': 5425.692, 'mean': 5562.529, 'sd': 352.303, 'min': 5385.87, 'max': 6357.601}
+sys_ms {'median': 1050.637, 'mean': 1180.722, 'sd': 422.665, 'min': 918.367, 'max': 2124.837}
+peak_rss_kib {'median': 4268844, 'mean': 4268810.857, 'sd': 134.833, 'min': 4268536, 'max': 4268940}
+avg_rss_kib {'median': 3067634.923, 'mean': 3066303.563, 'sd': 10604.951, 'min': 3047276.712, 'max': 3080502.93}
+minor_faults {'median': 157698, 'mean': 157909, 'sd': 524.888, 'min': 157495, 'max': 158976}
+major_faults {'median': 0, 'mean': 0, 'sd': 0.0, 'min': 0, 'max': 0}
+output_bytes {'median': 97024320, 'mean': 97024323.714, 'sd': 17.632, 'min': 97024302, 'max': 97024346}
+barrier_delta open 28.6
+barrier_delta links + events parsed 1427.4
+barrier_delta dedup + clicks 1017.1
+barrier_delta sessionized 573.4
+barrier_delta written 300.0
+compact
+wall_ms {'median': 3855.101, 'mean': 3869.179, 'sd': 55.259, 'min': 3804.822, 'max': 3968.865}
+user_ms {'median': 6377.952, 'mean': 6400.225, 'sd': 88.771, 'min': 6304.559, 'max': 6549.586}
+sys_ms {'median': 999.927, 'mean': 1008.065, 'sd': 70.216, 'min': 919.195, 'max': 1087.8}
+peak_rss_kib {'median': 4235320, 'mean': 4235314.286, 'sd': 71.549, 'min': 4235208, 'max': 4235440}
+avg_rss_kib {'median': 3179642.159, 'mean': 3180556.613, 'sd': 3389.307, 'min': 3176619.025, 'max': 3185478.209}
+minor_faults {'median': 159141, 'mean': 159220.143, 'sd': 668.69, 'min': 158382, 'max': 160078}
+major_faults {'median': 0, 'mean': 0, 'sd': 0.0, 'min': 0, 'max': 0}
+output_bytes {'median': 97024331, 'mean': 97024302.429, 'sd': 100.55, 'min': 97024079, 'max': 97024371}
+barrier_delta open 28.1
+barrier_delta links + events parsed 1318.8
+barrier_delta dedup + clicks 1551.4
+barrier_delta sessionized 576.3
+barrier_delta written 316.2
+
+RESULT experiments/results/cap40-large.json

@@ -1,0 +1,1276 @@
+[
+  {
+    "variant": "baseline",
+    "run": 0,
+    "wall_ms": 825.7985049995114,
+    "user_ms": 1267.827,
+    "sys_ms": 269.179,
+    "peak_rss_kib": 1118928,
+    "avg_rss_kib": 754179.5294117647,
+    "minor_faults": 58092,
+    "major_faults": 0,
+    "voluntary_cs": 142,
+    "involuntary_cs": 18,
+    "input_blocks": 0,
+    "output_blocks": 51240,
+    "output_bytes": 26196836,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.987,
+        92
+      ],
+      [
+        53.288,
+        518748
+      ],
+      [
+        103.555,
+        554084
+      ],
+      [
+        153.828,
+        628656
+      ],
+      [
+        204.092,
+        689844
+      ],
+      [
+        254.4,
+        757624
+      ],
+      [
+        304.642,
+        823268
+      ],
+      [
+        354.897,
+        891544
+      ],
+      [
+        405.141,
+        940832
+      ],
+      [
+        455.406,
+        981216
+      ],
+      [
+        505.671,
+        1024120
+      ],
+      [
+        555.928,
+        1070328
+      ],
+      [
+        606.197,
+        1110500
+      ],
+      [
+        656.496,
+        686892
+      ],
+      [
+        706.818,
+        699460
+      ],
+      [
+        757.163,
+        719072
+      ],
+      [
+        807.563,
+        724772
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-baseline-0.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 0,
+    "wall_ms": 769.6408920000977,
+    "user_ms": 1231.897,
+    "sys_ms": 222.065,
+    "peak_rss_kib": 881776,
+    "avg_rss_kib": 650143.4666666667,
+    "minor_faults": 39940,
+    "major_faults": 0,
+    "voluntary_cs": 145,
+    "involuntary_cs": 32,
+    "input_blocks": 0,
+    "output_blocks": 51152,
+    "output_bytes": 26179704,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.158,
+        88
+      ],
+      [
+        52.41,
+        518152
+      ],
+      [
+        102.678,
+        540128
+      ],
+      [
+        152.921,
+        586192
+      ],
+      [
+        203.218,
+        630060
+      ],
+      [
+        253.466,
+        675256
+      ],
+      [
+        303.713,
+        722200
+      ],
+      [
+        354.012,
+        760228
+      ],
+      [
+        405.384,
+        786636
+      ],
+      [
+        455.723,
+        814284
+      ],
+      [
+        506.012,
+        844920
+      ],
+      [
+        556.232,
+        874548
+      ],
+      [
+        606.492,
+        655348
+      ],
+      [
+        656.781,
+        663540
+      ],
+      [
+        707.048,
+        680572
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-final-0.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 1,
+    "wall_ms": 753.0709760003447,
+    "user_ms": 1208.8000000000002,
+    "sys_ms": 183.311,
+    "peak_rss_kib": 882280,
+    "avg_rss_kib": 647120,
+    "minor_faults": 40820,
+    "major_faults": 0,
+    "voluntary_cs": 141,
+    "involuntary_cs": 100,
+    "input_blocks": 0,
+    "output_blocks": 51152,
+    "output_bytes": 26179422,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        4.547,
+        2472
+      ],
+      [
+        54.816,
+        518328
+      ],
+      [
+        105.052,
+        544240
+      ],
+      [
+        155.287,
+        590968
+      ],
+      [
+        205.578,
+        634172
+      ],
+      [
+        255.837,
+        679372
+      ],
+      [
+        306.156,
+        728380
+      ],
+      [
+        356.512,
+        765548
+      ],
+      [
+        406.78,
+        796756
+      ],
+      [
+        457.025,
+        827940
+      ],
+      [
+        507.262,
+        861296
+      ],
+      [
+        557.538,
+        722560
+      ],
+      [
+        607.815,
+        657784
+      ],
+      [
+        658.052,
+        663928
+      ],
+      [
+        708.299,
+        713056
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-final-1.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "baseline",
+    "run": 1,
+    "wall_ms": 971.1922520000371,
+    "user_ms": 1461.8329999999999,
+    "sys_ms": 371.33,
+    "peak_rss_kib": 1119016,
+    "avg_rss_kib": 757914.5263157894,
+    "minor_faults": 58101,
+    "major_faults": 0,
+    "voluntary_cs": 153,
+    "involuntary_cs": 104,
+    "input_blocks": 0,
+    "output_blocks": 51240,
+    "output_bytes": 26196836,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.612,
+        92
+      ],
+      [
+        62.112,
+        551484
+      ],
+      [
+        112.606,
+        552044
+      ],
+      [
+        162.884,
+        616352
+      ],
+      [
+        213.158,
+        678648
+      ],
+      [
+        263.423,
+        739160
+      ],
+      [
+        313.719,
+        798660
+      ],
+      [
+        363.989,
+        852244
+      ],
+      [
+        414.29,
+        918228
+      ],
+      [
+        464.562,
+        959524
+      ],
+      [
+        514.859,
+        990212
+      ],
+      [
+        565.107,
+        1028688
+      ],
+      [
+        615.448,
+        1069428
+      ],
+      [
+        665.77,
+        1099552
+      ],
+      [
+        716.068,
+        687512
+      ],
+      [
+        766.355,
+        702324
+      ],
+      [
+        816.623,
+        708676
+      ],
+      [
+        866.871,
+        722896
+      ],
+      [
+        918.885,
+        724652
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-baseline-1.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "baseline",
+    "run": 2,
+    "wall_ms": 800.1440540001568,
+    "user_ms": 1278.316,
+    "sys_ms": 223.23299999999998,
+    "peak_rss_kib": 1118892,
+    "avg_rss_kib": 743155.25,
+    "minor_faults": 56499,
+    "major_faults": 0,
+    "voluntary_cs": 147,
+    "involuntary_cs": 73,
+    "input_blocks": 0,
+    "output_blocks": 51240,
+    "output_bytes": 26196836,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        3.295,
+        92
+      ],
+      [
+        53.534,
+        523536
+      ],
+      [
+        103.805,
+        570564
+      ],
+      [
+        154.035,
+        643732
+      ],
+      [
+        204.316,
+        714560
+      ],
+      [
+        254.566,
+        778180
+      ],
+      [
+        304.85,
+        844080
+      ],
+      [
+        355.223,
+        914176
+      ],
+      [
+        405.526,
+        956636
+      ],
+      [
+        455.79,
+        998392
+      ],
+      [
+        506.048,
+        1041024
+      ],
+      [
+        556.35,
+        1080448
+      ],
+      [
+        606.607,
+        689692
+      ],
+      [
+        656.919,
+        703088
+      ],
+      [
+        707.211,
+        709556
+      ],
+      [
+        757.451,
+        722728
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-baseline-2.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 2,
+    "wall_ms": 760.4727679999996,
+    "user_ms": 1214.134,
+    "sys_ms": 184.934,
+    "peak_rss_kib": 881908,
+    "avg_rss_kib": 648520.5333333333,
+    "minor_faults": 39906,
+    "major_faults": 0,
+    "voluntary_cs": 150,
+    "involuntary_cs": 63,
+    "input_blocks": 0,
+    "output_blocks": 51144,
+    "output_bytes": 26179708,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.411,
+        88
+      ],
+      [
+        52.662,
+        518336
+      ],
+      [
+        102.926,
+        540196
+      ],
+      [
+        153.292,
+        586260
+      ],
+      [
+        203.578,
+        630108
+      ],
+      [
+        253.839,
+        675304
+      ],
+      [
+        304.112,
+        720188
+      ],
+      [
+        354.399,
+        752988
+      ],
+      [
+        404.67,
+        784280
+      ],
+      [
+        454.858,
+        815836
+      ],
+      [
+        505.163,
+        845352
+      ],
+      [
+        555.427,
+        874816
+      ],
+      [
+        605.715,
+        651680
+      ],
+      [
+        655.978,
+        668092
+      ],
+      [
+        706.332,
+        664284
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-final-2.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 3,
+    "wall_ms": 813.2279319997906,
+    "user_ms": 1307.85,
+    "sys_ms": 233.12099999999998,
+    "peak_rss_kib": 881716,
+    "avg_rss_kib": 652232.25,
+    "minor_faults": 39819,
+    "major_faults": 0,
+    "voluntary_cs": 158,
+    "involuntary_cs": 96,
+    "input_blocks": 0,
+    "output_blocks": 51152,
+    "output_bytes": 26179726,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        3.971,
+        2468
+      ],
+      [
+        54.217,
+        520380
+      ],
+      [
+        104.464,
+        548348
+      ],
+      [
+        154.717,
+        592364
+      ],
+      [
+        204.962,
+        636216
+      ],
+      [
+        255.214,
+        681416
+      ],
+      [
+        305.455,
+        724260
+      ],
+      [
+        356.253,
+        759456
+      ],
+      [
+        410.128,
+        782500
+      ],
+      [
+        460.457,
+        804508
+      ],
+      [
+        510.777,
+        834328
+      ],
+      [
+        561.067,
+        859424
+      ],
+      [
+        611.328,
+        638360
+      ],
+      [
+        661.632,
+        663984
+      ],
+      [
+        711.946,
+        672176
+      ],
+      [
+        762.219,
+        715528
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-final-3.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "baseline",
+    "run": 3,
+    "wall_ms": 828.3585290000701,
+    "user_ms": 1372.241,
+    "sys_ms": 204.61499999999998,
+    "peak_rss_kib": 1118912,
+    "avg_rss_kib": 751744.9411764706,
+    "minor_faults": 58102,
+    "major_faults": 0,
+    "voluntary_cs": 138,
+    "involuntary_cs": 88,
+    "input_blocks": 0,
+    "output_blocks": 51448,
+    "output_bytes": 26196836,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        4.371,
+        2224
+      ],
+      [
+        54.641,
+        533044
+      ],
+      [
+        104.89,
+        566432
+      ],
+      [
+        155.134,
+        632796
+      ],
+      [
+        205.366,
+        691912
+      ],
+      [
+        255.645,
+        753528
+      ],
+      [
+        305.907,
+        815076
+      ],
+      [
+        356.216,
+        873084
+      ],
+      [
+        406.518,
+        934700
+      ],
+      [
+        456.764,
+        974044
+      ],
+      [
+        507.031,
+        1017084
+      ],
+      [
+        557.267,
+        1059416
+      ],
+      [
+        607.558,
+        1102508
+      ],
+      [
+        657.814,
+        682292
+      ],
+      [
+        708.08,
+        699420
+      ],
+      [
+        758.344,
+        717112
+      ],
+      [
+        808.66,
+        724992
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-baseline-3.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "baseline",
+    "run": 4,
+    "wall_ms": 945.7387530001142,
+    "user_ms": 1271.9389999999999,
+    "sys_ms": 444.943,
+    "peak_rss_kib": 1118820,
+    "avg_rss_kib": 786118.947368421,
+    "minor_faults": 61194,
+    "major_faults": 0,
+    "voluntary_cs": 156,
+    "involuntary_cs": 91,
+    "input_blocks": 0,
+    "output_blocks": 51608,
+    "output_bytes": 26216811,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.128,
+        88
+      ],
+      [
+        52.397,
+        532972
+      ],
+      [
+        102.628,
+        574568
+      ],
+      [
+        152.877,
+        649808
+      ],
+      [
+        203.192,
+        720640
+      ],
+      [
+        253.447,
+        786292
+      ],
+      [
+        303.702,
+        854240
+      ],
+      [
+        354.056,
+        926396
+      ],
+      [
+        404.324,
+        969252
+      ],
+      [
+        454.614,
+        1006536
+      ],
+      [
+        504.879,
+        1036872
+      ],
+      [
+        555.162,
+        1068932
+      ],
+      [
+        605.401,
+        1102844
+      ],
+      [
+        655.599,
+        1113088
+      ],
+      [
+        705.865,
+        706552
+      ],
+      [
+        756.123,
+        710504
+      ],
+      [
+        806.381,
+        707712
+      ],
+      [
+        856.636,
+        731868
+      ],
+      [
+        906.92,
+        737096
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-baseline-4.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 4,
+    "wall_ms": 794.6866450001835,
+    "user_ms": 1234.798,
+    "sys_ms": 211.70799999999997,
+    "peak_rss_kib": 881516,
+    "avg_rss_kib": 650471.75,
+    "minor_faults": 39833,
+    "major_faults": 0,
+    "voluntary_cs": 142,
+    "involuntary_cs": 88,
+    "input_blocks": 0,
+    "output_blocks": 51168,
+    "output_bytes": 26179684,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.505,
+        92
+      ],
+      [
+        52.717,
+        501264
+      ],
+      [
+        102.913,
+        524296
+      ],
+      [
+        153.212,
+        578012
+      ],
+      [
+        203.451,
+        621864
+      ],
+      [
+        253.684,
+        665000
+      ],
+      [
+        303.916,
+        713864
+      ],
+      [
+        354.162,
+        755608
+      ],
+      [
+        404.435,
+        790292
+      ],
+      [
+        454.718,
+        819288
+      ],
+      [
+        513.536,
+        844912
+      ],
+      [
+        563.838,
+        876032
+      ],
+      [
+        614.176,
+        648704
+      ],
+      [
+        664.469,
+        664432
+      ],
+      [
+        714.776,
+        672624
+      ],
+      [
+        765.055,
+        731264
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-final-4.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 5,
+    "wall_ms": 818.775493999965,
+    "user_ms": 1290.7640000000001,
+    "sys_ms": 234.79599999999996,
+    "peak_rss_kib": 882144,
+    "avg_rss_kib": 655794.5,
+    "minor_faults": 40075,
+    "major_faults": 0,
+    "voluntary_cs": 157,
+    "involuntary_cs": 71,
+    "input_blocks": 0,
+    "output_blocks": 51176,
+    "output_bytes": 26179665,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.393,
+        92
+      ],
+      [
+        52.688,
+        513656
+      ],
+      [
+        102.937,
+        530472
+      ],
+      [
+        153.192,
+        575508
+      ],
+      [
+        203.443,
+        619824
+      ],
+      [
+        253.698,
+        660908
+      ],
+      [
+        304.067,
+        699496
+      ],
+      [
+        354.285,
+        739600
+      ],
+      [
+        404.568,
+        767496
+      ],
+      [
+        454.926,
+        800328
+      ],
+      [
+        505.195,
+        829524
+      ],
+      [
+        555.449,
+        852972
+      ],
+      [
+        605.729,
+        876708
+      ],
+      [
+        656.001,
+        658952
+      ],
+      [
+        706.213,
+        671240
+      ],
+      [
+        756.491,
+        695936
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-final-5.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "baseline",
+    "run": 5,
+    "wall_ms": 893.0784300000596,
+    "user_ms": 1318.366,
+    "sys_ms": 302.517,
+    "peak_rss_kib": 1118504,
+    "avg_rss_kib": 752440.8888888889,
+    "minor_faults": 55168,
+    "major_faults": 0,
+    "voluntary_cs": 154,
+    "involuntary_cs": 113,
+    "input_blocks": 0,
+    "output_blocks": 51264,
+    "output_bytes": 26196836,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.329,
+        92
+      ],
+      [
+        52.695,
+        523352
+      ],
+      [
+        102.961,
+        570472
+      ],
+      [
+        153.221,
+        645700
+      ],
+      [
+        203.508,
+        714468
+      ],
+      [
+        266.026,
+        765760
+      ],
+      [
+        316.423,
+        819116
+      ],
+      [
+        366.682,
+        881224
+      ],
+      [
+        416.922,
+        938740
+      ],
+      [
+        467.216,
+        976476
+      ],
+      [
+        517.486,
+        1018980
+      ],
+      [
+        567.749,
+        1056036
+      ],
+      [
+        618.026,
+        1099696
+      ],
+      [
+        668.32,
+        675500
+      ],
+      [
+        718.563,
+        699208
+      ],
+      [
+        768.839,
+        707708
+      ],
+      [
+        819.118,
+        727864
+      ],
+      [
+        869.369,
+        723544
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-baseline-5.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "baseline",
+    "run": 6,
+    "wall_ms": 793.1813220002368,
+    "user_ms": 1249.1879999999999,
+    "sys_ms": 228.445,
+    "peak_rss_kib": 1119044,
+    "avg_rss_kib": 744485.25,
+    "minor_faults": 58327,
+    "major_faults": 0,
+    "voluntary_cs": 146,
+    "involuntary_cs": 92,
+    "input_blocks": 0,
+    "output_blocks": 51240,
+    "output_bytes": 26196836,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        3.828,
+        2276
+      ],
+      [
+        54.096,
+        523340
+      ],
+      [
+        104.382,
+        566356
+      ],
+      [
+        154.676,
+        641576
+      ],
+      [
+        205.011,
+        712404
+      ],
+      [
+        255.274,
+        776024
+      ],
+      [
+        305.605,
+        846036
+      ],
+      [
+        355.869,
+        918168
+      ],
+      [
+        406.133,
+        956320
+      ],
+      [
+        456.414,
+        999820
+      ],
+      [
+        506.703,
+        1044268
+      ],
+      [
+        556.987,
+        1085352
+      ],
+      [
+        607.348,
+        698224
+      ],
+      [
+        657.63,
+        707936
+      ],
+      [
+        707.976,
+        709852
+      ],
+      [
+        758.235,
+        723812
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-baseline-6.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  },
+  {
+    "variant": "final",
+    "run": 6,
+    "wall_ms": 793.5079220005719,
+    "user_ms": 1248.282,
+    "sys_ms": 196.516,
+    "peak_rss_kib": 881952,
+    "avg_rss_kib": 652707.75,
+    "minor_faults": 39919,
+    "major_faults": 0,
+    "voluntary_cs": 140,
+    "involuntary_cs": 99,
+    "input_blocks": 0,
+    "output_blocks": 51152,
+    "output_bytes": 26179678,
+    "threads": 2,
+    "affinity": "0,2",
+    "rss_interval_ms": 50,
+    "rss_trace": [
+      [
+        2.287,
+        88
+      ],
+      [
+        52.836,
+        518448
+      ],
+      [
+        103.11,
+        542224
+      ],
+      [
+        153.365,
+        588288
+      ],
+      [
+        203.65,
+        630088
+      ],
+      [
+        253.924,
+        675284
+      ],
+      [
+        304.193,
+        718120
+      ],
+      [
+        354.484,
+        748836
+      ],
+      [
+        404.757,
+        780528
+      ],
+      [
+        455.025,
+        814132
+      ],
+      [
+        505.326,
+        843544
+      ],
+      [
+        555.617,
+        873416
+      ],
+      [
+        605.891,
+        649080
+      ],
+      [
+        656.161,
+        657824
+      ],
+      [
+        706.425,
+        666880
+      ],
+      [
+        756.696,
+        736544
+      ]
+    ],
+    "cold_hint": false,
+    "log": "experiments/results/final-medium-final-6.log",
+    "warmup": false,
+    "wait_method": "blocking_wait4"
+  }
+]

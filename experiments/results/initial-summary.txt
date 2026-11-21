@@ -1,0 +1,92 @@
+
+RESULT experiments/results/baseline-medium.json
+baseline
+wall_ms {'median': 1389.97, 'mean': 1438.107, 'sd': 526.133, 'min': 842.691, 'max': 2098.583}
+user_ms {'median': 2284.539, 'mean': 2125.429, 'sd': 656.757, 'min': 1332.437, 'max': 2822.904}
+sys_ms {'median': 401.582, 'mean': 533.846, 'sd': 331.245, 'min': 288.04, 'max': 1077.361}
+peak_rss_kib {'median': 1119072, 'mean': 1119053.6, 'sd': 79.277, 'min': 1118960, 'max': 1119160}
+avg_rss_kib {'median': 779135.821, 'mean': 788793.53, 'sd': 25016.071, 'min': 769764.95, 'max': 831534.315}
+minor_faults {'median': 51594, 'mean': 52218.2, 'sd': 2859.02, 'min': 48585, 'max': 56463}
+major_faults {'median': 0, 'mean': 0, 'sd': 0.0, 'min': 0, 'max': 0}
+output_bytes {'median': 26196836, 'mean': 26201327, 'sd': 10042.181, 'min': 26196836, 'max': 26219291}
+barrier_delta open 10.9
+barrier_delta links + events parsed 706.7
+barrier_delta dedup + clicks 302.6
+barrier_delta sessionized 261.2
+barrier_delta written 77.5
+instrumented
+wall_ms {'median': 1144.912, 'mean': 1254.077, 'sd': 384.062, 'min': 897.289, 'max': 1904.566}
+user_ms {'median': 1804.945, 'mean': 1954.459, 'sd': 652.678, 'min': 1405.574, 'max': 3069.999}
+sys_ms {'median': 395.515, 'mean': 421.561, 'sd': 121.711, 'min': 270.536, 'max': 584.691}
+peak_rss_kib {'median': 1119084, 'mean': 1119040, 'sd': 110.2, 'min': 1118844, 'max': 1119108}
+avg_rss_kib {'median': 797678.249, 'mean': 796056.088, 'sd': 15378.194, 'min': 778443.543, 'max': 818289.463}
+minor_faults {'median': 51412, 'mean': 51717.6, 'sd': 3686.384, 'min': 48661, 'max': 57677}
+major_faults {'median': 0, 'mean': 0, 'sd': 0.0, 'min': 0, 'max': 0}
+output_bytes {'median': 26196836, 'mean': 26201859, 'sd': 11231.769, 'min': 26196836, 'max': 26221951}
+barrier_delta open 10.5
+barrier_delta links + events parsed 595.1
+barrier_delta dedup + clicks 307.4
+barrier_delta sessionized 160.8
+barrier_delta written 81.3
+
+RESULT experiments/results/profile-medium.json
+instrumented
+wall_ms {'median': 1038.137, 'mean': 1079.175, 'sd': 154.994, 'min': 923.762, 'max': 1273.47}
+user_ms {'median': 1567.344, 'mean': 1638.789, 'sd': 283.088, 'min': 1327.632, 'max': 1956.439}
+sys_ms {'median': 377.918, 'mean': 392.51, 'sd': 46.858, 'min': 353.83, 'max': 473.902}
+peak_rss_kib {'median': 1119028, 'mean': 1119080, 'sd': 98.995, 'min': 1118984, 'max': 1119216}
+avg_rss_kib {'median': 786611.297, 'mean': 783965.222, 'sd': 14527.336, 'min': 761516.256, 'max': 800214.011}
+minor_faults {'median': 51386, 'mean': 52064.8, 'sd': 3168.83, 'min': 48703, 'max': 57321}
+major_faults {'median': 0, 'mean': 0, 'sd': 0.0, 'min': 0, 'max': 0}
+output_bytes {'median': 26196836, 'mean': 26201344.6, 'sd': 10081.536, 'min': 26196836, 'max': 26219379}
+barrier_delta open 9.5
+barrier_delta links + events parsed 414.4
+barrier_delta dedup + clicks 254.9
+barrier_delta sessionized 230.1
+barrier_delta written 62.5
+span open tasks 5 sum_thread_ms 2.918 wall_median 9.051 wall_max 13.374 max_records 112
+span lookups tasks 5 sum_thread_ms 68.152 wall_median 13.003 wall_max 17.4 max_records 131072
+span parse_events tasks 650 sum_thread_ms 4202.893 wall_median 6.507 wall_max 23.182 max_records 54542
+span links tasks 5 sum_thread_ms 269.669 wall_median 46.708 wall_max 68.663 max_records 303029
+span parse_clicks tasks 150 sum_thread_ms 1009.909 wall_median 5.292 wall_max 39.252 max_records 87775
+span dedup tasks 2560 sum_thread_ms 1575.34 wall_median 0.514 wall_max 11.414 max_records 10803
+span session_gather tasks 5120 sum_thread_ms 255.886 wall_median 0.033 wall_max 4.162 max_records 93844
+span grouping tasks 5120 sum_thread_ms 319.298 wall_median 0.036 wall_max 3.244 max_records 93844
+span session_bucket tasks 5120 sum_thread_ms 2070.536 wall_median 0.32 wall_max 12.133 max_records 93844
+span heavy_sort tasks 25 sum_thread_ms 85.492 wall_median 3.261 wall_max 5.871 max_records 90032
+span arrow_construct tasks 97 sum_thread_ms 184.502 wall_median 1.968 wall_max 4.769 max_records 36563
+span parquet_encode tasks 102 sum_thread_ms 425.313 wall_median 3.426 wall_max 10.816 max_records 36563
+span output tasks 5 sum_thread_ms 10.262 wall_median 62.528 wall_max 98.345 max_records 0
+
+RESULT experiments/results/profile-medium-seq.json
+instrumented
+wall_ms {'median': 1011.324, 'mean': 1035.808, 'sd': 107.459, 'min': 942.704, 'max': 1153.396}
+user_ms {'median': 1445.794, 'mean': 1495.849, 'sd': 139.091, 'min': 1388.713, 'max': 1653.04}
+sys_ms {'median': 467.903, 'mean': 419.796, 'sd': 110.553, 'min': 293.34, 'max': 498.144}
+peak_rss_kib {'median': 1124804, 'mean': 1124776, 'sd': 55.57, 'min': 1124712, 'max': 1124812}
+avg_rss_kib {'median': 782557.957, 'mean': 787780.559, 'sd': 11394.707, 'min': 779933.243, 'max': 800850.477}
+minor_faults {'median': 52434, 'mean': 52224, 'sd': 426.698, 'min': 51733, 'max': 52505}
+major_faults {'median': 0, 'mean': 0, 'sd': 0.0, 'min': 0, 'max': 0}
+output_bytes {'median': 26196836, 'mean': 26196836, 'sd': 0.0, 'min': 26196836, 'max': 26196836}
+barrier_delta open 8.0
+barrier_delta links 53.9
+barrier_delta events parsed 409.4
+barrier_delta links + events parsed 0.0
+barrier_delta dedup 146.8
+barrier_delta clicks 93.6
+barrier_delta dedup + clicks 1.7
+barrier_delta sessionized 242.6
+barrier_delta written 89.6
+span open tasks 3 sum_thread_ms 1.68 wall_median 7.758 wall_max 7.864 max_records 112
+span lookups tasks 3 sum_thread_ms 39.423 wall_median 13.12 wall_max 13.459 max_records 131072
+span links tasks 3 sum_thread_ms 102.139 wall_median 40.126 wall_max 41.529 max_records 303029
+span parse_events tasks 390 sum_thread_ms 2227.096 wall_median 6.263 wall_max 35.2 max_records 54542
+span dedup tasks 1536 sum_thread_ms 887.684 wall_median 0.53 wall_max 4.391 max_records 10803
+span parse_clicks tasks 90 sum_thread_ms 574.425 wall_median 5.205 wall_max 17.027 max_records 87775
+span session_gather tasks 3072 sum_thread_ms 146.964 wall_median 0.038 wall_max 2.577 max_records 93844
+span grouping tasks 3072 sum_thread_ms 180.061 wall_median 0.039 wall_max 3.393 max_records 93844
+span session_bucket tasks 3072 sum_thread_ms 1245.214 wall_median 0.338 wall_max 12.011 max_records 93844
+span heavy_sort tasks 15 sum_thread_ms 49.314 wall_median 3.254 wall_max 4.829 max_records 90032
+span arrow_construct tasks 48 sum_thread_ms 120.283 wall_median 2.49 wall_max 4.563 max_records 36563
+span parquet_encode tasks 51 sum_thread_ms 319.143 wall_median 7.294 wall_max 15.199 max_records 36563
+span output tasks 3 sum_thread_ms 5.581 wall_median 89.605 wall_max 98.002 max_records 0

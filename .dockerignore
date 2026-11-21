@@ -1,8 +1,6 @@
-target
-data
-out
-dev
-scratch
-*.parquet
-*.csv
 .git
+/target
+/experiments
+/tests
+/tools
+*.md

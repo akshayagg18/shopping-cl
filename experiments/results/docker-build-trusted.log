@@ -1,0 +1,149 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 915B done
+#1 WARN: FromPlatformFlagConstDisallowed: FROM --platform flag should not use constant value "linux/amd64" (line 3)
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/rust:1-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 85B done
+#3 DONE 0.0s
+
+#4 [build 1/5] FROM docker.io/library/rust:1-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 276B done
+#5 DONE 0.0s
+
+#6 [build 3/5] COPY Cargo.toml Cargo.lock ./
+#6 CACHED
+
+#7 [build 2/5] WORKDIR /src
+#7 CACHED
+
+#8 [build 4/5] COPY src ./src
+#8 CACHED
+
+#9 [build 5/5] RUN --mount=type=secret,id=build_ca     if [ -f /run/secrets/build_ca ]; then export CARGO_HTTP_CAINFO=/run/secrets/build_ca; fi;     cargo build --release --locked --target x86_64-unknown-linux-gnu  && cp target/x86_64-unknown-linux-gnu/release/ssp /ssp
+#9 7.381     Updating crates.io index
+#9 8.647  Downloading crates ...
+#9 8.844   Downloaded ahash v0.8.12
+#9 8.850   Downloaded bitflags v2.13.2
+#9 8.857   Downloaded arrow-data v60.1.0
+#9 8.863   Downloaded const-random-macro v0.1.16
+#9 8.865   Downloaded cfg-if v1.0.5
+#9 8.867   Downloaded arrow-cmp v60.1.0
+#9 8.869   Downloaded autocfg v1.5.1
+#9 8.886   Downloaded crunchy v0.2.4
+#9 8.888   Downloaded arrow-buffer v60.1.0
+#9 8.895   Downloaded bytes v1.12.2
+#9 8.900   Downloaded const-random v0.1.18
+#9 8.902   Downloaded arrow-ipc v60.1.0
+#9 8.917   Downloaded arrow-select v60.1.0
+#9 8.928   Downloaded base64 v0.23.1
+#9 8.934   Downloaded crossbeam-deque v0.8.8
+#9 8.937   Downloaded chrono v0.4.45
+#9 8.950   Downloaded arrow-array v60.1.0
+#9 8.968   Downloaded arrow-schema v60.1.0
+#9 8.974   Downloaded crossbeam-utils v0.8.23
+#9 8.979   Downloaded crossbeam-epoch v0.9.21
+#9 8.984   Downloaded either v1.19.0
+#9 8.986   Downloaded getrandom v0.2.17
+#9 8.990   Downloaded flatbuffers v25.12.19
+#9 8.993   Downloaded getrandom v0.3.4
+#9 8.997   Downloaded half v2.7.1
+#9 9.001   Downloaded iana-time-zone v0.1.65
+#9 9.007   Downloaded hashbrown v0.17.1
+#9 9.034   Downloaded libc v0.2.191
+#9 9.099   Downloaded num-bigint v0.5.1
+#9 9.104   Downloaded num-complex v0.4.6
+#9 9.106   Downloaded memmap2 v0.9.12
+#9 9.109   Downloaded libm v0.2.16
+#9 9.123   Downloaded once_cell v1.21.4
+#9 9.126   Downloaded num-integer v0.1.47
+#9 9.128   Downloaded rayon-core v1.13.0
+#9 9.133   Downloaded proc-macro2 v1.0.107
+#9 9.138   Downloaded num-traits v0.2.19
+#9 9.146   Downloaded quote v1.0.47
+#9 9.151   Downloaded rayon v1.12.0
+#9 9.173   Downloaded rustc_version v0.4.1
+#9 9.187   Downloaded tiny-keccak v2.0.2
+#9 9.194   Downloaded semver v1.0.28
+#9 9.197   Downloaded syn v2.0.119
+#9 9.219   Downloaded xxhash-rust v0.8.21
+#9 9.221   Downloaded parquet v60.1.0
+#9 9.274   Downloaded seq-macro v0.3.6
+#9 9.276   Downloaded unicode-ident v1.0.27
+#9 9.280   Downloaded twox-hash v2.1.5
+#9 9.283   Downloaded version_check v0.9.5
+#9 9.286   Downloaded zerocopy-derive v0.8.64
+#9 9.304   Downloaded zerocopy v0.8.64
+#9 9.382    Compiling autocfg v1.5.1
+#9 9.382    Compiling libm v0.2.16
+#9 9.383    Compiling proc-macro2 v1.0.107
+#9 9.693    Compiling unicode-ident v1.0.27
+#9 9.785    Compiling quote v1.0.47
+#9 9.821    Compiling num-traits v0.2.19
+#9 9.985    Compiling zerocopy v0.8.64
+#9 10.22    Compiling cfg-if v1.0.5
+#9 10.28    Compiling libc v0.2.191
+#9 10.80    Compiling syn v2.0.119
+#9 13.06    Compiling version_check v0.9.5
+#9 13.37    Compiling getrandom v0.3.4
+#9 13.52    Compiling num-integer v0.1.47
+#9 13.60    Compiling ahash v0.8.12
+#9 13.71    Compiling bytes v1.12.2
+#9 14.10    Compiling num-bigint v0.5.1
+#9 15.01    Compiling zerocopy-derive v0.8.64
+#9 15.07    Compiling iana-time-zone v0.1.65
+#9 15.38    Compiling arrow-schema v60.1.0
+#9 18.27    Compiling crossbeam-utils v0.8.23
+#9 18.32    Compiling semver v1.0.28
+#9 18.40    Compiling once_cell v1.21.4
+#9 18.58    Compiling chrono v0.4.45
+#9 18.81    Compiling rustc_version v0.4.1
+#9 19.12    Compiling num-complex v0.4.6
+#9 19.86    Compiling crossbeam-epoch v0.9.21
+#9 19.99    Compiling hashbrown v0.17.1
+#9 20.79    Compiling flatbuffers v25.12.19
+#9 21.42    Compiling crossbeam-deque v0.8.8
+#9 21.91    Compiling bitflags v2.13.2
+#9 22.17    Compiling rayon-core v1.13.0
+#9 22.82    Compiling seq-macro v0.3.6
+#9 23.29    Compiling either v1.19.0
+#9 23.41    Compiling base64 v0.23.1
+#9 23.51    Compiling twox-hash v2.1.5
+#9 23.63    Compiling rayon v1.12.0
+#9 24.00    Compiling memmap2 v0.9.12
+#9 24.28    Compiling xxhash-rust v0.8.21
+#9 24.60    Compiling half v2.7.1
+#9 24.93    Compiling arrow-buffer v60.1.0
+#9 26.08    Compiling arrow-data v60.1.0
+#9 27.37    Compiling arrow-array v60.1.0
+#9 31.34    Compiling arrow-cmp v60.1.0
+#9 32.06    Compiling arrow-select v60.1.0
+#9 38.37    Compiling arrow-ipc v60.1.0
+#9 44.33    Compiling parquet v60.1.0
+#9 90.51    Compiling ssp v0.1.0 (/src)
+#9 134.6     Finished `release` profile [optimized] target(s) in 2m 07s
+#9 DONE 134.7s
+
+#10 [stage-1 1/2] COPY --from=build /ssp /ssp
+#10 DONE 0.0s
+
+#11 [stage-1 2/2] COPY LICENSE /LICENSE
+#11 DONE 0.0s
+
+#12 exporting to image
+#12 exporting layers
+#12 exporting layers 0.8s done
+#12 writing image sha256:6191ac729901acfc005337f82be47438df9a51ab6c333bf28210e16ba833a2a7 done
+#12 naming to docker.io/library/shopping-codex:validated done
+#12 DONE 0.8s
+
+ [33m1 warning found (use docker --debug to expand):
+[0m - FromPlatformFlagConstDisallowed: FROM --platform flag should not use constant value "linux/amd64" (line 3)

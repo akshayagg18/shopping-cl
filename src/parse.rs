@@ -108,14 +108,32 @@ static CAL: std::sync::LazyLock<Cal> = std::sync::LazyLock::new(|| {
             }
         }
     }
-    Cal { month_start, month_len }
+    Cal {
+        month_start,
+        month_len,
+    }
 });
 
 /// F1/F2 calendar part `YYYY-MM-DDTHH:MM:SS` (first 19 bytes) -> epoch ms (UTC, no offset).
 #[inline(always)]
 fn civil19(b: &[u8]) -> Option<i64> {
     let g = |i: usize| unsafe { b.get_unchecked(i).wrapping_sub(b'0') } as u32;
-    let d = [g(0), g(1), g(2), g(3), g(5), g(6), g(8), g(9), g(11), g(12), g(14), g(15), g(17), g(18)];
+    let d = [
+        g(0),
+        g(1),
+        g(2),
+        g(3),
+        g(5),
+        g(6),
+        g(8),
+        g(9),
+        g(11),
+        g(12),
+        g(14),
+        g(15),
+        g(17),
+        g(18),
+    ];
     let mut bad = 0u32;
     for x in d {
         bad |= (x > 9) as u32;
@@ -128,7 +146,11 @@ fn civil19(b: &[u8]) -> Option<i64> {
     let h = d[8] * 10 + d[9];
     let mi = d[10] * 10 + d[11];
     let sec = d[12] * 10 + d[13];
-    bad |= (h > 23) as u32 | (mi > 59) as u32 | (sec > 59) as u32 | (mo > 15) as u32 | (day == 0) as u32;
+    bad |= (h > 23) as u32
+        | (mi > 59) as u32
+        | (sec > 59) as u32
+        | (mo > 15) as u32
+        | (day == 0) as u32;
     if bad != 0 {
         return None;
     }
@@ -146,6 +168,23 @@ fn civil19(b: &[u8]) -> Option<i64> {
         days_from_civil(y, mo as i64, day as i64)
     };
     Some((days * 86_400 + (h * 3_600 + mi * 60 + sec) as i64) * 1_000)
+}
+
+/// `ingest_ts` is guaranteed valid F1 by the input contract. Avoid repeating
+/// digit, punctuation, calendar and zone validation for every event copy.
+#[inline(always)]
+pub fn ingest_timestamp(b: &[u8]) -> i64 {
+    debug_assert_eq!(b.len(), 20);
+    let pair = |i: usize| ((b[i] - b'0') as i64) * 10 + (b[i + 1] - b'0') as i64;
+    let y = pair(0) * 100 + pair(2);
+    let mo = pair(5);
+    let d = pair(8);
+    let days = if (Y0..Y0 + YN as i64).contains(&y) {
+        CAL.month_start[(y - Y0) as usize * 16 + mo as usize] as i64 + d - 1
+    } else {
+        days_from_civil(y, mo, d)
+    };
+    (days * 86_400 + pair(11) * 3600 + pair(14) * 60 + pair(17)) * 1000
 }
 
 /// Any of F1, F2, F3 -> epoch ms. None for a bad timestamp (window not checked).
@@ -166,7 +205,11 @@ pub fn timestamp(b: &[u8]) -> Option<i64> {
             return None;
         }
         let off = (oh * 60 + om) * 60_000;
-        return Some(if b[19] == b'+' { base - off } else { base + off });
+        return Some(if b[19] == b'+' {
+            base - off
+        } else {
+            base + off
+        });
     }
     // F3: digits only. Fast path for 9..=19 digits: a short scalar prefix,
     // then the last 8 digits in one SWAR step.
@@ -188,7 +231,11 @@ pub fn timestamp(b: &[u8]) -> Option<i64> {
         let lo = eight_digits(x);
         // n - 8 <= 11 digits in `hi`, so hi * 1e8 + lo fits in u64 (< 1e19)
         let v = hi * 100_000_000 + lo;
-        return Some(if v > i64::MAX as u64 { i64::MAX } else { v as i64 });
+        return Some(if v > i64::MAX as u64 {
+            i64::MAX
+        } else {
+            v as i64
+        });
     }
     let mut v: u64 = 0;
     for &c in b {
@@ -202,7 +249,11 @@ pub fn timestamp(b: &[u8]) -> Option<i64> {
             None => return Some(i64::MAX),
         };
     }
-    Some(if v > i64::MAX as u64 { i64::MAX } else { v as i64 })
+    Some(if v > i64::MAX as u64 {
+        i64::MAX
+    } else {
+        v as i64
+    })
 }
 
 /// Eight digit values (one per byte, first digit lowest) -> number (fast_float's trick).
@@ -240,7 +291,10 @@ mod tests {
     use super::*;
     #[test]
     fn ts_forms() {
-        assert_eq!(timestamp(b"2026-10-03T23:58:10Z"), timestamp(b"2026-10-03T19:58:10-04:00"));
+        assert_eq!(
+            timestamp(b"2026-10-03T23:58:10Z"),
+            timestamp(b"2026-10-03T19:58:10-04:00")
+        );
         assert_eq!(timestamp(b"1791071890000"), Some(1791071890000));
         assert_eq!(timestamp(b"0001791071890000"), Some(1791071890000));
         assert_eq!(timestamp(b"2026-10-03T23:58:10Z"), Some(1791071890000));
@@ -264,7 +318,11 @@ mod tests {
         for n in 1..=19u32 {
             let v = 10u64.pow(n - 1) + 7;
             let s = v.to_string();
-            assert_eq!(timestamp(s.as_bytes()), Some(v.min(i64::MAX as u64) as i64), "{s}");
+            assert_eq!(
+                timestamp(s.as_bytes()),
+                Some(v.min(i64::MAX as u64) as i64),
+                "{s}"
+            );
         }
     }
     #[test]
