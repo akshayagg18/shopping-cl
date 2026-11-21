@@ -1,0 +1,50 @@
+name: Generator structure diagnostics for exact fast paths
+on:
+  push:
+    branches: [gpt6-generator-structure]
+  workflow_dispatch:
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Generate public-format synthetic sample
+        run: |
+          curl --retry 3 -fsSL https://www.joinbuilders.org/buildathon/tracks/shopping-sessions/files/generator.zip -o /tmp/g.zip
+          mkdir /tmp/g
+          cd /tmp/g
+          unzip -q /tmp/g.zip
+          cargo build --release --locked --manifest-path generator/Cargo.toml
+          generator/target/release/generate --seed 29 --events 150000 --clicks 30000 --threads 4 --output /tmp/sample
+      - name: Inspect ID encodings and exact fallback opportunities
+        run: |
+          python3 - <<'PY'
+          import pathlib,csv,re,collections,statistics
+          root=pathlib.Path('/tmp/sample')
+          for tp,columns in [('events',['event_id','user_id','product_id']),('clicks',['click_id','user_id','campaign_id']),('links',['user_id_a','user_id_b'])]:
+              paths=sorted((root/tp).glob('*.csv'))
+              counters={c:collections.Counter() for c in columns}
+              heads={c:[] for c in columns}
+              samples={c:[] for c in columns}
+              for p in paths:
+                  with p.open(newline='') as f:
+                      for row in csv.DictReader(f):
+                          for c in columns:
+                              x=row.get(c,'')
+                              if x and len(samples[c])<100000:
+                                  samples[c].append(x)
+                                  counters[c][len(x)]+=1
+                                  if len(heads[c])<12 and x not in heads[c]:heads[c].append(x)
+              for c in columns:
+                  xs=samples[c]
+                  forms={
+                      'dec_digits':sum(x.isascii() and x.isdecimal() for x in xs),
+                      'prefix_letter_decimal':sum(bool(re.fullmatch('[a-z][0-9]+',x)) for x in xs),
+                      'prefix_underscore_decimal':sum(bool(re.fullmatch('[a-z]+_[0-9]+',x)) for x in xs),
+                      'lowercase_base36':sum(bool(re.fullmatch('[0-9a-z]+',x)) for x in xs),
+                      'alnum_upper_lower_underscore':sum(bool(re.fullmatch('[0-9A-Za-z_]+',x)) for x in xs)
+                  }
+                  print('SAMPLE',tp,c,'n=',len(xs),'examples=',heads[c],'lengths=',counters[c].most_common(18),'forms=',forms,flush=True)
+          PY
