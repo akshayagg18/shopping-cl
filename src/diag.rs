@@ -11,6 +11,7 @@ fn cat(path: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| format!("<{e}>"))
 }
 
+#[allow(dead_code)]
 fn info() {
     let cpu = cat("/proc/cpuinfo");
     let model = cpu.lines().find(|l| l.starts_with("model name")).unwrap_or("?");
@@ -135,6 +136,7 @@ fn zero_bench(huge: bool, mb: usize) -> f64 {
     }
 }
 
+#[allow(dead_code)]
 fn runs(label: &str, data: &Path, out: &Path, threads: usize, times: usize) {
     let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
     for i in 0..times {
@@ -156,6 +158,7 @@ fn runs(label: &str, data: &Path, out: &Path, threads: usize, times: usize) {
     }
 }
 
+#[allow(dead_code)]
 fn rusage() -> String {
     unsafe {
         let mut ru: libc::rusage = std::mem::zeroed();
@@ -171,35 +174,94 @@ fn rusage() -> String {
     }
 }
 
+/// One pipeline run in a fresh child process (exec, page faults and exit teardown
+/// included, like the scorer). Returns a compact line: wall/internal ms, lap
+/// deltas, user/sys seconds.
+fn child(tag: &str, data: &Path, out: &Path, threads: usize, extra: &[(&str, &str)]) -> String {
+    let _ = std::fs::remove_dir_all(out);
+    std::fs::create_dir_all(out).unwrap();
+    let exe = std::env::current_exe().unwrap();
+    let mut cmd = std::process::Command::new(exe);
+    cmd.env_remove("SS_DIAG")
+        .env("SS_TIMING", "1")
+        .env("DATA_DIR", data)
+        .env("OUTPUT_DIR", out)
+        .env("NCPU", threads.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    for (k, v) in extra {
+        cmd.env(k, v);
+    }
+    let t = Instant::now();
+    let mut ch = cmd.spawn().unwrap();
+    let pid = ch.id() as i32;
+    let mut err = String::new();
+    use std::io::Read;
+    ch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    let mut st = 0i32;
+    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::wait4(pid, &mut st, 0, &mut ru) };
+    let wall = t.elapsed().as_secs_f64() * 1e3;
+    let laps: Vec<f64> = err.lines().filter_map(|l| l.split_whitespace().next()?.parse::<f64>().ok()).collect();
+    let total = laps.last().copied().unwrap_or(0.0);
+    let mut prev = 0.0;
+    let d: Vec<String> = laps
+        .iter()
+        .map(|&x| {
+            let v = x - prev;
+            prev = x;
+            format!("{v:.0}")
+        })
+        .collect();
+    let tv = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 * 1e-6;
+    format!("{tag} {wall:.0}/{total:.0}: {} u{:.2} s{:.2}", d.join(" "), tv(ru.ru_utime), tv(ru.ru_stime))
+}
+
+/// Map every input file and read one byte per cache line with all threads.
+fn read_bench(data: &Path) -> f64 {
+    let mut files = Vec::new();
+    for d in ["events", "clicks", "links"] {
+        for e in std::fs::read_dir(data.join(d)).unwrap().flatten() {
+            files.push(e.path());
+        }
+    }
+    let t = Instant::now();
+    let maps: Vec<memmap2::Mmap> = files.iter().map(|f| unsafe { memmap2::Mmap::map(&std::fs::File::open(f).unwrap()).unwrap() }).collect();
+    let s: u64 = maps
+        .par_iter()
+        .flat_map(|m| m.par_chunks(1 << 20))
+        .map(|c| c.iter().step_by(64).map(|&b| b as u64).sum::<u64>())
+        .sum();
+    std::hint::black_box(s);
+    t.elapsed().as_secs_f64() * 1e3
+}
+
 pub fn main(data: &Path, out: &Path, threads: usize) {
     let t0 = Instant::now();
-    eprintln!("==== SS_DIAG start");
-    info();
     let scratch = std::path::PathBuf::from(std::env::var("SCRATCH_DIR").unwrap_or_else(|_| "/scratch".into()));
-    // dev set: correctness run first (real output), then scaling
-    runs("dev", data, out, threads, 3);
-    for t in [1, 2, 4] {
-        runs("dev", data, &scratch.join("o_dev"), t, 2);
-    }
-    for (huge, mb) in [(false, 1024), (true, 1024), (false, 1024), (true, 1024)] {
-        eprintln!("zero-touch {mb}MB huge={huge}: {:.0} ms", zero_bench(huge, mb) * 1e3);
-    }
+    // the real dev output first, so the run is otherwise a normal one
+    let _ = crate::run(data, out, false);
     let big = scratch.join("big");
+    let ob = scratch.join("o_big");
     let k: usize = std::env::var("SS_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let t = Instant::now();
     upscale(data, &big, k);
-    eprintln!("upscale x{k}: {:.0} ms ({})", t.elapsed().as_secs_f64() * 1e3, rusage());
-    let ob = scratch.join("o_big");
-    runs("big", &big, &ob, threads, 3);
-    crate::alloc::HUGE_ON.store(false, std::sync::atomic::Ordering::Relaxed);
-    runs("big-nohuge", &big, &ob, threads, 2);
-    crate::alloc::HUGE_ON.store(true, std::sync::atomic::Ordering::Relaxed);
-    unsafe { std::env::set_var("SS_SEQ", "1") };
-    runs("big-seq", &big, &ob, threads, 1);
-    unsafe { std::env::remove_var("SS_SEQ") };
-    runs("big", &big, &ob, 4, 1);
-    eprintln!("rusage total: {}", rusage());
+    let up = t.elapsed().as_secs_f64();
+    eprintln!("D9 x{k} up={up:.1}s; cols: wall/int ms: open links+ev dedup+ck sess write");
+    for i in 0..3 {
+        eprintln!("{}", child(&format!("B8.{i}"), &big, &ob, threads, &[]));
+    }
+    eprintln!("{} (links ev dedup ck)", child("Q8", &big, &ob, threads, &[("SS_SEQ", "1")]));
+    eprintln!("{}", child("B4", &big, &ob, 4, &[]));
+    eprintln!("{}", child("B1", &big, &ob, 1, &[]));
+    eprintln!("{}", child("N8", &big, &ob, threads, &[("SS_NOHUGE", "1")]));
+    eprintln!("{}", child("d8", data, &ob, threads, &[]));
+    eprintln!("{}", child("d1", data, &ob, 1, &[]));
+    let r1 = read_bench(&big);
+    let r2 = read_bench(&big);
+    let z: Vec<String> = [(false, 1024), (true, 1024)].iter().map(|&(h, mb)| format!("{:.0}", zero_bench(h, mb) * 1e3)).collect();
+    eprintln!("R read={r1:.0},{r2:.0}ms Z 1GB 4k,2m={}ms", z.join(","));
     let _ = std::fs::remove_dir_all(&big);
     let _ = std::fs::remove_dir_all(&ob);
-    eprintln!("==== SS_DIAG done in {:.1}s (exiting 1 on purpose so these logs are returned)", t0.elapsed().as_secs_f64());
+    eprintln!("done {:.1}s", t0.elapsed().as_secs_f64());
 }

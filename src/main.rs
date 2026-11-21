@@ -12,6 +12,7 @@
 
 mod alloc;
 mod diag;
+mod flow;
 mod output;
 mod parse;
 
@@ -671,35 +672,77 @@ struct Persons {
     names: Vec<u64>,
 }
 
-/// Open addressing keyed by the hash's top bits, built from keys sorted by hash
-/// (so construction is one streaming pass, and keys sit in sorted order).
+/// Open addressing keyed by the hash's top bits, keys in sorted order, so a
+/// probe stops at an empty slot or a larger key. The table is cut into 256
+/// ranges by the top 8 bits, each followed by MARGIN spill slots, so the ranges
+/// are built in parallel.
 struct PersonMap {
     shift: u32,
+    sub: u32,
     slots: Vec<Slot>,
 }
 
+const PM_PARTS_BITS: u32 = 8;
+const PM_PARTS: usize = 1 << PM_PARTS_BITS;
+const PM_MARGIN: usize = 128;
+
 impl PersonMap {
+    #[inline(always)]
+    fn index(&self, k: u64) -> usize {
+        let h = (k >> self.shift) as usize;
+        h + (h >> self.sub) * PM_MARGIN
+    }
+
     /// `sorted` must be sorted by key and contain distinct, non-zero keys.
     fn build(sorted: &[(u64, u64)]) -> Self {
         let n = sorted.len().max(1);
-        let bits = ((n + n / 3).next_power_of_two().max(64)).trailing_zeros();
-        let cap = 1usize << bits;
-        let mut slots = vec![Slot::default(); cap + 64];
-        let mut next = 0usize;
-        for &(k, v) in sorted {
-            let home = (k >> (64 - bits)) as usize;
-            let at = home.max(next);
-            if at >= slots.len() {
-                slots.resize(at + 64, Slot::default());
-            }
-            slots[at] = Slot { key: k, val: v };
-            next = at + 1;
+        let bits = ((n + n / 3).next_power_of_two().max(1 << 14)).trailing_zeros();
+        let sub = bits - PM_PARTS_BITS;
+        let range = (1usize << sub) + PM_MARGIN;
+        let mut map = PersonMap { shift: 64 - bits, sub, slots: Vec::new() };
+        let mut slots: Vec<Slot> = vec![Slot::default(); PM_PARTS * range];
+        // partition starts in `sorted`
+        let mut starts = vec![0usize; PM_PARTS + 1];
+        for p in 0..PM_PARTS {
+            starts[p + 1] = sorted.partition_point(|&(k, _)| ((k >> (64 - PM_PARTS_BITS)) as usize) <= p);
         }
-        PersonMap { shift: 64 - bits, slots }
+        let ok = std::sync::atomic::AtomicBool::new(true);
+        let base = slots.as_mut_ptr() as usize;
+        (0..PM_PARTS).into_par_iter().for_each(|p| {
+            let lim = (p + 1) * range;
+            let mut next = p * range;
+            for &(k, v) in &sorted[starts[p]..starts[p + 1]] {
+                let at = map.index(k).max(next);
+                if at >= lim {
+                    ok.store(false, Ordering::Relaxed);
+                    return;
+                }
+                // each partition writes only its own range
+                unsafe { *(base as *mut Slot).add(at) = Slot { key: k, val: v } };
+                next = at + 1;
+            }
+        });
+        if !ok.load(Ordering::Relaxed) {
+            // a range overflowed its margin (never seen in practice): one serial pass
+            // into a single sorted table with the ranges' gaps kept as slack
+            slots.iter_mut().for_each(|s| *s = Slot::default());
+            let mut next = 0usize;
+            for &(k, v) in sorted {
+                let at = map.index(k).max(next);
+                if at >= slots.len() {
+                    slots.resize(at + PM_MARGIN, Slot::default());
+                }
+                slots[at] = Slot { key: k, val: v };
+                next = at + 1;
+            }
+        }
+        slots.resize(slots.len() + PM_MARGIN, Slot::default());
+        map.slots = slots;
+        map
     }
     #[inline(always)]
     fn prefetch(&self, k: u64) {
-        let i = (k >> self.shift) as usize;
+        let i = self.index(k);
         #[cfg(target_arch = "x86_64")]
         unsafe {
             use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
@@ -709,7 +752,7 @@ impl PersonMap {
     /// Lookup; the caller prefetches, so no filter in front (its own load would miss).
     #[inline(always)]
     fn get(&self, k: u64) -> Option<u64> {
-        let mut i = (k >> self.shift) as usize;
+        let mut i = self.index(k);
         loop {
             let sl = unsafe { self.slots.get_unchecked(i) };
             if sl.key == k {
@@ -756,15 +799,17 @@ fn name_less(a: (u128, u32, u64), b: (u128, u32, u64)) -> bool {
 }
 
 fn links(inp: &Inputs) -> Persons {
+    use std::sync::atomic::AtomicU32;
     let t0 = std::time::Instant::now();
     let tl = std::env::var_os("SS_LT").is_some();
     let lt = |w: &str| if tl { eprintln!("  links {w}: {:.1} ms", t0.elapsed().as_secs_f64() * 1e3) };
     let units = chunks_of(&inp.links, 256 << 10);
-    // endpoints of every valid link line, in line order: (hash, ref)
-    let ends: Vec<Vec<(u64, u64)>> = units
+    // endpoints of every valid link line, in line order: (hash, ref); an edge is
+    // two consecutive endpoints
+    let parts: Vec<Vec<(u64, u64)>> = units
         .par_iter()
         .map(|&(f, s, e)| {
-            let mut v = Vec::new();
+            let mut v = Vec::with_capacity((e - s) / 10);
             for_records::<2>(f, s, e, |p, line, fs| {
                 if let Some(fs) = fs {
                     let (a0, a1) = fs.get(0);
@@ -778,83 +823,172 @@ fn links(inp: &Inputs) -> Persons {
             v
         })
         .collect();
-    let ends: Vec<(u64, u64)> = ends.concat();
     lt("parsed");
-    // dense ids from one sort of (hash, position)
-    let mut order: Vec<(u64, u32)> = ends.par_iter().enumerate().map(|(i, x)| (x.0, i as u32)).collect();
-    order.par_sort_unstable();
-    let mut ids: Vec<u32> = vec![0; ends.len()];
-    let mut uniq: Vec<(u64, u64)> = Vec::with_capacity(ends.len() / 2 + 1);
-    let mut prev = 0u64;
-    for &(h, pos) in &order {
-        if h != prev || uniq.is_empty() {
-            uniq.push((h, ends[pos as usize].1));
-            prev = h;
-        }
-        ids[pos as usize] = (uniq.len() - 1) as u32;
+    // scatter endpoints by the hash's top bits: (hash, ref, endpoint index)
+    const PB: u32 = PM_PARTS_BITS;
+    let np = PM_PARTS;
+    let part = |h: u64| (h >> (64 - PB)) as usize;
+    let mut ubase = vec![0usize; parts.len() + 1];
+    for (u, v) in parts.iter().enumerate() {
+        ubase[u + 1] = ubase[u] + v.len();
     }
-    drop(order);
-    let n = uniq.len();
-    let edges: Vec<(u32, u32)> = ids.chunks(2).map(|c| (c[0], c[1])).collect();
-    drop(ids);
-    drop(ends);
-    lt("ids");
-    // union-find over the dense ids (small, cache resident)
-    let mut parent: Vec<u32> = (0..n as u32).collect();
-    fn find(parent: &mut [u32], mut x: u32) -> u32 {
-        while parent[x as usize] != x {
-            let g = parent[parent[x as usize] as usize];
-            parent[x as usize] = g;
-            x = g;
-        }
-        x
-    }
-    for &(a, b) in &edges {
-        let (x, y) = (find(&mut parent, a), find(&mut parent, b));
-        if x != y {
-            if x < y {
-                parent[y as usize] = x;
-            } else {
-                parent[x as usize] = y;
+    let total = ubase[parts.len()];
+    let counts: Vec<Vec<u32>> = parts
+        .par_iter()
+        .map(|v| {
+            let mut c = vec![0u32; np];
+            for &(h, _) in v {
+                c[part(h)] += 1;
+            }
+            c
+        })
+        .collect();
+    // offsets[u][p]: where unit u writes its partition-p endpoints
+    let mut pstart = vec![0usize; np + 1];
+    let mut offsets: Vec<Vec<usize>> = vec![vec![0usize; np]; parts.len()];
+    {
+        let mut acc = 0usize;
+        for p in 0..np {
+            pstart[p] = acc;
+            for u in 0..parts.len() {
+                offsets[u][p] = acc;
+                acc += counts[u][p] as usize;
             }
         }
+        pstart[np] = acc;
     }
-    for i in 0..n {
-        let r = find(&mut parent, i as u32);
-        parent[i] = r;
+    let mut scat: Vec<(u64, u64, u32)> = Vec::with_capacity(total);
+    unsafe { scat.set_len(total) };
+    let sbase = scat.as_mut_ptr() as usize;
+    parts.par_iter().zip(offsets.par_iter_mut()).enumerate().for_each(|(u, (v, off))| {
+        for (k, &(h, r)) in v.iter().enumerate() {
+            let p = part(h);
+            unsafe { *(sbase as *mut (u64, u64, u32)).add(off[p]) = (h, r, (ubase[u] + k) as u32) };
+            off[p] += 1;
+        }
+    });
+    drop(parts);
+    lt("scattered");
+    // per partition: sort by hash, number the distinct hashes
+    let scat_parts: Vec<&mut [(u64, u64, u32)]> = {
+        let mut rest: &mut [(u64, u64, u32)] = &mut scat[..];
+        let mut out = Vec::with_capacity(np);
+        for p in 0..np {
+            let (a, b) = rest.split_at_mut(pstart[p + 1] - pstart[p]);
+            out.push(a);
+            rest = b;
+        }
+        out
+    };
+    let mut ids: Vec<u32> = vec![0; total];
+    let ids_base = ids.as_mut_ptr() as usize;
+    let local: Vec<Vec<(u64, u64)>> = scat_parts
+        .into_par_iter()
+        .map(|sp| {
+            sp.sort_unstable_by_key(|x| x.0);
+            let mut uq: Vec<(u64, u64)> = Vec::with_capacity(sp.len() / 2 + 1);
+            let mut prev = 0u64;
+            for &(h, r, at) in sp.iter() {
+                if uq.is_empty() || h != prev {
+                    uq.push((h, r));
+                    prev = h;
+                }
+                // local id for now; made global below
+                unsafe { *(ids_base as *mut u32).add(at as usize) = (uq.len() - 1) as u32 };
+            }
+            uq
+        })
+        .collect();
+    let mut gbase = vec![0u32; np + 1];
+    for p in 0..np {
+        gbase[p + 1] = gbase[p] + local[p].len() as u32;
     }
+    let n = gbase[np] as usize;
+    let uniq: Vec<(u64, u64)> = local.concat();
+    // make the ids global: add each partition's base
+    (0..np).into_par_iter().for_each(|p| {
+        for &(_, _, at) in &scat[pstart[p]..pstart[p + 1]] {
+            unsafe { *(ids_base as *mut u32).add(at as usize) += gbase[p] };
+        }
+    });
+    let edges: Vec<(u32, u32)> = (0..total / 2).into_par_iter().with_min_len(4096).map(|e| (ids[2 * e], ids[2 * e + 1])).collect();
+    drop(scat);
+    drop(ids);
+    lt("edges");
+    // lock-free union-find: a root only ever links to a smaller root
+    let parent: Vec<AtomicU32> = (0..n as u32).into_par_iter().map(AtomicU32::new).collect();
+    #[inline(always)]
+    fn find(p: &[AtomicU32], mut x: u32) -> u32 {
+        loop {
+            let px = p[x as usize].load(Ordering::Relaxed);
+            if px == x {
+                return x;
+            }
+            let gx = p[px as usize].load(Ordering::Relaxed);
+            if gx != px {
+                let _ = p[x as usize].compare_exchange_weak(px, gx, Ordering::Relaxed, Ordering::Relaxed);
+            }
+            x = gx;
+        }
+    }
+    edges.par_iter().with_min_len(2048).for_each(|&(a, b)| {
+        let (mut a, mut b) = (a, b);
+        loop {
+            a = find(&parent, a);
+            b = find(&parent, b);
+            if a == b {
+                return;
+            }
+            let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+            if parent[hi as usize].compare_exchange(hi, lo, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                return;
+            }
+        }
+    });
+    drop(edges);
+    let root: Vec<u32> = (0..n as u32).into_par_iter().with_min_len(4096).map(|i| find(&parent, i)).collect();
+    drop(parent);
     lt("uf");
-    // smallest name per component, from cached prefixes
+    // smallest name per component
     let keys: Vec<(u128, u32, u64)> = uniq
         .par_iter()
+        .with_min_len(1024)
         .map(|&(_, r)| {
             let (k, l) = name_key(deref(r));
             (k, l, r)
         })
         .collect();
-    lt("keys");
-    let mut best: Vec<u32> = (0..n as u32).collect();
-    for i in 0..n {
-        let r = parent[i] as usize;
-        if name_less(keys[i], keys[best[r] as usize]) {
-            best[r] = i as u32;
+    let best: Vec<AtomicU32> = (0..n as u32).into_par_iter().map(AtomicU32::new).collect();
+    (0..n).into_par_iter().with_min_len(2048).for_each(|i| {
+        let r = root[i] as usize;
+        if r == i {
+            return;
         }
-    }
+        let mut cur = best[r].load(Ordering::Relaxed);
+        while name_less(keys[i], keys[cur as usize]) {
+            match best[r].compare_exchange_weak(cur, i as u32, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(c) => cur = c,
+            }
+        }
+    });
+    lt("best");
     let mut comp: Vec<u32> = vec![u32::MAX; n];
     let mut names: Vec<u64> = Vec::new();
-    let mut entries: Vec<(u64, u64)> = Vec::with_capacity(n);
     for i in 0..n {
-        let r = parent[i] as usize;
-        if comp[r] == u32::MAX {
-            comp[r] = names.len() as u32;
-            names.push(keys[best[r] as usize].2);
+        if root[i] as usize == i {
+            comp[i] = names.len() as u32;
+            names.push(keys[best[i].load(Ordering::Relaxed) as usize].2);
         }
-        entries.push((uniq[i].0, LINKED | comp[r] as u64));
     }
+    let entries: Vec<(u64, u64)> =
+        (0..n).into_par_iter().with_min_len(4096).map(|i| (uniq[i].0, LINKED | comp[root[i] as usize] as u64)).collect();
     lt("names");
-    // `uniq` is sorted by hash, so `entries` is too
+    // `uniq` is sorted by hash (partitions in order, sorted inside), so `entries` is too
     let map = PersonMap::build(&entries);
     lt("map");
+    std::mem::forget(entries);
+    std::mem::forget(keys);
     Persons { map, names }
 }
 
@@ -1281,8 +1415,8 @@ fn radix_sort_ts(v: &mut [Ev2], tmp: &mut Vec<Ev2>) {
 }
 
 /// Group one person bucket's events and clicks by person, then sessionize.
-fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
-    let n: usize = sc.ev_src.iter().map(|s| s.len()).sum();
+fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evin: &[Ev2], ckin: &[Ck]) {
+    let n: usize = evin.len();
     if n == 0 {
         return;
     }
@@ -1296,7 +1430,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
     sc.ev_cnt.clear();
     sc.ev_local.clear();
     let slot_of = |k: u64| (k.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 32) as usize & mask;
-    for e in sc.ev_src.iter().flat_map(|s| s.iter()) {
+    for e in evin.iter() {
         let mut s = slot_of(e.key);
         let id = loop {
             let t = unsafe { sc.table.get_unchecked_mut(s) };
@@ -1318,7 +1452,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
     sc.ck_cnt.clear();
     sc.ck_cnt.resize(np, 0);
     sc.ck_local.clear();
-    for c in sc.ck_src.iter().flat_map(|s| s.iter()) {
+    for c in ckin.iter() {
         let mut s = slot_of(c.key);
         let id = loop {
             let t = unsafe { sc.table.get_unchecked(s) };
@@ -1360,13 +1494,13 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
         sc.cks_sorted.set_len(cacc as usize);
     }
     let mut ev_pos = sc.ev_cnt.clone();
-    for (e, &id) in sc.ev_src.iter().flat_map(|s| s.iter()).zip(&sc.ev_local) {
+    for (e, &id) in evin.iter().zip(&sc.ev_local) {
         let at = &mut ev_pos[id as usize];
         sc.evs_sorted[*at as usize] = *e;
         *at += 1;
     }
     let mut ck_pos = sc.ck_cnt.clone();
-    for (c, &id) in sc.ck_src.iter().flat_map(|s| s.iter()).zip(&sc.ck_local) {
+    for (c, &id) in ckin.iter().zip(&sc.ck_local) {
         if id != u32::MAX {
             let at = &mut ck_pos[id as usize];
             sc.cks_sorted[*at as usize] = *c;
@@ -1598,34 +1732,30 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
 
     let inp = open_all(data);
     lap("open");
-    let lk = lookups(&inp);
     let (ws, we) = (inp.window_start, inp.window_end);
     let ev_units = chunks(&inp.events);
     let ck_units = chunks(&inp.clicks);
-    let seq = std::env::var("SS_SEQ").is_ok();
-    let (persons, ev_parts) = if seq {
-        let p = links(&inp);
-        lap("links");
-        let e = parse_events(&ev_units, &lk, ws, we);
-        lap("events parsed");
-        (p, e)
-    } else {
-        rayon::join(|| links(&inp), || parse_events(&ev_units, &lk, ws, we))
-    };
-    lap("links + events parsed");
-    let (ev_scattered, ck_parts) = if seq {
-        let a = (0..P1).into_par_iter().map(|b| dedup_bucket(&ev_parts, b, &persons)).collect::<Vec<_>>();
-        lap("dedup");
-        let b = parse_clicks(&ck_units, &lk, &persons, ws, we);
-        lap("clicks");
-        (a, b)
-    } else {
-        rayon::join(
-            || (0..P1).into_par_iter().map(|b| dedup_bucket(&ev_parts, b, &persons)).collect::<Vec<_>>(),
-            || parse_clicks(&ck_units, &lk, &persons, ws, we),
-        )
-    };
-    lap("dedup + clicks");
+    // links first: every record below is routed straight to its person
+    let (persons, lk) = rayon::join(|| links(&inp), || lookups(&inp));
+    lap("links");
+    let nthreads = rayon::current_num_threads();
+    let sinks: Vec<std::sync::Mutex<flow::Sink>> = (0..nthreads).map(|_| std::sync::Mutex::new(flow::Sink::new())).collect();
+    let units: Vec<(bool, usize, usize, usize)> =
+        ev_units.iter().map(|&(f, s, e)| (true, f, s, e)).chain(ck_units.iter().map(|&(f, s, e)| (false, f, s, e))).collect();
+    units.par_iter().for_each(|&(is_ev, f, s, e)| {
+        let t = rayon::current_thread_index().unwrap_or(0) % nthreads;
+        let mut sink = sinks[t].lock().unwrap();
+        if is_ev {
+            flow::events_unit(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64);
+        } else {
+            flow::clicks_unit(f, s, e, &lk, &persons, ws, we, &mut sink);
+        }
+    });
+    let sinks: Vec<flow::Sink> = sinks.into_iter().map(|m| m.into_inner().unwrap()).collect();
+    lap("parsed");
+    let dead = flow::Dead::new(&sinks);
+    (0..flow::PD).into_par_iter().for_each(|b| flow::dedup_part(b, &sinks, &dead));
+    lap("dedup");
 
     let ws_day = ws.div_euclid(DAY_MS);
     let ndays = ((we - 1).div_euclid(DAY_MS) - ws_day + 1) as usize;
@@ -1634,28 +1764,23 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let ctx = Ctx { ndays, ncamp, ncat: lk.categories.len(), ws, ws_day, persons: &persons };
     // exactly one accumulator per worker thread (rayon's fold would create one
     // per split: hundreds of 0.8 MB counter arrays and output files at 8 threads)
-    let nthreads = rayon::current_num_threads();
-    let states: Vec<std::sync::Mutex<(Agg, Scratch)>> = (0..nthreads)
+    let states: Vec<std::sync::Mutex<(Agg, Scratch, Vec<Ev2>, Vec<Ck>)>> = (0..nthreads)
         .map(|_| {
             std::sync::Mutex::new((
                 Agg { rows: Vec::new(), credit: vec![[0i64; 3]; (ncamp + 1) * ndays], assist: vec![0u32; (ncamp + 1) * ndays] },
                 Scratch::new(ncamp),
+                Vec::new(),
+                Vec::new(),
             ))
         })
         .collect();
     (0..P2).into_par_iter().for_each(|b| {
         let i = rayon::current_thread_index().unwrap_or(0) % nthreads;
         let mut guard = states[i].lock().unwrap();
-        let (agg, sc) = &mut *guard;
-        sc.ev_src.clear();
-        sc.ck_src.clear();
-        for (v, off) in &ev_scattered {
-            sc.ev_src.push(&v[off[b] as usize..off[b + 1] as usize]);
-        }
-        for (v, off) in &ck_parts {
-            sc.ck_src.push(&v[off[b] as usize..off[b + 1] as usize]);
-        }
-        process_bucket(&ctx, agg, sc);
+        let (agg, sc, evb, ckb) = &mut *guard;
+        flow::live_events(b, &sinks, &dead, evb);
+        flow::clicks_of(b, &sinks, ckb);
+        process_bucket(&ctx, agg, sc, evb, ckb);
     });
     let aggs: Vec<Agg> = states.into_iter().map(|m| m.into_inner().unwrap().0).collect();
     lap("sessionized");
@@ -1663,9 +1788,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     lap("written");
     if leak {
         // the process is about to exit: skip unmapping gigabytes of buffers
-        std::mem::forget(ev_parts);
-        std::mem::forget(ev_scattered);
-        std::mem::forget(ck_parts);
+        std::mem::forget(sinks);
+        std::mem::forget(dead);
         std::mem::forget(persons);
     }
     laps
