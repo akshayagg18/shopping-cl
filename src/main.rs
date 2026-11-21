@@ -59,6 +59,44 @@ fn deref(r: u64) -> &'static [u8] {
 }
 
 #[inline(always)]
+
+/// Injective order-independent 63-bit signature for common <=10-byte base36
+/// event IDs, with a disjoint hashed fallback for arbitrary CSV identifiers.
+/// All scramblers are bijections modulo 2^63 (odd multipliers and xorshifts);
+/// the fallback uses its top flag to prevent collisions with packed keys.
+#[inline(always)]
+fn event_sig(b: &[u8]) -> (u64, u32) {
+    const MASK: u64 = 0x7FFF_FFFF_FFFF_FFFF;
+    if !b.is_empty() && b.len() <= 10 {
+        let mut v = 0u64;
+        for &ch in b {
+            let digit = if ch >= b'0' && ch <= b'9' {
+                ch - b'0' + 1
+            } else if ch >= b'a' && ch <= b'z' {
+                ch - b'a' + 11
+            } else { 0 };
+            if digit == 0 { break; }
+            v = (v << 6) | digit as u64;
+        }
+        // Any invalid character breaks the encoding; v cannot then
+        // have the expected nonzero top base36 digit position.
+        if v != 0 {
+            let mut all = true;
+            for &c in b { if !c.is_ascii_lowercase() && !c.is_ascii_digit() { all = false; break; } }
+            if all {
+                v <<= (10 - b.len()) * 6;
+                v ^= v >> 29;
+                v = v.wrapping_mul(0x9E37_79B9_7F4A_7C15) & MASK;
+                v ^= v >> 31;
+                v = v.wrapping_mul(0xD6E8_FEB8_6659_FD93) & MASK;
+                v ^= v >> 30;
+                return (v, 0);
+            }
+        }
+    }
+    (xxh3_64(b) | (1u64 << 63), xxh3_64_with_seed(b, 0x51_7C_C1_B7) as u32)
+}
+
 fn h64(b: &[u8]) -> u64 {
     let h = xxh3_64(b);
     if h == 0 { 1 } else { h }
@@ -777,13 +815,14 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
                     return;
                 }
                 let ingest_ms = timestamp(fld(3)).unwrap_or(i64::MAX / 2);
+                let (eid_key, eid_check) = event_sig(eid);
                 let mut ev = Ev1 {
-                    eid: h64(eid),
+                    eid: eid_key,
                     user: 0,
                     uref: 0,
                     ts: INVALID,
                     ingest: (ingest_ms.div_euclid(1000)).clamp(0, u32::MAX as i64) as u32,
-                    chk: xxh3_64_with_seed(eid, 0x51_7C_C1_B7) as u32,
+                    chk: eid_check,
                     pc: 0,
                 };
                 'valid: {
