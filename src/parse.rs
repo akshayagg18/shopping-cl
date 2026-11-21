@@ -339,6 +339,140 @@ pub fn timestamp(b: &[u8]) -> Option<i64> {
     Some(if v > i64::MAX as u64 { i64::MAX } else { v as i64 })
 }
 
+/// Days of recently seen `YYYY-MM-DD` prefixes, validated when first seen.
+/// One slot per day of month: inside a few weeks a slot rarely changes hands.
+pub struct Memo {
+    key: [u64; 32],
+    dd: [u16; 32],
+    days: [i32; 32],
+}
+
+impl Memo {
+    pub fn new() -> Self {
+        // key 0 never matches: a date prefix has no zero bytes
+        Memo { key: [0; 32], dd: [0; 32], days: [0; 32] }
+    }
+}
+
+#[inline(always)]
+fn le16(b: &[u8], at: usize) -> u16 {
+    unsafe { std::ptr::read_unaligned(b.as_ptr().add(at) as *const u16) }.to_le()
+}
+
+/// Validated days since epoch of the `YYYY-MM-DD` at the start of `b` (>= 20 bytes).
+#[cold]
+#[inline(never)]
+fn date_slow(b: &[u8]) -> Option<i64> {
+    let g = |i: usize| b[i].wrapping_sub(b'0') as u32;
+    let d = [g(0), g(1), g(2), g(3), g(5), g(6), g(8), g(9)];
+    if d.iter().any(|&x| x > 9) || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let y = (d[0] * 1000 + d[1] * 100 + d[2] * 10 + d[3]) as i64;
+    let mo = (d[4] * 10 + d[5]) as i64;
+    let day = (d[6] * 10 + d[7]) as i64;
+    if !(1..=12).contains(&mo) || day == 0 || day > days_in_month(y, mo) {
+        return None;
+    }
+    Some(days_from_civil(y, mo, day))
+}
+
+#[inline(always)]
+fn memo_days(b: &[u8], m: &mut Memo) -> Option<i64> {
+    let k = le64(b, 0);
+    let dd = le16(b, 8);
+    let i = ((b[8] as usize) * 10 + b[9] as usize) & 31;
+    if m.key[i] == k && m.dd[i] == dd {
+        return Some(m.days[i] as i64);
+    }
+    let d = date_slow(b)?;
+    m.key[i] = k;
+    m.dd[i] = dd;
+    m.days[i] = d as i32;
+    Some(d)
+}
+
+/// Seconds of day of `THH:MM:SS` at bytes 10..19, validated.
+#[inline(always)]
+fn tod(b: &[u8]) -> Option<i64> {
+    let w1 = le64(b, 8); // DDTHH:MM
+    let w2 = unsafe { std::ptr::read_unaligned(b.as_ptr().add(16) as *const u32) }.to_le() as u64; // :SS?
+    let sep_bad = ((w1 & 0x0000_FF00_00FF_0000) ^ 0x0000_3A00_0054_0000) | ((w2 & 0xFF) ^ 0x3A);
+    let (t1, b1) = digits(w1, 0xFFFF_00FF_FF00_0000);
+    let (t2, b2) = digits(w2, 0x0000_0000_00FF_FF00);
+    if sep_bad != 0 || b1 | b2 {
+        return None;
+    }
+    let p1 = pairs(t1);
+    let p2 = pairs(t2);
+    let h = (p1 >> 24) & 0xFF;
+    let mi = (p1 >> 48) & 0xFF;
+    let sec = (p2 >> 8) & 0xFF;
+    if h > 23 || mi > 59 || sec > 59 {
+        return None;
+    }
+    Some((h * 3_600 + mi * 60 + sec) as i64)
+}
+
+/// `ts_fast` with dates looked up in `m`: identical results.
+#[inline(always)]
+pub fn ts_memo(b: &[u8], m: &mut Memo) -> Option<i64> {
+    let n = b.len();
+    if n == 20 && b[19] == b'Z' {
+        let s = tod(b)?;
+        let d = memo_days(b, m)?;
+        return Some((d * 86_400 + s) * 1_000);
+    }
+    if n == 25 && (b[19] == b'+' || b[19] == b'-') && b[22] == b':' {
+        let s = tod(b)?;
+        let d = memo_days(b, m)?;
+        let oh = d2(b, 20)?;
+        let om = d2(b, 23)?;
+        if oh > 23 || om > 59 {
+            return None;
+        }
+        let base = (d * 86_400 + s) * 1_000;
+        let off = (oh * 60 + om) * 60_000;
+        return Some(if b[19] == b'+' { base - off } else { base + off });
+    }
+    ts_fast(b)
+}
+
+/// `ingest` with dates looked up in `m`: identical results.
+#[inline(always)]
+pub fn ingest_memo(b: &[u8], m: &mut Memo) -> Option<i64> {
+    if b.len() == 20 && b[19] == b'Z' {
+        if let (Some(s), Some(d)) = (tod(b), memo_days(b, m)) {
+            return Some((d * 86_400 + s) * 1_000);
+        }
+    }
+    ingest(b)
+}
+
+/// `timestamp` with the three shapes the data mostly holds inlined: F1
+/// (20 bytes), 13-digit epoch ms and F2 (25 bytes). Anything else goes to the
+/// general parser, so the result is always identical to `timestamp`.
+#[inline(always)]
+pub fn ts_fast(b: &[u8]) -> Option<i64> {
+    let n = b.len();
+    if n == 20 && b[19] == b'Z' {
+        return civil19(b);
+    }
+    if n == 13 {
+        // two overlapping 8-byte loads cover the 13 digits
+        let w0 = le64(b, 0);
+        let w1 = le64(b, 5);
+        let (x0, x1) = (w0.wrapping_sub(0x3030_3030_3030_3030), w1.wrapping_sub(0x3030_3030_3030_3030));
+        let bad = (x0 | w0.wrapping_add(0x4646_4646_4646_4646) | x1 | w1.wrapping_add(0x4646_4646_4646_4646)) & 0x8080_8080_8080_8080;
+        if bad != 0 {
+            return None;
+        }
+        // digits 0..8 and 5..13; the low five of the second group are digits 8..13
+        return Some((eight_digits(x0) * 100_000 + eight_digits(x1) % 100_000) as i64);
+    }
+    timestamp(b)
+}
+
 /// Eight digit values (one per byte, first digit lowest) -> number (fast_float's trick).
 #[inline(always)]
 fn eight_digits(x: u64) -> u64 {
@@ -454,6 +588,89 @@ mod tests {
     }
 
     #[test]
+    fn ts_fast_matches_timestamp() {
+        let mut x: u64 = 0x5151_2323_9999_abcd;
+        let mut rnd = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let alphabet = b"0123456789-T:Z+tz 9\xff/";
+        let bases: [&[u8]; 9] = [
+            b"2026-10-03T23:58:10Z",
+            b"2027-12-19T18:13:05Z",
+            b"2027-02-28T12:30:45+05:30",
+            b"2027-12-17T02:10:14-04:00",
+            b"1829024243000",
+            b"0000000000000",
+            b"9999999999999",
+            b"18290242430001",
+            b"182902424300",
+        ];
+        for _ in 0..3_000_000 {
+            let base = bases[(rnd() % 9) as usize];
+            let mut v = base.to_vec();
+            for _ in 0..rnd() % 4 {
+                let i = (rnd() as usize) % v.len();
+                v[i] = alphabet[(rnd() as usize) % alphabet.len()];
+            }
+            if rnd() % 16 == 0 {
+                v.truncate((rnd() as usize) % (v.len() + 1));
+            }
+            // pad so the 8-byte loads stay inside the buffer, as in a real file
+            let mut buf = v.clone();
+            buf.extend_from_slice(&[b','; 16]);
+            let s = &buf[..v.len()];
+            assert_eq!(ts_fast(s), timestamp(s), "{:?}", String::from_utf8_lossy(s));
+        }
+    }
+
+    #[test]
+    fn memo_matches_timestamp() {
+        let mut x: u64 = 0x7777_1234_5678_9999;
+        let mut rnd = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let alphabet = b"0123456789-T:Z+tz 9\xff/";
+        let mut m = Memo::new();
+        for round in 0..4_000_000u64 {
+            // dates around a few windows, valid and not
+            let day = days_from_civil(2027, 12, 1) + (rnd() % 120) as i64 - 60 + if round % 7 == 0 { (rnd() % 40000) as i64 - 20000 } else { 0 };
+            let secs = (rnd() % 86_400) as i64;
+            let z = day + 719_468;
+            let era = z.div_euclid(146_097);
+            let doe = z - era * 146_097;
+            let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let dd = doy - (153 * mp + 2) / 5 + 1;
+            let mm = if mp < 10 { mp + 3 } else { mp - 9 };
+            let yy = yoe + era * 400 + (mm <= 2) as i64;
+            let mut v = match rnd() % 3 {
+                0 => format!("{yy:04}-{mm:02}-{dd:02}T{:02}:{:02}:{:02}Z", secs / 3600, secs / 60 % 60, secs % 60),
+                1 => format!("{yy:04}-{mm:02}-{dd:02}T{:02}:{:02}:{:02}{}{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60, if rnd() % 2 == 0 { '+' } else { '-' }, rnd() % 26, rnd() % 62),
+                _ => format!("{}", 1_700_000_000_000u64 + rnd() % 200_000_000_000),
+            }
+            .into_bytes();
+            if rnd() % 3 == 0 {
+                for _ in 0..1 + rnd() % 3 {
+                    let i = (rnd() as usize) % v.len();
+                    v[i] = alphabet[(rnd() as usize) % alphabet.len()];
+                }
+            }
+            let mut buf = v.clone();
+            buf.extend_from_slice(&[b','; 16]);
+            let s = &buf[..v.len()];
+            assert_eq!(ts_memo(s, &mut m), timestamp(s), "{:?}", String::from_utf8_lossy(s));
+            assert_eq!(ingest_memo(s, &mut m), ingest(s), "{:?}", String::from_utf8_lossy(s));
+        }
+    }
+
+    #[test]
     fn ingest_matches_timestamp_on_valid_f1() {
         for d in days_from_civil(2000, 1, 1)..days_from_civil(2060, 1, 1) {
             for secs in [0i64, 1, 59, 3_599, 43_210, 86_399] {
@@ -491,4 +708,13 @@ mod tests {
         assert!(split::<1>(b"").is_some());
         assert!(split::<2>(b"a\"b\",c").is_none());
     }
+}
+
+#[inline(never)]
+pub fn ingest_ni(b: &[u8]) -> Option<i64> {
+    ingest(b)
+}
+#[inline(never)]
+pub fn ts_fast_ni(b: &[u8]) -> Option<i64> {
+    ts_fast(b)
 }

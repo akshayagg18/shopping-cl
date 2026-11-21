@@ -246,21 +246,26 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let k: usize = std::env::var("SS_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let t = Instant::now();
     upscale(data, &big, k);
-    let up = t.elapsed().as_secs_f64();
-    eprintln!("D9 x{k} up={up:.1}s; cols: wall/int ms: open links+ev dedup+ck sess write");
-    for i in 0..3 {
-        eprintln!("{}", child(&format!("B8.{i}"), &big, &ob, threads, &[]));
+    eprintln!("D10 x{k} up={:.1}s; wall/int ms: open links parse dedup sess write | user sys", t.elapsed().as_secs_f64());
+    // variants: (tag, write-combining, person bits, dedup bits)
+    let vars: [(&str, &str, &str, &str); 7] = [
+        ("base", "0", "10", "10"),
+        ("wc", "1", "10", "10"),
+        ("p9", "0", "9", "9"),
+        ("p11", "0", "11", "11"),
+        ("wc9", "1", "9", "9"),
+        ("p9d11", "0", "9", "11"),
+        ("wc11", "1", "11", "11"),
+    ];
+    // two interleaved rounds so drift hits every variant alike
+    for round in 0..2 {
+        for (tag, wc, p2, pd) in vars {
+            let env = [("SS_WC", wc), ("SS_P2B", p2), ("SS_PDB", pd)];
+            eprintln!("{}", child(&format!("{tag}.{round}"), &big, &ob, threads, &env));
+        }
     }
-    eprintln!("{} (links ev dedup ck)", child("Q8", &big, &ob, threads, &[("SS_SEQ", "1")]));
-    eprintln!("{}", child("B4", &big, &ob, 4, &[]));
-    eprintln!("{}", child("B1", &big, &ob, 1, &[]));
-    eprintln!("{}", child("N8", &big, &ob, threads, &[("SS_NOHUGE", "1")]));
-    eprintln!("{}", child("d8", data, &ob, threads, &[]));
-    eprintln!("{}", child("d1", data, &ob, 1, &[]));
-    let r1 = read_bench(&big);
-    let r2 = read_bench(&big);
-    let z: Vec<String> = [(false, 1024), (true, 1024)].iter().map(|&(h, mb)| format!("{:.0}", zero_bench(h, mb) * 1e3)).collect();
-    eprintln!("R read={r1:.0},{r2:.0}ms Z 1GB 4k,2m={}ms", z.join(","));
+    eprintln!("{}", child("base4", &big, &ob, 4, &[("SS_WC", "0")]));
+    eprintln!("{}", child("dev8", data, &ob, threads, &[("SS_WC", "0")]));
     let _ = std::fs::remove_dir_all(&big);
     let _ = std::fs::remove_dir_all(&ob);
     eprintln!("done {:.1}s", t0.elapsed().as_secs_f64());
