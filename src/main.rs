@@ -58,10 +58,51 @@ fn deref(r: u64) -> &'static [u8] {
     &files[f][off..off + len]
 }
 
+/// All generator-native IDs have nine lowercase alphanumeric bytes with a
+/// type prefix; their 9-character base36 code fits exactly in 54 bits.
+/// Put an exact packed key and hashed arbitrary IDs in disjoint 63-bit domains.
 #[inline(always)]
 fn h64(b: &[u8]) -> u64 {
-    let h = xxh3_64(b);
-    if h == 0 { 1 } else { h }
+    const MASK62: u64 = (1u64 << 62) - 1;
+    const SPLIT: u64 = (1u64 << 22) - 1;
+    if b.len() == 9 && (b[0] == b'e' || b[0] == b'u' || b[0] == b'k') {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use std::arch::x86_64::*;
+            let word = u64::from_le_bytes(b[1..9].try_into().unwrap());
+            let v = _mm_cvtsi64_si128(word as i64);
+            let d = _mm_and_si128(
+                _mm_cmpgt_epi8(v, _mm_set1_epi8(47)),
+                _mm_cmpgt_epi8(_mm_set1_epi8(58), v)
+            );
+            let a = _mm_and_si128(
+                _mm_cmpgt_epi8(v, _mm_set1_epi8(96)),
+                _mm_cmpgt_epi8(_mm_set1_epi8(123), v)
+            );
+            if (_mm_movemask_epi8(_mm_or_si128(d, a)) & 0xff) == 0xff {
+                let dv = _mm_sub_epi8(v, _mm_set1_epi8(47));
+                let av = _mm_sub_epi8(v, _mm_set1_epi8(86));
+                let values = _mm_or_si128(_mm_and_si128(d, dv), _mm_and_si128(a, av));
+                let digits = _mm_cvtsi128_si64(values) as u64;
+                let p = _pext_u64(digits, 0x3f3f_3f3f_3f3f_3f3f);
+                // The 54-bit value is unique for all nine-character base36
+                // IDs. Shift to 60 bits and apply bijections modulo 2^62.
+                let mut x = (((b[0] - b'a' + 11) as u64) << 48) | p;
+                x <<= 6;
+                x ^= x >> 31;
+                x = x.wrapping_mul(0x9e37_79b9_7f4a_7c15) & MASK62;
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xd6e8_feb8_6659_fd93) & MASK62;
+                x ^= x >> 29;
+                // bit 22 is the domain marker: 0 for exact packed keys.
+                return (x & SPLIT) | ((x >> 22) << 23);
+            }
+        }
+    }
+    // Arbitrary IDs retain the original high-quality xxh3 hash. Bit 22
+    // separates them from exact packed keys; LINKED bit 63 stays free.
+    let x = xxh3_64(b) & MASK62;
+    (x & SPLIT) | (1u64 << 22) | ((x >> 22) << 23)
 }
 
 // ---------------------------------------------------------------- hash map u64 -> u64 (keys already hashed, never 0)
@@ -813,7 +854,7 @@ fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64)
                     ev.ts = (ts - ws) as u32;
                     ev.pc = pc;
                 }
-                let b = (ev.eid >> (64 - P1_BITS)) as usize;
+                let b = ((ev.eid >> (63 - P1_BITS)) & ((P1 - 1) as u64)) as usize;
                 let l = unsafe { len.get_unchecked_mut(b) };
                 if (*l as usize) < cap {
                     unsafe { *data.get_unchecked_mut(b * cap + *l as usize) = ev };
