@@ -267,7 +267,7 @@ fn for_records<const N: usize>(
     mut each: impl FnMut(usize, &'static [u8], Option<[(u32, u32); N]>),
 ) {
     // sub-blocks small enough that stage-2 reads hit L2 right after stage 1
-    const SUB: usize = 192 << 10;
+    const SUB: usize = 96 << 10;
     let mut a = s;
     while a < e {
         let b = (a + SUB).min(e);
