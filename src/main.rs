@@ -468,9 +468,27 @@ fn split_masked<const N: usize>(line: &[u8], cm: u128, qm: u128) -> Option<[(u32
 
 mod simd {
     /// Newline, comma and quote bitmaps of `d` (64 bytes per word).
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f,avx512bw")]
+    unsafe fn block64_avx512(b: &[u8]) -> (u64, u64, u64) {
+        use std::arch::x86_64::*;
+        let v = unsafe { _mm512_loadu_si512(b.as_ptr() as *const __m512i) };
+        let eq = |byte| _mm512_cmpeq_epi8_mask(v, _mm512_set1_epi8(byte)) as u64;
+        (eq(b'\n' as i8), eq(b',' as i8), eq(b'"' as i8))
+    }
+
     pub fn stage1(d: &[u8], nl: &mut [u64], cm: &mut [u64], qt: &mut [u64]) {
         let full = d.len() / 64;
+        #[cfg(target_arch = "x86_64")]
+        let use_avx512 = std::arch::is_x86_feature_detected!("avx512bw");
         for i in 0..full {
+            #[cfg(target_arch = "x86_64")]
+            let (a, b, c) = if use_avx512 {
+                unsafe { block64_avx512(&d[i * 64..i * 64 + 64]) }
+            } else {
+                block64(&d[i * 64..i * 64 + 64])
+            };
+            #[cfg(not(target_arch = "x86_64"))]
             let (a, b, c) = block64(&d[i * 64..i * 64 + 64]);
             nl[i] = a;
             cm[i] = b;
@@ -480,6 +498,9 @@ mod simd {
             let mut buf = [0u8; 64];
             let rest = &d[full * 64..];
             buf[..rest.len()].copy_from_slice(rest);
+            #[cfg(target_arch = "x86_64")]
+            let (a, b, c) = if use_avx512 { unsafe { block64_avx512(&buf) } } else { block64(&buf) };
+            #[cfg(not(target_arch = "x86_64"))]
             let (a, b, c) = block64(&buf);
             nl[full] = a;
             cm[full] = b;
