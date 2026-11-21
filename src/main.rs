@@ -701,21 +701,59 @@ fn links(inp: &Inputs) -> Persons {
 
 // ---------------------------------------------------------------- records
 
-/// A parsed event copy, before dedup. 40 bytes.
+/// A compact token used only for exact earliest-ingestion deduplication.
+/// Per-unit row reference is (unit index << 20) | row within unit.
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct Ev1 {
     eid: u64,
+    ingest: u32,
+    loc: u32,
+}
+/// Parsed payload written sequentially during CSV ingest rather than
+/// write-scattered through 512 event-ID buckets.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct EvPayload {
     user: u64,
     uref: u64,
-    ts: u32, // ms since window start; INVALID when the copy fails validation
-    ingest: u32,
-    chk: u32,
-    pc: u32, // price << 8 | category; price 0 = not a purchase
+    ts: u32,
+    pc: u32,
 }
-
 const INVALID: u32 = u32::MAX;
 
+// Exact packing for ordinary lowercase base36 IDs (length 1..10).
+// Padding with zero six-bit digits is injective as real digits are 1..36.
+// Nonstandard IDs are distinguished by the high bit and later compared
+// byte-for-byte if two hashed keys collide.
+#[inline(always)]
+fn event_key(b: &[u8]) -> u64 {
+    if !b.is_empty() && b.len() <= 10 {
+        let mut v = 0u64;
+        let mut good = true;
+        for &c in b {
+            let d = if c >= b'0' && c <= b'9' { c-b'0'+1 }
+               else if c >= b'a' && c <= b'z' { c-b'a'+11 }
+               else { good = false; break; };
+            v = (v << 6) | (d as u64);
+        }
+        if good {
+            const M: u64 = (1u64 << 60)-1;
+            v <<= (10-b.len())*6;
+            v ^= v >> 27;
+            v = v.wrapping_mul(0x9e37_79b9_7f4a_7c15) & M;
+            v ^= v >> 29;
+            v = v.wrapping_mul(0xd6e8_feb8_6659_fd93) & M;
+            v ^= v >> 31;
+            return v;
+        }
+    }
+    xxh3_64(b) | (1u64 << 63)
+}
+#[inline(always)]
+fn event_bucket(key: u64) -> usize {
+    (key.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> (64-P1_BITS)) as usize
+}
 /// A surviving event, keyed by person. 24 bytes.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -742,6 +780,8 @@ struct EvChunk {
     cap: usize,
     len: Vec<u32>,
     overflow: Vec<Vec<Ev1>>,
+    payloads: Vec<EvPayload>,
+    unusual_ids: Vec<(u32,u64)>,
 }
 
 impl EvChunk {
@@ -756,75 +796,66 @@ impl EvChunk {
     }
 }
 
-fn parse_events(units: &[(usize, usize, usize)], lk: &Lookups, ws: i64, we: i64) -> Vec<EvChunk> {
-    units
-        .par_iter()
-        .map(|&(f, s, e)| {
-            // events lines are >= ~60 bytes; per-bucket room with slack
-            let cap = (e - s) / 64 / P1 * 9 / 8 + 24;
-            let mut data: Vec<Ev1> = Vec::with_capacity(cap * P1);
-            #[allow(clippy::uninit_vec)]
-            unsafe {
-                data.set_len(cap * P1);
+fn parse_events(units: &[(usize,usize,usize)], lk: &Lookups, ws: i64, we: i64) -> Vec<EvChunk> {
+    assert!(units.len() < 4096, "too many chunks for compact token");
+    units.par_iter().enumerate().map(|(unit, &(f,s,e))| {
+        const LOCAL_BITS: u32 = 20;
+        let cap = (e-s)/64/P1*9/8+24;
+        let mut data: Vec<Ev1> = Vec::with_capacity(cap*P1);
+        unsafe { data.set_len(cap*P1); }
+        let mut len = vec![0u32;P1];
+        let mut overflow:Vec<Vec<Ev1>>=(0..P1).map(|_|Vec::new()).collect();
+        let mut payloads = Vec::<EvPayload>::with_capacity((e-s)/64+16);
+        let mut unusual_ids = Vec::<(u32,u64)>::new();
+        for_records::<7>(f,s,e,|p,line,fs| {
+            let Some(fs)=fs else { return };
+            let fld=|i:usize| unsafe{line.get_unchecked(fs[i].0 as usize..fs[i].1 as usize)};
+            let eid=fld(0);
+            if eid.is_empty(){return;}
+            let row_idx=payloads.len();
+            assert!(row_idx < (1<<LOCAL_BITS),"too many records per chunk");
+            let eid_key=event_key(eid);
+            if eid_key & (1u64<<63) != 0 {
+                unusual_ids.push((row_idx as u32,mkref(f,p+fs[0].0 as usize,eid.len())));
             }
-            let mut len = vec![0u32; P1];
-            let mut overflow: Vec<Vec<Ev1>> = (0..P1).map(|_| Vec::new()).collect();
-            for_records::<7>(f, s, e, |p, line, fs| {
-                let Some(fs) = fs else { return };
-                let fld = |i: usize| unsafe { line.get_unchecked(fs[i].0 as usize..fs[i].1 as usize) };
-                let eid = fld(0);
-                if eid.is_empty() {
-                    return;
-                }
-                let ingest_ms = timestamp(fld(3)).unwrap_or(i64::MAX / 2);
-                let mut ev = Ev1 {
-                    eid: h64(eid),
-                    user: 0,
-                    uref: 0,
-                    ts: INVALID,
-                    ingest: (ingest_ms.div_euclid(1000)).clamp(0, u32::MAX as i64) as u32,
-                    chk: xxh3_64_with_seed(eid, 0x51_7C_C1_B7) as u32,
-                    pc: 0,
-                };
-                'valid: {
-                    let user = fld(1);
-                    if user.is_empty() {
-                        break 'valid;
-                    }
-                    let Some(ts) = timestamp(fld(2)) else { break 'valid };
-                    if ts < ws || ts >= we || ingest_ms - ts > DAY_MS {
-                        break 'valid;
-                    }
-                    if fld(5).is_empty() {
-                        break 'valid;
-                    }
-                    let ty = fld(4);
-                    let pc = if ty == b"view" || ty == b"cart" {
-                        0
-                    } else if ty == b"purchase" {
-                        let Some(pr) = parse::price(fld(6)) else { break 'valid };
-                        let cat = lk.products.get(h64(fld(5))).map_or(lk.unknown_cat as u64, |c| c) as u32;
-                        (pr << 8) | cat
-                    } else {
-                        break 'valid;
-                    };
-                    ev.user = h64(user);
-                    ev.uref = mkref(f, p + fs[1].0 as usize, user.len());
-                    ev.ts = (ts - ws) as u32;
-                    ev.pc = pc;
-                }
-                let b = (ev.eid >> (64 - P1_BITS)) as usize;
-                let l = unsafe { len.get_unchecked_mut(b) };
-                if (*l as usize) < cap {
-                    unsafe { *data.get_unchecked_mut(b * cap + *l as usize) = ev };
-                    *l += 1;
-                } else {
-                    overflow[b].push(ev);
-                }
-            });
-            EvChunk { data, cap, len, overflow }
-        })
-        .collect()
+            let ingest_ms=timestamp(fld(3)).unwrap_or(i64::MAX/2);
+            let mut pay=EvPayload{user:0,uref:0,ts:INVALID,pc:0};
+            'valid: {
+                let user=fld(1);
+                if user.is_empty(){break 'valid;}
+                let Some(ts)=timestamp(fld(2)) else {break 'valid};
+                if ts < ws || ts >= we || ingest_ms-ts > DAY_MS {break 'valid;}
+                if fld(5).is_empty(){break 'valid;}
+                let ty=fld(4);
+                let pc=if ty==b"view" || ty==b"cart" {
+                    0
+                } else if ty==b"purchase" {
+                    let Some(pr)=parse::price(fld(6)) else {break 'valid};
+                    let cat=lk.products.get(h64(fld(5))).map_or(lk.unknown_cat as u64,|c|c) as u32;
+                    (pr<<8)|cat
+                } else {break 'valid};
+                pay.user=h64(user);
+                pay.uref=mkref(f,p+fs[1].0 as usize,user.len());
+                pay.ts=(ts-ws) as u32;
+                pay.pc=pc;
+            }
+            payloads.push(pay);
+            let token=Ev1{
+                eid:eid_key,
+                ingest:(ingest_ms.div_euclid(1000)).clamp(0,u32::MAX as i64) as u32,
+                loc:((unit as u32)<<LOCAL_BITS)|(row_idx as u32),
+            };
+            let b=event_bucket(eid_key);
+            let l=&mut len[b];
+            if (*l as usize)<cap {
+                unsafe{*data.get_unchecked_mut(b*cap+*l as usize)=token;}
+                *l+=1;
+            } else {
+                overflow[b].push(token);
+            }
+        });
+        EvChunk {data,cap,len,overflow,payloads,unusual_ids}
+    }).collect()
 }
 
 /// Counting-sort records into person buckets: (records, offsets[P2 + 1]).
@@ -869,6 +900,21 @@ thread_local! {
 
 /// Dedup one event_id bucket in place over the parse chunks, map users to
 /// persons, bucket by person.
+#[inline(always)]
+fn event_payload(parts:&[EvChunk],loc:u32)->&EvPayload{
+    let unit=(loc>>20) as usize;
+    let row=(loc&((1u32<<20)-1)) as usize;
+    &parts[unit].payloads[row]
+}
+#[inline(always)]
+fn extra_event_ref(parts:&[EvChunk],loc:u32)->u64{
+    let unit=(loc>>20) as usize;
+    let row=loc&((1u32<<20)-1);
+    let ids=&parts[unit].unusual_ids;
+    let at=ids.binary_search_by_key(&row,|&(idx,_)|idx).expect("missing fallback event-ID reference");
+    ids[at].1
+}
+
 fn dedup_bucket(parts: &[EvChunk], b: usize, persons: &Persons) -> (Vec<Ev2>, Vec<u32>) {
     DEDUP.with(|cell| {
         let mut guard = cell.borrow_mut();
@@ -910,7 +956,8 @@ fn dedup_bucket(parts: &[EvChunk], b: usize, persons: &Persons) -> (Vec<Ev2>, Ve
                     if t >> 32 == fp {
                         let j = (t & 0xFFFF_FFFF) as usize - 1;
                         let old = at(j);
-                        if old.eid == e.eid && old.chk == e.chk {
+                        if old.eid == e.eid && ((e.eid & (1u64<<63)) == 0 ||
+                            deref(extra_event_ref(parts,old.loc)) == deref(extra_event_ref(parts,e.loc))) {
                             if e.ingest < old.ingest {
                                 table[s] = (fp << 32) | (g as u64 + 1);
                                 keep[j] = 0;
@@ -924,37 +971,38 @@ fn dedup_bucket(parts: &[EvChunk], b: usize, persons: &Persons) -> (Vec<Ev2>, Ve
                 g += 1;
             }
         }
-        const AHEAD: usize = 16;
+        const AHEAD:usize=16;
         sc.out.clear();
-        let out = &mut sc.out;
-        let mut ring: [*const Ev1; AHEAD] = [std::ptr::null(); AHEAD];
-        let mut head = 0usize;
-        let mut filled = 0usize;
-        let emit = |e: &Ev1, out: &mut Vec<Ev2>| {
-            let key = persons.map.get(e.user).unwrap_or_else(|| unlinked_key(e.user));
-            out.push(Ev2 { key, uref: e.uref, ts: e.ts, pc: e.pc });
+        let out=&mut sc.out;
+        let mut ring:[*const EvPayload;AHEAD]=[std::ptr::null();AHEAD];
+        let(mut head,mut filled)=(0usize,0usize);
+        let emit=|row:&EvPayload,out:&mut Vec<Ev2>|{
+            let key=persons.map.get(row.user).unwrap_or_else(||unlinked_key(row.user));
+            out.push(Ev2{key,uref:row.uref,ts:row.ts,pc:row.pc});
         };
-        let mut g = 0usize;
+        let mut g=0usize;
         for p in parts {
-            let (m, o) = p.bucket(b);
+            let(m,o)=p.bucket(b);
             for e in m.iter().chain(o.iter()) {
-                if keep[g] != 0 && e.ts != INVALID {
-                    persons.map.prefetch(e.user);
-                    if filled == AHEAD {
-                        emit(unsafe { &*ring[head] }, out);
-                    } else {
-                        filled += 1;
+                if keep[g]!=0 {
+                    let row=event_payload(parts,e.loc);
+                    if row.ts!=INVALID {
+                        persons.map.prefetch(row.user);
+                        if filled==AHEAD {
+                            emit(unsafe{&*ring[head]},out);
+                        } else {
+                            filled+=1;
+                        }
+                        ring[head]=row as *const EvPayload;
+                        head=(head+1)%AHEAD;
                     }
-                    ring[head] = e as *const Ev1;
-                    head = (head + 1) % AHEAD;
                 }
-                g += 1;
+                g+=1;
             }
         }
-        // drain in insertion order
-        let start = if filled == AHEAD { head } else { 0 };
+        let start=if filled==AHEAD{head}else{0};
         for k in 0..filled {
-            emit(unsafe { &*ring[(start + k) % AHEAD] }, out);
+            emit(unsafe{&*ring[(start+k)%AHEAD]},out);
         }
         by_bucket(&sc.out, |e| person_bucket(e.key), &mut sc.ks)
     })
