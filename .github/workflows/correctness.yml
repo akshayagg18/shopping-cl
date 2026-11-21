@@ -1,7 +1,7 @@
 name: Correctness build
 on:
   push:
-    branches: [hybrid-bucket-v1]
+    branches: [hybrid-bucket-v1, hybrid-interval-v2]
   workflow_dispatch:
 jobs:
   rust:

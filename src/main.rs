@@ -1257,9 +1257,90 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch) {
     sc.cks_sorted = cks;
 }
 
+
+/* Adaptive exact assist calculation for exceptionally large person groups.
+ * Clicks are time-sorted; each campaign's clicks therefore remain time-sorted.
+ * Merge inclusive [click, click + 7d] intervals, then count sessions by day
+ * with binary searches. Each campaign assists each session at most once. */
+fn add_union_assists(ctx: &Ctx, clicks: &[Ck], starts: &[(i64, usize)], agg: &mut Agg) {
+    if clicks.is_empty() || starts.is_empty() {
+        return;
+    }
+    let mut times: Vec<Vec<i64>> = vec![Vec::new(); ctx.ncamp];
+    for ck in clicks {
+        times[ck.camp as usize].push(ck.ts);
+    }
+    let mut sessions: Vec<Vec<i64>> = vec![Vec::new(); ctx.ndays];
+    for &(ts, day) in starts {
+        sessions[day].push(ts);
+    }
+    for (camp, stamps) in times.iter().enumerate() {
+        let mut i = 0usize;
+        while i < stamps.len() {
+            let left = stamps[i];
+            let mut right = left + CLICK_REACH;
+            i += 1;
+            while i < stamps.len() && stamps[i] <= right {
+                right = right.max(stamps[i] + CLICK_REACH);
+                i += 1;
+            }
+            for (day, day_starts) in sessions.iter().enumerate() {
+                if day_starts.is_empty()
+                    || day_starts[0] > right
+                    || day_starts[day_starts.len() - 1] < left {
+                    continue;
+                }
+                let a = day_starts.partition_point(|&ts| ts < left);
+                let b = day_starts.partition_point(|&ts| ts <= right);
+                agg.camp[camp * ctx.ndays + day][3] += (b - a) as i64;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod hybrid_assist_tests {
+    use super::*;
+    #[test]
+    fn union_assists_match_direct_scan() {
+        let prs = Persons {map: U64Map::with_capacity(1), names: Vec::new()};
+        let ctx = Ctx {ndays: 4, ncamp: 3, ncat: 0, ws: 0, ws_day: 0, persons: &prs};
+        let mut cks = vec![
+            Ck {key:1, cref:0, ts:-CLICK_REACH, camp:0},
+            Ck {key:1, cref:0, ts:-CLICK_REACH+1, camp:0},
+            Ck {key:1, cref:0, ts:0, camp:1},
+            Ck {key:1, cref:0, ts:0, camp:1},
+            Ck {key:1, cref:0, ts:DAY_MS, camp:0},
+            Ck {key:1, cref:0, ts:2*DAY_MS, camp:2},
+        ];
+        cks.sort_unstable_by_key(|c| c.ts);
+        let starts = vec![
+            (0,0usize), (1,0), (DAY_MS,1), (DAY_MS+1,1),
+            (2*DAY_MS,2), (2*DAY_MS+2,2), (3*DAY_MS,3)
+        ];
+        let mut agg = Agg {rows:Vec::new(), camp:vec![[0i64;4];16]};
+        add_union_assists(&ctx, &cks, &starts, &mut agg);
+        let mut expected = vec![0i64;12];
+        for &(s,d) in &starts {
+            for camp in 0..3usize {
+                if cks.iter().any(|c| c.camp as usize==camp && c.ts<=s && s-c.ts<=CLICK_REACH) {
+                    expected[camp*4+d] += 1;
+                }
+            }
+        }
+        for camp in 0..3 {
+            for day in 0..4 {
+                assert_eq!(agg.camp[camp*4+day][3], expected[camp*4+day]);
+            }
+        }
+    }
+}
+
 fn person_sessions(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut Scratch) {
     let key = evs[0].key;
     let name = if key & LINKED != 0 { ctx.persons.names[(key & !LINKED) as usize] } else { evs[0].uref };
+    let use_interval_assists = evs.len() >= 5000 && cks.len() >= 1000;
+    let mut assist_starts: Vec<(i64, usize)> = Vec::new();
     let (mut lo, mut hi) = (0usize, 0usize);
     let mut cur_day: i64 = i64::MIN;
     let (mut d_sess, mut d_evs, mut d_rev) = (0u32, 0u32, 0i64);
@@ -1268,6 +1349,9 @@ fn person_sessions(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut S
     while k < evs.len() {
         let start = evs[k].ts as i64;
         let day = (ctx.ws + start).div_euclid(DAY_MS) - ctx.ws_day;
+        if use_interval_assists {
+            assist_starts.push((start, day as usize));
+        }
         if day != cur_day {
             if cur_day != i64::MIN {
                 flush_day(ctx, agg, sc, name, cur_day, d_sess, d_evs, d_rev, d_purch);
@@ -1298,23 +1382,27 @@ fn person_sessions(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut S
         k = m;
         // attribution window [start - 7d, start]
         while hi < cks.len() && cks[hi].ts <= start {
-            let c = cks[hi].camp as usize;
-            if sc.count[c] == 0 {
-                sc.pos[c] = sc.active.len() as u32;
-                sc.active.push(c as u32);
+            if !use_interval_assists {
+                let c = cks[hi].camp as usize;
+                if sc.count[c] == 0 {
+                    sc.pos[c] = sc.active.len() as u32;
+                    sc.active.push(c as u32);
+                }
+                sc.count[c] += 1;
             }
-            sc.count[c] += 1;
             hi += 1;
         }
         while lo < hi && cks[lo].ts < start - CLICK_REACH {
-            let c = cks[lo].camp as usize;
-            sc.count[c] -= 1;
-            if sc.count[c] == 0 {
-                let p = sc.pos[c] as usize;
-                let lastc = *sc.active.last().unwrap();
-                sc.active[p] = lastc;
-                sc.pos[lastc as usize] = p as u32;
-                sc.active.pop();
+            if !use_interval_assists {
+                let c = cks[lo].camp as usize;
+                sc.count[c] -= 1;
+                if sc.count[c] == 0 {
+                    let p = sc.pos[c] as usize;
+                    let lastc = *sc.active.last().unwrap();
+                    sc.active[p] = lastc;
+                    sc.pos[lastc as usize] = p as u32;
+                    sc.active.pop();
+                }
             }
             lo += 1;
         }
@@ -1335,8 +1423,10 @@ fn person_sessions(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut S
             slot[1] += 1;
             slot[2] += rev;
         }
-        for &c in &sc.active {
-            agg.camp[c as usize * ctx.ndays + du][3] += 1;
+        if !use_interval_assists {
+            for &c in &sc.active {
+                agg.camp[c as usize * ctx.ndays + du][3] += 1;
+            }
         }
         d_sess += 1;
         d_evs += n;
@@ -1344,11 +1434,15 @@ fn person_sessions(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut S
         d_purch |= purch;
     }
     flush_day(ctx, agg, sc, name, cur_day, d_sess, d_evs, d_rev, d_purch);
-    while lo < hi {
-        sc.count[cks[lo].camp as usize] = 0;
-        lo += 1;
+    if use_interval_assists {
+        add_union_assists(ctx, cks, &assist_starts, agg);
+    } else {
+        while lo < hi {
+            sc.count[cks[lo].camp as usize] = 0;
+            lo += 1;
+        }
+        sc.active.clear();
     }
-    sc.active.clear();
 }
 
 #[allow(clippy::too_many_arguments)]
