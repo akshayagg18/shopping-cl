@@ -1155,82 +1155,138 @@ impl Scratch {
 }
 
 /// Group one person bucket's events and clicks by person, then sessionize.
-fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evin: &[Ev2], ckin: &[Ck]) {
-    let n: usize = evin.len();
+/// Local person id of `key` in the grouping table, inserting a new person.
+#[inline(always)]
+fn group_id(sc: &mut Scratch, key: u64, cap: &mut usize) -> u32 {
+    let slot_of = |k: u64, mask: usize| (k.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 32) as usize & mask;
+    let mask = *cap - 1;
+    let mut s = slot_of(key, mask);
+    let id = loop {
+        let t = unsafe { sc.table.get_unchecked_mut(s) };
+        if t.1 == u32::MAX {
+            *t = (key, sc.ev_cnt.len() as u32);
+            sc.used.push(s as u32);
+            sc.ev_cnt.push(0);
+            break t.1;
+        }
+        if t.0 == key {
+            break t.1;
+        }
+        s = (s + 1) & mask;
+    };
+    if sc.used.len() * 2 > *cap {
+        // grow: clear the used slots, re-insert every person at twice the size
+        let entries: Vec<(u64, u32)> = sc.used.iter().map(|&u| sc.table[u as usize]).collect();
+        for &u in &sc.used {
+            sc.table[u as usize] = (0, u32::MAX);
+        }
+        *cap *= 2;
+        let mask = *cap - 1;
+        if sc.table.len() < *cap {
+            sc.table.resize(*cap, (0, u32::MAX));
+        }
+        sc.used.clear();
+        for (k, id) in entries {
+            let mut s = slot_of(k, mask);
+            while sc.table[s].1 != u32::MAX {
+                s = (s + 1) & mask;
+            }
+            sc.table[s] = (k, id);
+            sc.used.push(s as u32);
+        }
+    }
+    id
+}
+
+/// Group one person partition's live events and clicks by person, then
+/// sessionize. Gathering the records from every worker's stream, numbering
+/// persons and counting half-hour bins happen in one pass.
+#[allow(clippy::too_many_arguments)]
+fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &[flow::Sink], dead: &flow::Dead, evb: &mut Vec<Ev2>, ckb: &mut Vec<Ck>) {
+    let n: usize = sinks.iter().map(|s| s.ev.len(b)).sum();
     if n == 0 {
         return;
     }
-    // local person ids; persons are ~30x fewer than events, so the table
-    // starts small (cache resident) and doubles when half full
+    // persons are ~30x fewer than events: the table starts small (cache
+    // resident) and doubles when half full
     let mut cap = (n / 8).next_power_of_two().max(256);
     if sc.table.len() < cap {
         sc.table.resize(cap, (0, u32::MAX));
     }
-    let mut mask = cap - 1;
     sc.used.clear();
     sc.ev_cnt.clear();
     sc.ev_local.clear();
-    let slot_of = |k: u64, mask: usize| (k.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 32) as usize & mask;
-    for e in evin.iter() {
-        let mut s = slot_of(e.key, mask);
-        let id = loop {
-            let t = unsafe { sc.table.get_unchecked_mut(s) };
-            if t.1 == u32::MAX {
-                *t = (e.key, sc.ev_cnt.len() as u32);
-                sc.used.push(s as u32);
-                sc.ev_cnt.push(0);
-                break t.1;
-            }
-            if t.0 == e.key {
-                break t.1;
-            }
-            s = (s + 1) & mask;
-        };
-        sc.ev_cnt[id as usize] += 1;
-        sc.ev_local.push(id);
-        if sc.used.len() * 2 > cap {
-            // grow: clear the used slots, re-insert every person at twice the size
-            let entries: Vec<(u64, u32)> = sc.used.iter().map(|&u| sc.table[u as usize]).collect();
-            for &u in &sc.used {
-                sc.table[u as usize] = (0, u32::MAX);
-            }
-            cap *= 2;
-            mask = cap - 1;
-            if sc.table.len() < cap {
-                sc.table.resize(cap, (0, u32::MAX));
-            }
-            sc.used.clear();
-            for (k, id) in entries {
-                let mut s = slot_of(k, mask);
-                while sc.table[s].1 != u32::MAX {
-                    s = (s + 1) & mask;
+    sc.ev_local.reserve(n);
+    let nb = ctx.nbins;
+    sc.bin_cnt.clear();
+    sc.bin_cnt.resize(nb + 1, 0);
+    evb.clear();
+    evb.reserve(n);
+    for (t, s) in sinks.iter().enumerate() {
+        let mut i = 0usize;
+        for sl in s.ev.slices(b) {
+            for (j, e) in sl.iter().enumerate() {
+                if j % 4 == 0 {
+                    // records were streamed out of the cache: fetch ahead (the
+                    // hardware prefetcher restarts at every 4 KiB)
+                    #[cfg(target_arch = "x86_64")]
+                    unsafe {
+                        std::arch::x86_64::_mm_prefetch(sl.as_ptr().wrapping_add(j + 24) as *const i8, std::arch::x86_64::_MM_HINT_T0)
+                    };
                 }
-                sc.table[s] = (k, id);
-                sc.used.push(s as u32);
+                if (dead.word(t, b, i / 64) >> (i % 64)) & 1 == 0 {
+                    let id = group_id(sc, e.key, &mut cap);
+                    unsafe {
+                        *sc.ev_cnt.get_unchecked_mut(id as usize) += 1;
+                        *sc.bin_cnt.get_unchecked_mut(bin_of(e.ts) + 1) += 1;
+                        let len = evb.len();
+                        evb.as_mut_ptr().add(len).write(*e);
+                        evb.set_len(len + 1);
+                        let len = sc.ev_local.len();
+                        sc.ev_local.as_mut_ptr().add(len).write(id);
+                        sc.ev_local.set_len(len + 1);
+                    }
+                }
+                i += 1;
             }
         }
     }
+    let n = evb.len();
+    if n == 0 {
+        return;
+    }
+    let mask = cap - 1;
+    let slot_of = |k: u64, mask: usize| (k.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 32) as usize & mask;
+    let evin: &[Ev2] = evb;
     let np = sc.ev_cnt.len();
     sc.ck_cnt.clear();
     sc.ck_cnt.resize(np, 0);
     sc.ck_local.clear();
-    for c in ckin.iter() {
-        let mut s = slot_of(c.key, mask);
-        let id = loop {
-            let t = unsafe { sc.table.get_unchecked(s) };
-            if t.1 == u32::MAX {
-                break u32::MAX;
+    ckb.clear();
+    for s in sinks {
+        for sl in s.ck.slices(b) {
+            for c in sl {
+                let mut s = slot_of(c.key, mask);
+                let id = loop {
+                    let t = unsafe { sc.table.get_unchecked(s) };
+                    if t.1 == u32::MAX {
+                        break u32::MAX;
+                    }
+                    if t.0 == c.key {
+                        break t.1;
+                    }
+                    s = (s + 1) & mask;
+                };
+                // clicks of persons without events never matter
+                if id != u32::MAX {
+                    sc.ck_cnt[id as usize] += 1;
+                    ckb.push(*c);
+                    sc.ck_local.push(id);
+                }
             }
-            if t.0 == c.key {
-                break t.1;
-            }
-            s = (s + 1) & mask;
-        };
-        if id != u32::MAX {
-            sc.ck_cnt[id as usize] += 1;
         }
-        sc.ck_local.push(id);
     }
+    let ckin: &[Ck] = ckb;
     for &s in &sc.used {
         sc.table[s as usize] = (0, u32::MAX);
     }
@@ -1258,12 +1314,6 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evin: &[Ev2], ckin
     // events by person, and inside a person by half-hour bin (two stable
     // counting passes, no comparison sort): within one bin no two events can
     // be more than 30 minutes apart, so a session never splits inside a bin
-    let nb = ctx.nbins;
-    sc.bin_cnt.clear();
-    sc.bin_cnt.resize(nb + 1, 0);
-    for e in evin.iter() {
-        unsafe { *sc.bin_cnt.get_unchecked_mut(bin_of(e.ts) + 1) += 1 };
-    }
     for b in 0..nb {
         sc.bin_cnt[b + 1] += sc.bin_cnt[b];
     }
@@ -1291,11 +1341,9 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evin: &[Ev2], ckin
     }
     let mut ck_pos = sc.ck_cnt.clone();
     for (c, &id) in ckin.iter().zip(&sc.ck_local) {
-        if id != u32::MAX {
-            let at = &mut ck_pos[id as usize];
-            sc.cks_sorted[*at as usize] = *c;
-            *at += 1;
-        }
+        let at = &mut ck_pos[id as usize];
+        sc.cks_sorted[*at as usize] = *c;
+        *at += 1;
     }
     let evs = std::mem::take(&mut sc.evs_sorted);
     let cks = std::mem::take(&mut sc.cks_sorted);
@@ -1579,7 +1627,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let mut lap = |what: &'static str| laps.push((what, t0.elapsed().as_secs_f64() * 1e3));
 
     flow::WC.store(std::env::var("SS_WC").map_or(flow::WC_DEFAULT, |v| v == "1"), Ordering::Relaxed);
-    READ.store(std::env::var("SS_READ").is_ok_and(|v| v == "1"), Ordering::Relaxed);
+    READ.store(std::env::var("SS_READ").map_or(true, |v| v != "0"), Ordering::Relaxed);
     let inp = open_all(data);
     // partition counts follow the input size, so a partition's working set
     // stays about the same from the 20M practice set to the 60M final
@@ -1641,16 +1689,14 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         let i = rayon::current_thread_index().unwrap_or(0) % nthreads;
         let mut guard = states[i].lock().unwrap();
         let (agg, sc, evb, ckb) = &mut *guard;
-        flow::live_events(b, &sinks, &dead, evb);
-        flow::clicks_of(b, &sinks, ckb);
-        process_bucket(&ctx, agg, sc, evb, ckb);
+        process_bucket(&ctx, agg, sc, b, &sinks, &dead, evb, ckb);
     });
     let aggs: Vec<Agg> = states.into_iter().map(|m| m.into_inner().unwrap().0).collect();
     lap("sessionized");
     output::write(out, aggs, &lk, &ctx_info(&ctx, &lk));
     lap("written");
     if leak {
-        if std::env::var("SS_PFREE").map_or(true, |v| v != "0") {
+        if std::env::var("SS_PFREE").is_ok_and(|v| v == "1") {
             // release the big mappings from all threads at once, so the
             // single-threaded teardown at exit has little left to do
             let files: Box<Vec<Mmap>> = unsafe { Box::from_raw(FILES.swap(std::ptr::null_mut(), Ordering::AcqRel)) };

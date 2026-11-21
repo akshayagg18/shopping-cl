@@ -251,13 +251,13 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     eprintln!("D12 x{k} up={:.1}s; wall/int ms: open links parse dedup sess write free | user sys", t.elapsed().as_secs_f64());
     let vars: [(&str, &[(&str, &str)]); 8] = [
         ("base", &[]),
-        ("read", &[("SS_READ", "1")]),
+        ("mmap", &[("SS_READ", "0")]),
         ("wc0", &[("SS_WC", "0")]),
-        ("pf0", &[("SS_PFREE", "0")]),
+        ("pf1", &[("SS_PFREE", "1")]),
         ("p9", &[("SS_P2B", "9")]),
         ("p11", &[("SS_P2B", "11")]),
         ("d11", &[("SS_PDB", "11")]),
-        ("rd9", &[("SS_READ", "1"), ("SS_P2B", "9"), ("SS_PDB", "9")]),
+        ("p9d9", &[("SS_P2B", "9"), ("SS_PDB", "9")]),
     ];
     for round in 0..2 {
         for (tag, env) in vars.iter() {
