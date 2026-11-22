@@ -508,7 +508,7 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let dev_gb = dir_gb(data);
-    eprintln!("D35 alt=v20 new=v26(=v25 + toggles) pr=populate-read helper pop=MAP_POPULATE pf2=parallel unmap at exit nohuge=no THP advice | THP {} / defrag {} | {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", cat("/sys/kernel/mm/transparent_hugepage/enabled").trim(), cat("/sys/kernel/mm/transparent_hugepage/defrag").trim(), avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
+    eprintln!("D36 parse ablation: alt=v20, new=v26 full, tok=tokenizer only, fields=+hashes/timestamps/lookups (no emit), touch=read bytes only, np=full parse without person lookups | THP {} | {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", cat("/sys/kernel/mm/transparent_hugepage/enabled").trim(), avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
     eprintln!("wall/int: open links parse dedup sess write | user sys GB");
     let dg = |k: u64, line: &str, base: Option<(u64, u64)>| -> String {
         match (digests(line), base) {
@@ -548,35 +548,33 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     eprintln!("{}", child("alt-dev", data, &ob, threads, &[]));
     let _kb: usize = std::env::var("SS_DIAG_BIG").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
     let km: usize = std::env::var("SS_DIAG_MID").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
-    let v20: [(&str, &[(&str, &str)]); 28] = [
+    let v20: [(&str, &[(&str, &str)]); 26] = [
         ("warm", &[]),
         ("alt", &[]),
         ("new", &[]),
-        ("pr", &[("SS_PR", "1")]),
-        ("pop", &[("SS_POP", "1")]),
-        ("pf2", &[("SS_PFREE", "2")]),
-        ("nohuge", &[("SS_NOHUGE", "1")]),
+        ("tok", &[("SS_ABL", "1")]),
+        ("fields", &[("SS_ABL", "2")]),
+        ("touch", &[("SS_ABL", "4")]),
+        ("np", &[("SS_ABL", "3")]),
         ("alt", &[]),
         ("new", &[]),
-        ("pr", &[("SS_PR", "1")]),
-        ("pop", &[("SS_POP", "1")]),
-        ("pf2", &[("SS_PFREE", "2")]),
-        ("nohuge", &[("SS_NOHUGE", "1")]),
+        ("tok", &[("SS_ABL", "1")]),
+        ("fields", &[("SS_ABL", "2")]),
+        ("touch", &[("SS_ABL", "4")]),
+        ("np", &[("SS_ABL", "3")]),
         ("alt", &[]),
         ("new", &[]),
-        ("pr", &[("SS_PR", "1")]),
-        ("pop", &[("SS_POP", "1")]),
-        ("pf2", &[("SS_PFREE", "2")]),
-        ("nohuge", &[("SS_NOHUGE", "1")]),
+        ("tok", &[("SS_ABL", "1")]),
+        ("fields", &[("SS_ABL", "2")]),
+        ("touch", &[("SS_ABL", "4")]),
+        ("np", &[("SS_ABL", "3")]),
         ("alt", &[]),
         ("new", &[]),
-        ("pr", &[("SS_PR", "1")]),
-        ("pop", &[("SS_POP", "1")]),
-        ("pf2", &[("SS_PFREE", "2")]),
-        ("nohuge", &[("SS_NOHUGE", "1")]),
-        ("pr-chk", &[("SS_PR", "1")]),
-        ("pop-chk", &[("SS_POP", "1")]),
-        ("pf2-chk", &[("SS_PFREE", "2")]),
+        ("tok", &[("SS_ABL", "1")]),
+        ("fields", &[("SS_ABL", "2")]),
+        ("touch", &[("SS_ABL", "4")]),
+        ("np", &[("SS_ABL", "3")]),
+        ("new-chk", &[]),
     ];
     run_k(km, &v20);
     let _ = std::fs::remove_dir_all(&ob);

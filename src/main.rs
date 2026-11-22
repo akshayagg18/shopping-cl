@@ -1942,15 +1942,21 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         (0..nthreads).map(|t| std::sync::Mutex::new(flow::Sink::new(nfiles + t, name_cap))).collect();
     // every worker takes the next unit in list order (the order read ahead)
     let next = std::sync::atomic::AtomicUsize::new(0);
+    let abl = std::env::var("SS_ABL").ok().and_then(|v| v.parse::<u8>().ok()).unwrap_or(0);
     rayon::broadcast(|ctx| {
         let t = ctx.index() % nthreads;
         let mut sink = sinks[t].lock().unwrap();
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(&(kind, f, s, e)) = units.get(i) else { break };
-            match kind {
-                0 => flow::events_unit(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64),
-                1 => flow::clicks_unit(f, s, e, &lk, &persons, ws, we, &mut sink),
+            match (kind, abl) {
+                (0, 1) => flow::tok_unit::<7>(f, s, e),
+                (1, 1) => flow::tok_unit::<4>(f, s, e),
+                (0, 2) => flow::fields_events_unit(f, s, e, &lk, ws, we),
+                (1, 2) => flow::fields_clicks_unit(f, s, e, &lk, ws, we),
+                (0 | 1, 4) => flow::touch_unit(f, s, e),
+                (0, _) => flow::events_unit(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64),
+                (1, _) => flow::clicks_unit(f, s, e, &lk, &persons, ws, we, &mut sink),
                 _ => rest.best_unit(f, s, e),
             }
         }
@@ -1960,6 +1966,12 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let names: Vec<&'static [u8]> = sinks.iter_mut().map(|s| &*std::mem::take(&mut s.names).leak()).collect();
     NAMES.store(Box::into_raw(Box::new(names)), Ordering::Release);
     lap("parsed");
+    if abl != 0 {
+        // ablation runs time the parse only
+        std::mem::forget(sinks);
+        std::mem::forget(persons);
+        return laps;
+    }
     let dead = flow::Dead::new(&sinks);
     let wide = flow::wide_sorted(&mut sinks);
     (0..flow::pd()).into_par_iter().for_each(|b| flow::dedup_part(b, &sinks, &wide, &dead));
