@@ -51,7 +51,7 @@ pub fn p2_bits() -> u32 {
 pub fn p2() -> usize {
     1 << p2_bits()
 }
-const CHUNK: usize = 4 << 20;
+const CHUNK: usize = 1 << 20;
 const SESSION_GAP: i64 = 1_800_000;
 const CLICK_REACH: i64 = 7 * DAY_MS;
 
