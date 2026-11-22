@@ -337,6 +337,7 @@ fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
 }
 
 /// (resident pages, total pages) of the files under `dir`, by mincore.
+#[allow(dead_code)]
 fn residency(dir: &Path) -> (usize, usize) {
     let (mut yes, mut all) = (0usize, 0usize);
     for p in files_under(dir) {
@@ -357,6 +358,7 @@ fn residency(dir: &Path) -> (usize, usize) {
 }
 
 /// Evict the files under `dir` from the page cache (clean pages only).
+#[allow(dead_code)]
 fn evict(dir: &Path) {
     use std::os::unix::io::AsRawFd;
     for p in files_under(dir) {
@@ -370,6 +372,7 @@ fn evict(dir: &Path) {
 }
 
 /// Touch one byte per page of every file under `dir` with all threads: ms.
+#[allow(dead_code)]
 fn touch_all(dir: &Path) -> f64 {
     let files = files_under(dir);
     let t = Instant::now();
@@ -391,6 +394,7 @@ fn touch_all(dir: &Path) -> f64 {
     t.elapsed().as_secs_f64() * 1e3
 }
 
+#[allow(dead_code)]
 fn mounts_for(paths: &[&str]) -> String {
     let mi = cat("/proc/self/mountinfo");
     let mut out = Vec::new();
@@ -414,51 +418,63 @@ fn mounts_for(paths: &[&str]) -> String {
     out.join(" ")
 }
 
+#[allow(dead_code)]
+fn mount_opts(path: &str) -> String {
+    let mi = cat("/proc/self/mountinfo");
+    let mut best: Option<(usize, String)> = None;
+    for l in mi.lines() {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.len() < 10 {
+            continue;
+        }
+        let mp = f[4];
+        let sep = f.iter().position(|&x| x == "-").unwrap_or(0);
+        let opts = format!("{} {}", f[5], f.get(sep + 3).copied().unwrap_or(""));
+        if path.starts_with(mp) && best.as_ref().map_or(true, |b| mp.len() >= b.0) {
+            best = Some((mp.len(), opts));
+        }
+    }
+    best.map(|b| b.1).unwrap_or_default()
+}
+
 pub fn main(data: &Path, out: &Path, threads: usize) {
     let t0 = Instant::now();
-    // first thing: is the real input in the page cache?
-    let (ry, ra) = residency(data);
-    let cold_ms = if ry * 2 < ra { touch_all(data) } else { -1.0 };
-    let bytes: usize = files_under(data).iter().map(|p| std::fs::metadata(p).map(|m| m.len() as usize).unwrap_or(0)).sum();
-    let scratch = std::path::PathBuf::from(std::env::var("SCRATCH_DIR").unwrap_or_else(|_| "/scratch".into()));
-    eprintln!(
-        "D16 data cached {ry}/{ra} pages; first touch {cold_ms:.0} ms for {:.0} MB | {}",
-        bytes as f64 / 1e6,
-        mounts_for(&[&data.to_string_lossy(), &out.to_string_lossy(), &scratch.to_string_lossy(), "/tmp"])
-    );
-    let t = Instant::now();
     let _ = crate::run(data, out, false);
-    eprintln!("dev first run {:.0} ms", t.elapsed().as_secs_f64() * 1e3);
+    let cpu = cat("/proc/cpuinfo");
+    let model = cpu.lines().find(|l| l.starts_with("model name")).unwrap_or("?").replace("model name\t: ", "");
+    let scratch = std::path::PathBuf::from(std::env::var("SCRATCH_DIR").unwrap_or_else(|_| "/scratch".into()));
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let k: usize = std::env::var("SS_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let t = Instant::now();
     upscale(data, &big, k);
-    let up = t.elapsed().as_secs_f64();
-    evict(&big);
-    let (y, a) = residency(&big);
-    let tc = touch_all(&big);
-    eprintln!("x{k} up={up:.1}s; after evict cached {y}/{a}; cold touch {tc:.0} ms; wall/int ms: open links parse dedup sess write | user sys");
-    // c* = evicted before the run
-    let vars: [(&str, bool, &[(&str, &str)]); 10] = [
-        ("base", false, &[]),
-        ("c-ra", true, &[]),
-        ("c-nora", true, &[("SS_RA", "0")]),
-        ("base", false, &[]),
-        ("c-ra", true, &[]),
-        ("c-pread", true, &[("SS_READ", "1")]),
-        ("lt", false, &[("SS_LT", "1")]),
-        ("c-nora", true, &[("SS_RA", "0")]),
-        ("base", false, &[]),
-        ("c-ra", true, &[]),
-    ];
-    for (tag, cold, env) in vars.iter() {
-        if *cold {
-            evict(&big);
-        } else {
-            touch_all(&big);
+    eprintln!("D18 {model} | x{k} up={:.1}s | 10 scorer-like runs each, interleaved: wall ms (process start to exit)", t.elapsed().as_secs_f64());
+    // the candidate (defaults) against the per-line tokenizer (v15's), alternating
+    let cfgs: [(&str, &[(&str, &str)]); 2] = [("v16", &[]), ("v15tok", &[("SS_TOK", "2")])];
+    let mut walls: Vec<Vec<f64>> = vec![Vec::new(); cfgs.len()];
+    let mut ints: Vec<Vec<f64>> = vec![Vec::new(); cfgs.len()];
+    for r in 0..10 {
+        for c in 0..cfgs.len() {
+            let c = if r % 2 == 0 { c } else { cfgs.len() - 1 - c };
+            let line = child(cfgs[c].0, &big, &ob, threads, cfgs[c].1);
+            // "tag wall/int: ..."
+            let wi = line.split_whitespace().nth(1).unwrap_or("0/0:").trim_end_matches(':').to_string();
+            let (w, i) = wi.split_once('/').unwrap_or(("0", "0"));
+            walls[c].push(w.parse().unwrap_or(0.0));
+            ints[c].push(i.parse().unwrap_or(0.0));
+            if r == 0 {
+                eprintln!("{line}");
+            }
         }
-        eprintln!("{}", child(tag, &big, &ob, threads, env));
+    }
+    for (c, (tag, _)) in cfgs.iter().enumerate() {
+        let w = &walls[c];
+        let mean = w.iter().sum::<f64>() / w.len() as f64;
+        let mn = w.iter().cloned().fold(f64::MAX, f64::min);
+        let mx = w.iter().cloned().fold(0.0, f64::max);
+        let im = ints[c].iter().sum::<f64>() / ints[c].len() as f64;
+        let all: Vec<String> = w.iter().map(|x| format!("{x:.0}")).collect();
+        eprintln!("{tag}: mean {mean:.0} min {mn:.0} max {mx:.0} (in-process mean {im:.0}) | {}", all.join(" "));
     }
     eprintln!("{}", child("dev", data, &ob, threads, &[]));
     let _ = std::fs::remove_dir_all(&big);

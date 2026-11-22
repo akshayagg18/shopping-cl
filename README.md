@@ -20,12 +20,13 @@ adds almost nothing to the measured time.
    component is named by its byte-wise smallest ID with a compare-and-swap minimum, and
    the same table, its values rewritten to `LINKED | name ref`, is the person map. No
    sorting, scattering or serial pass.
-3. **Tokenizing.** Per 192 KiB window, an AVX2 newline bitmap gives every line's start
-   and length up front. Each line (under 96 bytes; longer ones take a scalar path) is
-   then three 32-byte loads: separator and quote masks, prefix-XOR quote parity, and the
-   quoting rules as bit tests (no separator inside quotes, opening quotes after a
-   separator, closing quotes before one), exactly N separators, field ends by
-   `tzcnt`. Fields are unquoted on access.
+3. **Tokenizing.** One fused AVX2 pass per 64 bytes builds the newline bitmap, a bitmap
+   of quoting violations (prefix-XOR quote parity: no separator inside quotes, opening
+   quotes after a separator, closing quotes before one) and a flat list of separator
+   positions. A line is then: next newline from the bitmap, one compare that its N-th
+   separator is that newline, one test of the violation bitmap. Fields are unquoted on
+   access. (A per-line variant, three 32-byte loads per line, is faster on newer cores
+   but measured ~110 ms slower on the scorer's Cascade Lake: it stays off.)
 4. **Values.** F1/F2/F3 timestamps take inlined fast paths with a small per-thread cache
    of validated `YYYY-MM-DD` dates; anything unusual falls back to the strict general
    parser (impossible dates, hour 24, second 60, bad offsets are rejected). Short IDs
@@ -50,6 +51,7 @@ adds almost nothing to the measured time.
    campaigns.
 8. **Output.** A small hand-written Parquet writer (PLAIN, uncompressed, one page per
    column, `DATE` days) writes one `user_daily` file per worker in parallel.
+   Rows are split into equal shares, one file per thread.
 9. **Exit.** The process exits without freeing anything. Event files are never mapped
    into memory pages, so the kernel's single-threaded teardown has little to do.
 

@@ -318,7 +318,7 @@ pub fn scan_lines<const N: usize>(f: usize, s: usize, e: usize, mut each: impl F
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     {
         use std::arch::x86_64::*;
-        if crate::READ.load(Ordering::Relaxed) {
+        if crate::READ.load(Ordering::Relaxed) || !crate::TOK1.load(Ordering::Relaxed) {
             return scan_records::<N>(f, s, e, each);
         }
         let d = file_bytes(f);
