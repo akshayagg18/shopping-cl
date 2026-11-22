@@ -8,17 +8,26 @@ const WIDE_LOCATION:u64=1<<47;
 const SHARD_BITS:usize=6;
 const SHARDS:usize=1<<SHARD_BITS;
 #[repr(align(64))]
-struct EventShard(Mutex<HashMap<Vec<u8>,u64>>);
+struct EventShard(Mutex<Other>);
+#[derive(Default)]
+struct Other { map:HashMap<&'static [u8],u64>, names:Vec<OwnedName> }
+#[derive(Clone,Copy)]
+struct OwnedName { bytes:&'static [u8], hash:u64 }
 pub struct Tokens {
     other:Vec<EventShard>,
     shard_mask:usize,
+    refs:bool,
+    base:usize,
+    end:usize,
+    #[cfg(test)]
+    forced_hash:Option<u64>,
     times:Mutex<Vec<(u64,i64)>>,
     locations:Mutex<Vec<(usize,usize,usize)>>,
 }
 impl Default for Tokens {
     fn default()->Self {
         let count=std::env::var("SS_EVENT_SHARDS").ok().and_then(|s|s.parse::<usize>().ok()).unwrap_or(1).clamp(1,SHARDS).next_power_of_two();
-        Self{other:(0..SHARDS).map(|_|EventShard(Mutex::new(HashMap::new()))).collect(),shard_mask:count-1,times:Mutex::new(Vec::new()),locations:Mutex::new(Vec::new())}
+        Self{other:(0..SHARDS).map(|_|EventShard(Mutex::new(Other::default()))).collect(),shard_mask:count-1,refs:std::env::var("SS_EVENT_REFS").is_ok_and(|s|s=="1"),base:0,end:0,#[cfg(test)] forced_hash:None,times:Mutex::new(Vec::new()),locations:Mutex::new(Vec::new())}
     }
 }
 
@@ -55,26 +64,91 @@ fn compact(bytes:&[u8])->Option<u64> {
 }
 
 impl Tokens {
+    pub fn with_files(files:&[usize])->Self {
+        let mut tokens=Self::default();
+        if tokens.refs {
+            let ranges:Vec<_>=files.iter().map(|&f|crate::file_bytes(f)).collect();
+            tokens.set_ranges(&ranges);
+        }
+        tokens
+    }
+    fn set_ranges(&mut self,ranges:&[&'static [u8]]) {
+        let base=ranges.iter().filter(|b|!b.is_empty()).map(|b|b.as_ptr().expose_provenance()).min().unwrap_or(0);
+        let end=ranges.iter().map(|b|b.as_ptr().expose_provenance().checked_add(b.len()).unwrap()).max().unwrap_or(0);
+        if base!=0 && end>=base && end-base<=1usize<<35 {self.base=base;self.end=end;}
+    }
+    #[cfg(test)]
+    pub(crate) fn test_refs(bytes:&'static [u8],forced_hash:Option<u64>)->Self {
+        let mut tokens=Self::default();tokens.refs=true;tokens.set_ranges(&[bytes]);tokens.forced_hash=forced_hash;tokens
+    }
     #[inline]
     pub fn key(&self,bytes:&[u8])->u64 {
         if let Some(key)=compact(bytes) {return key;}
         let shard=if self.shard_mask==0 {0} else {xxhash_rust::xxh3::xxh3_64(bytes) as usize&self.shard_mask};
         let mut other=self.other[shard].0.lock().unwrap();
-        if let Some(&key)=other.get(bytes) {return key;}
-        let local=other.len() as u64;assert!(local<(1<<(41-SHARD_BITS)));
+        if let Some(&key)=other.map.get(bytes) {return key;}
+        let local=other.names.len() as u64;
+        assert!(local<(1<<(41-SHARD_BITS-if self.refs {6} else {0})));
         let index=(local<<SHARD_BITS)|shard as u64;
-        let key=ESC|index;other.insert(bytes.to_vec(),key);key
+        // Reference mode reserves low six bits for a source-field length.
+        // Zero denotes an owned fallback, with an exact reverse dictionary.
+        let key=ESC|if self.refs {index<<6} else {index};
+        let bytes:&'static [u8]=Box::leak(bytes.to_vec().into_boxed_slice());
+        other.map.insert(bytes,key);other.names.push(OwnedName{bytes,hash:xxhash_rust::xxh3::xxh3_64(bytes)});key
     }
     #[inline]
-    pub fn stamp(&self,bytes:&[u8],seconds:i64)->(u64,u32,u64) {
-        let key=self.key(bytes);
-        if (0..=u32::MAX as i64).contains(&seconds) {return(key,seconds as u32,key);}
+    fn source_key(&self,bytes:&'static [u8])->u64 {
+        if let Some(key)=compact(bytes) {return key;}
+        let address=bytes.as_ptr().expose_provenance();
+        if self.refs && self.base!=0 && (1..=63).contains(&bytes.len()) && address>=self.base && address<=self.end && bytes.len()<=self.end-address {
+            return ESC|(((address-self.base) as u64)<<6)|bytes.len() as u64;
+        }
+        self.key(bytes)
+    }
+    #[inline]
+    fn raw_identity(&self,stored:u64)->u64 {
+        if stored<RARE_TIME {stored} else {self.times.lock().unwrap()[(stored&((1<<41)-1)) as usize].0}
+    }
+    #[inline]
+    fn bytes(&self,key:u64)->&'static [u8] {
+        debug_assert!(self.refs && key>=ESC && key<RARE_TIME);
+        let len=(key&63) as usize;
+        if len!=0 {
+            let offset=((key&((1<<41)-1))>>6) as usize;
+            // Only source_key creates these tokens from live static slices.
+            // It exposes their provenance and bounds-checks the entire field.
+            // Input mappings are retained through dedup; no token is read after
+            // their release. The encoding preserves every address/length bit.
+            let ptr=std::ptr::with_exposed_provenance::<u8>(self.base+offset);
+            return unsafe {std::slice::from_raw_parts(ptr,len)};
+        }
+        let index=(key&((1<<41)-1))>>6;
+        self.other[index as usize&(SHARDS-1)].0.lock().unwrap().names[(index>>SHARD_BITS) as usize].bytes
+    }
+    #[inline]
+    pub fn stamp(&self,bytes:&'static [u8],seconds:i64)->(u64,u32,u64) {
+        let key=self.source_key(bytes);
+        let hash=self.identity(key);
+        if (0..=u32::MAX as i64).contains(&seconds) {return(key,seconds as u32,hash);}
         let mut times=self.times.lock().unwrap();let index=times.len() as u64;
-        assert!(index<(1<<41));times.push((key,seconds));(RARE_TIME|index,0,key)
+        assert!(index<(1<<41));times.push((key,seconds));(RARE_TIME|index,0,hash)
     }
     #[inline(always)]
     pub fn identity(&self,stored:u64)->u64 {
-        if stored<RARE_TIME {stored} else {self.times.lock().unwrap()[(stored&((1<<41)-1)) as usize].0}
+        #[cfg(test)] if let Some(hash)=self.forced_hash {return hash;}
+        let key=self.raw_identity(stored);
+        if !self.refs || key<ESC {return key;}
+        if key&63!=0 {return xxhash_rust::xxh3::xxh3_64(self.bytes(key));}
+        let index=(key&((1<<41)-1))>>6;
+        self.other[index as usize&(SHARDS-1)].0.lock().unwrap().names[(index>>SHARD_BITS) as usize].hash
+    }
+    /// Hashes select buckets only. Full bytes decide equality in reference mode.
+    #[inline]
+    pub fn same_id(&self,a:u64,b:u64)->bool {
+        let a=self.raw_identity(a);let b=self.raw_identity(b);
+        if a==b {return true;}
+        if !self.refs || a<ESC || b<ESC {return false;}
+        self.bytes(a)==self.bytes(b)
     }
     #[inline(always)]
     pub fn seconds(&self,stored:u64,seconds:u32)->i64 {
@@ -102,7 +176,7 @@ mod tests {
     #[test]
     fn concurrent_opaque_event_ids_are_exact() {
         let tokens=Tokens::default();
-        let names:Vec<Vec<u8>>=(0..1024).map(|i|format!("e{i:032x}").into_bytes()).collect();
+        let names:Vec<&'static [u8]>=(0..1024).map(|i|&*Box::leak(format!("e{i:032x}").into_bytes().into_boxed_slice())).collect();
         let keys:Vec<u64>=names.iter().map(|v|tokens.key(v)).collect();
         assert_eq!(keys.iter().copied().collect::<std::collections::HashSet<_>>().len(),names.len());
         std::thread::scope(|scope| {
@@ -110,12 +184,33 @@ mod tests {
                 let tokens=&tokens;let names=&names;let keys=&keys;
                 scope.spawn(move||for i in 0..names.len()*4 {
                     let at=(i+shift*113)%names.len();let sec=if i%2==0 {-1} else {1};
-                    let (stored,compact,identity)=tokens.stamp(&names[at],sec);
-                    assert_eq!(identity,keys[at]);assert_eq!(tokens.identity(stored),keys[at]);
+                    let (stored,compact,identity)=tokens.stamp(names[at],sec);
+                    assert_eq!(identity,tokens.identity(keys[at]));assert_eq!(tokens.identity(stored),tokens.identity(keys[at]));
                     assert_eq!(tokens.seconds(stored,compact),sec);
                 });
             }
         });
+    }
+    #[test]
+    fn source_fields_and_owned_fallback_compare_full_bytes() {
+        let blob:&'static [u8]=Box::leak(b"opaque-event-a|opaque-event-b|opaque-event-a".to_vec().into_boxed_slice());
+        let tokens=Tokens::test_refs(blob,None);
+        let (a,_,ha)=tokens.stamp(&blob[..14],1);
+        let (b,_,hb)=tokens.stamp(&blob[15..29],1);
+        let (again,_,ha2)=tokens.stamp(&blob[30..],1);
+        assert_ne!(a,again);assert_eq!(ha,ha2);assert_ne!(ha,hb);
+        assert!(tokens.same_id(a,again));assert!(!tokens.same_id(a,b));
+        let owned=tokens.key(&blob[..14]);assert_ne!(owned,a);
+        assert!(tokens.same_id(a,owned));assert_eq!(tokens.identity(a),tokens.identity(owned));
+        for len in [0,1,63,64,65537] {
+            let value:&'static [u8]=Box::leak(vec![b'!';len].into_boxed_slice());
+            let tokens=Tokens::test_refs(value,None);
+            let (stored,sec,hash)=tokens.stamp(value,-1);
+            assert_eq!(tokens.seconds(stored,sec),-1);
+            assert_eq!(hash,tokens.identity(stored));
+            assert_eq!(tokens.bytes(tokens.raw_identity(stored)),value);
+            assert_eq!(tokens.raw_identity(stored)&63!=0,(1..=63).contains(&len));
+        }
     }
     #[test]
     fn symbols_lengths_and_fallback_are_exact() {

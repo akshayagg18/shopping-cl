@@ -470,7 +470,7 @@ pub fn dedup_part(b: usize, sinks: &[Sink], dead: &Dead, tokens: &crate::event_t
                 if t >> 32 == fp {
                     let j = (t & 0xFFFF_FFFF) as usize - 1;
                     let old = unsafe { buf.get_unchecked(j) };
-                    if tokens.identity(old.eid()) == identity {
+                    if tokens.same_id(old.eid(),e.eid()) {
                         // equal ingest_ts means identical copies (rules.md): keep the first
                         if tokens.seconds(e.eid(),e.ingest()) < tokens.seconds(old.eid(),old.ingest()) {
                             unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
@@ -488,6 +488,31 @@ pub fn dedup_part(b: usize, sinks: &[Sink], dead: &Dead, tokens: &crate::event_t
         }
         span.finish(n,n*std::mem::size_of::<CopyR>());
     })
+}
+
+#[cfg(test)]
+mod byte_ref_tests {
+    use super::*;
+    #[test]
+    fn colliding_hashes_keep_distinct_ids_and_earliest_invalid_copy_wins() {
+        let blob:&'static [u8]=b"opaque-event-a|opaque-event-b|opaque-event-a|opaque-event-c";
+        let tokens=crate::event_token::Tokens::test_refs(blob,Some(123));
+        let a=&blob[..14];let b=&blob[15..29];let again=&blob[30..44];let c=&blob[45..];
+        let records=[(a,9,true),(b,8,true),(again,-1,true),(b"e0".as_slice(),1,true),(a,-2,false),(b,7,true),(c,u32::MAX as i64+1,true),(c,u32::MAX as i64+2,true)];
+        let mut sink=Sink::new();
+        for (id,seconds,valid) in records {
+            let (stored,seconds,hash)=tokens.stamp(id,seconds);assert_eq!(hash,123);
+            let loc=if valid {
+                let i=sink.ev.push(&mut sink.arena,0,Ev2{key:1,ts:0,pc:0});tokens.location(0,0,i as usize)
+            } else {NOLOC};
+            sink.cp.push(&mut sink.arena,0,CopyR::new(stored,seconds,loc));
+        }
+        sink.finish();
+        #[cfg(target_arch="x86_64")] unsafe {std::arch::x86_64::_mm_sfence();}
+        let sinks=[sink];let dead=Dead::new(&sinks);
+        dedup_part(0,&sinks,&dead,&tokens);
+        assert_eq!(dead.word(0,0,0),0b1000111);
+    }
 }
 
 /// The live event records of person partition `b`, appended to `out`.

@@ -1625,7 +1625,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let (persons, lk) = rayon::join(|| links(&inp), || lookups(&inp));
     if profile::enabled() {phase.finish(persons.map.slots.iter().filter(|s|s.key!=0).count(), inp.links.iter().map(|&f|file_bytes(f).len()).sum());}
     lap("links");
-    let tokens=event_token::Tokens::default();
+    let tokens=event_token::Tokens::with_files(&inp.events);
     let nthreads = rayon::current_num_threads();
     let sinks: Vec<std::sync::Mutex<flow::Sink>> = (0..nthreads).map(|_| std::sync::Mutex::new(flow::Sink::new())).collect();
     let units: Vec<(bool, usize, usize, usize)> =
