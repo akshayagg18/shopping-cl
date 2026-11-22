@@ -26,8 +26,8 @@ pub struct Tokens {
 }
 impl Default for Tokens {
     fn default()->Self {
-        let count=std::env::var("SS_EVENT_SHARDS").ok().and_then(|s|s.parse::<usize>().ok()).unwrap_or(1).clamp(1,SHARDS).next_power_of_two();
-        Self{other:(0..SHARDS).map(|_|EventShard(Mutex::new(Other::default()))).collect(),shard_mask:count-1,refs:std::env::var("SS_EVENT_REFS").is_ok_and(|s|s=="1"),base:0,end:0,#[cfg(test)] forced_hash:None,times:Mutex::new(Vec::new()),locations:Mutex::new(Vec::new())}
+        let count=std::env::var("SS_EVENT_SHARDS").ok().and_then(|s|s.parse::<usize>().ok()).unwrap_or(SHARDS).clamp(1,SHARDS).next_power_of_two();
+        Self{other:(0..SHARDS).map(|_|EventShard(Mutex::new(Other::default()))).collect(),shard_mask:count-1,refs:std::env::var("SS_EVENT_REFS").map_or(true,|s|s=="1"),base:0,end:0,#[cfg(test)] forced_hash:None,times:Mutex::new(Vec::new()),locations:Mutex::new(Vec::new())}
     }
 }
 

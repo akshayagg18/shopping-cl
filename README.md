@@ -1,3 +1,9 @@
+> Current-generator candidate: opaque byte IDs, exact source-reference event deduplication,
+> sharded fallback dictionaries, and per-worker exact user-ID caches. The earlier
+> 935 ms / 20M measurement below used the previous generator. It is not evidence
+> for the current generator or an official score. Current evidence and status:
+> [OPAQUE_IDS.md](experiments/OPAQUE_IDS.md). Sub-0.4 seconds is unproven.
+
 # Exact Shopping Sessions pipeline
 
 Rust solution for the [Builders Shopping Sessions track](https://www.joinbuilders.org/buildathon/tracks/shopping-sessions). The target is a verified official runtime below 0.4 seconds. **That target has not been achieved or verified.** Local and GitHub Actions measurements are not official scores.

@@ -12,8 +12,8 @@ const SHARDS:usize=1<<SHARD_BITS;
 #[repr(align(64))]
 struct OtherShard(Mutex<Other>);
 static OTHER:LazyLock<Vec<OtherShard>>=LazyLock::new(||(0..SHARDS).map(|_|OtherShard(Mutex::new(Other::default()))).collect());
-static SHARD_MASK:LazyLock<usize>=LazyLock::new(||std::env::var("SS_ID_SHARDS").ok().and_then(|s|s.parse::<usize>().ok()).unwrap_or(1).clamp(1,SHARDS).next_power_of_two()-1);
-static LOCAL_CACHE:LazyLock<bool>=LazyLock::new(||std::env::var("SS_ID_LOCAL").is_ok_and(|s|s=="1"));
+static SHARD_MASK:LazyLock<usize>=LazyLock::new(||std::env::var("SS_ID_SHARDS").ok().and_then(|s|s.parse::<usize>().ok()).unwrap_or(SHARDS).clamp(1,SHARDS).next_power_of_two()-1);
+static LOCAL_CACHE:LazyLock<bool>=LazyLock::new(||std::env::var("SS_ID_LOCAL").map_or(true,|s|s=="1"));
 thread_local! {static LOCAL:RefCell<HashMap<&'static [u8],u64>>=RefCell::new(HashMap::new());}
 
 #[inline]
