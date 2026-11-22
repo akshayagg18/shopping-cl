@@ -191,9 +191,14 @@ fn rusage() -> String {
 /// included, like the scorer). Returns a compact line: wall/internal ms, lap
 /// deltas, user/sys seconds.
 fn child(tag: &str, data: &Path, out: &Path, threads: usize, extra: &[(&str, &str)]) -> String {
+    // a tag starting with "alt" runs the other build shipped in the image
+    let exe = if tag.starts_with("alt") { std::path::PathBuf::from("/ssp_alt") } else { std::env::current_exe().unwrap() };
+    child_bin(&exe, tag, data, out, threads, extra)
+}
+
+fn child_bin(exe: &Path, tag: &str, data: &Path, out: &Path, threads: usize, extra: &[(&str, &str)]) -> String {
     let _ = std::fs::remove_dir_all(out);
     std::fs::create_dir_all(out).unwrap();
-    let exe = std::env::current_exe().unwrap();
     let mut cmd = std::process::Command::new(exe);
     cmd.env_remove("SS_DIAG")
         .env("SS_TIMING", "1")
@@ -498,7 +503,7 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let dev_gb = dir_gb(data);
-    eprintln!("D22 (16-byte event records) {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
+    eprintln!("D23 (v17 against v16b, same machine) {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
     eprintln!("cols: wall/int ms: open links parse dedup sess write | user sys rss faults | digests");
     let dg = |k: u64, line: &str, base: Option<(u64, u64)>| -> String {
         match (digests(line), base) {
@@ -524,42 +529,49 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
         eprintln!("x{k}: {:.2} GB in {:.1}s ({} files)", dir_gb(&big), t.elapsed().as_secs_f64(), files_under(&big).len());
         for (tag, env) in vars.iter() {
             let mut e: Vec<(&str, &str)> = env.to_vec();
-            e.push(("SS_DIGEST", "1"));
+            // plain A/B runs time the pipeline alone; warm-ups and variants check the digest
+            if *tag == "warm" || tag.contains('-') || k == 2 {
+                e.push(("SS_DIGEST", "1"));
+            }
             let l = child(tag, &big, &ob, threads, &e);
             eprintln!("{}", dg(k as u64, &l, base_d));
         }
         let _ = std::fs::remove_dir_all(&big);
         true
     };
+    eprintln!("{}", child("alt-dev", data, &ob, threads, &[]));
     run_k(2, &[("x2", &[])]);
-    let v60: [(&str, &[(&str, &str)]); 13] = [
-        ("warm", &[("SS_P2B", "10"), ("SS_PDB", "10")]),
-        ("p10d10", &[("SS_P2B", "10"), ("SS_PDB", "10")]),
-        ("p11d11", &[("SS_P2B", "11"), ("SS_PDB", "11")]),
-        ("p10d11", &[("SS_P2B", "10"), ("SS_PDB", "11")]),
-        ("p11d10", &[("SS_P2B", "11"), ("SS_PDB", "10")]),
-        ("auto", &[]),
-        ("p10d10s2", &[("SS_P2B", "10"), ("SS_PDB", "10"), ("SS_P2SPLIT", "2"), ("SS_SPLITMIN", "20000")]),
-        ("p9d10s2", &[("SS_P2B", "9"), ("SS_PDB", "10"), ("SS_P2SPLIT", "2"), ("SS_SPLITMIN", "20000")]),
-        ("p10d10", &[("SS_P2B", "10"), ("SS_PDB", "10")]),
-        ("p11d11", &[("SS_P2B", "11"), ("SS_PDB", "11")]),
-        ("p10d11", &[("SS_P2B", "10"), ("SS_PDB", "11")]),
-        ("p10d10s2", &[("SS_P2B", "10"), ("SS_PDB", "10"), ("SS_P2SPLIT", "2"), ("SS_SPLITMIN", "20000")]),
-        ("p10d10", &[("SS_P2B", "10"), ("SS_PDB", "10")]),
+    let v60: [(&str, &[(&str, &str)]); 10] = [
+        ("warm", &[]),
+        ("alt", &[]),
+        ("v17", &[]),
+        ("alt", &[]),
+        ("v17", &[]),
+        ("alt", &[]),
+        ("v17", &[]),
+        ("v17-p11d11", &[("SS_P2B", "11"), ("SS_PDB", "11")]),
+        ("alt-p11d11", &[("SS_P2B", "11"), ("SS_PDB", "11")]),
+        ("v17-p10d10s2", &[("SS_P2SPLIT", "2"), ("SS_SPLITMIN", "20000")]),
     ];
     let kb: usize = std::env::var("SS_DIAG_BIG").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
     let km: usize = std::env::var("SS_DIAG_MID").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     if !run_k(kb, &v60) {
         run_k(kb * 2 / 3, &v60);
     }
-    let v20: [(&str, &[(&str, &str)]); 7] = [
+    let v20: [(&str, &[(&str, &str)]); 13] = [
         ("warm", &[]),
-        ("auto", &[]),
-        ("p9d9", &[("SS_P2B", "9"), ("SS_PDB", "9")]),
-        ("p9d10", &[("SS_P2B", "9")]),
-        ("p10d9", &[("SS_PDB", "9")]),
-        ("p9d9s1", &[("SS_P2B", "9"), ("SS_PDB", "9"), ("SS_P2SPLIT", "1"), ("SS_SPLITMIN", "20000")]),
-        ("auto", &[]),
+        ("alt", &[]),
+        ("v17", &[]),
+        ("alt", &[]),
+        ("v17", &[]),
+        ("alt", &[]),
+        ("v17", &[]),
+        ("alt", &[]),
+        ("v17", &[]),
+        ("alt", &[]),
+        ("v17", &[]),
+        ("v17-p9d9s1", &[("SS_P2B", "9"), ("SS_PDB", "9"), ("SS_P2SPLIT", "1"), ("SS_SPLITMIN", "20000")]),
+        ("v17-p9d10", &[("SS_P2B", "9")]),
     ];
     run_k(km, &v20);
     let _ = std::fs::remove_dir_all(&ob);

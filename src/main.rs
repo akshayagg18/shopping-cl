@@ -1975,7 +1975,9 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     // stays about the same from the 20M practice set to the 60M final
     let ev_bytes: usize = inp.events.iter().map(|&f| file_bytes(f).len()).sum();
     let est_events = (ev_bytes / 75).max(1);
-    let auto = |per: usize| (usize::BITS - 1 - (est_events / per).max(1).leading_zeros()).clamp(9, 12);
+    // at most 1024 partitions: at 60M, 4096 made the parse ~18% slower on the
+    // scorer (staging areas out of L2) for little gain in dedup and sessions
+    let auto = |per: usize| (usize::BITS - 1 - (est_events / per).max(1).leading_zeros()).clamp(9, 10);
     let envbits = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(d).clamp(6, 14);
     // a copy record holds the person partition in 12 bits
     P2B.store(envbits("SS_P2B", auto(P2_PER)).min(12), Ordering::Relaxed);
