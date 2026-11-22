@@ -5,11 +5,21 @@ use std::{collections::HashMap,sync::Mutex};
 const ESC:u64=63<<42;
 const RARE_TIME:u64=ESC|(1<<41);
 const WIDE_LOCATION:u64=1<<47;
-#[derive(Default)]
+const SHARD_BITS:usize=6;
+const SHARDS:usize=1<<SHARD_BITS;
+#[repr(align(64))]
+struct EventShard(Mutex<HashMap<Vec<u8>,u64>>);
 pub struct Tokens {
-    other:Mutex<HashMap<Vec<u8>,u64>>,
+    other:Vec<EventShard>,
+    shard_mask:usize,
     times:Mutex<Vec<(u64,i64)>>,
     locations:Mutex<Vec<(usize,usize,usize)>>,
+}
+impl Default for Tokens {
+    fn default()->Self {
+        let count=std::env::var("SS_EVENT_SHARDS").ok().and_then(|s|s.parse::<usize>().ok()).unwrap_or(1).clamp(1,SHARDS).next_power_of_two();
+        Self{other:(0..SHARDS).map(|_|EventShard(Mutex::new(HashMap::new()))).collect(),shard_mask:count-1,times:Mutex::new(Vec::new()),locations:Mutex::new(Vec::new())}
+    }
 }
 
 #[inline]
@@ -48,9 +58,11 @@ impl Tokens {
     #[inline]
     pub fn key(&self,bytes:&[u8])->u64 {
         if let Some(key)=compact(bytes) {return key;}
-        let mut other=self.other.lock().unwrap();
+        let shard=if self.shard_mask==0 {0} else {xxhash_rust::xxh3::xxh3_64(bytes) as usize&self.shard_mask};
+        let mut other=self.other[shard].0.lock().unwrap();
         if let Some(&key)=other.get(bytes) {return key;}
-        let index=other.len() as u64;assert!(index<(1<<41));
+        let local=other.len() as u64;assert!(local<(1<<(41-SHARD_BITS)));
+        let index=(local<<SHARD_BITS)|shard as u64;
         let key=ESC|index;other.insert(bytes.to_vec(),key);key
     }
     #[inline]
@@ -87,6 +99,24 @@ impl Tokens {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn concurrent_opaque_event_ids_are_exact() {
+        let tokens=Tokens::default();
+        let names:Vec<Vec<u8>>=(0..1024).map(|i|format!("e{i:032x}").into_bytes()).collect();
+        let keys:Vec<u64>=names.iter().map(|v|tokens.key(v)).collect();
+        assert_eq!(keys.iter().copied().collect::<std::collections::HashSet<_>>().len(),names.len());
+        std::thread::scope(|scope| {
+            for shift in 0..8 {
+                let tokens=&tokens;let names=&names;let keys=&keys;
+                scope.spawn(move||for i in 0..names.len()*4 {
+                    let at=(i+shift*113)%names.len();let sec=if i%2==0 {-1} else {1};
+                    let (stored,compact,identity)=tokens.stamp(&names[at],sec);
+                    assert_eq!(identity,keys[at]);assert_eq!(tokens.identity(stored),keys[at]);
+                    assert_eq!(tokens.seconds(stored,compact),sec);
+                });
+            }
+        });
+    }
     #[test]
     fn symbols_lengths_and_fallback_are_exact() {
         let tokens=Tokens::default();let mut seen=std::collections::HashSet::new();

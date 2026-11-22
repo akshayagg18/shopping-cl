@@ -6,7 +6,12 @@ const INTERNED: u64 = 1 << 62;
 struct Other { map:HashMap<&'static [u8],u64>, names:Vec<&'static [u8]> }
 // These bytes live for the process, just like the input mappings. Only IDs that
 // cannot be represented reversibly use this dictionary.
-static OTHER: LazyLock<Mutex<Other>> = LazyLock::new(|| Mutex::new(Other::default()));
+const SHARD_BITS:usize=6;
+const SHARDS:usize=1<<SHARD_BITS;
+#[repr(align(64))]
+struct OtherShard(Mutex<Other>);
+static OTHER:LazyLock<Vec<OtherShard>>=LazyLock::new(||(0..SHARDS).map(|_|OtherShard(Mutex::new(Other::default()))).collect());
+static SHARD_MASK:LazyLock<usize>=LazyLock::new(||std::env::var("SS_ID_SHARDS").ok().and_then(|s|s.parse::<usize>().ok()).unwrap_or(1).clamp(1,SHARDS).next_power_of_two()-1);
 
 #[inline(always)]
 fn payload(b: &[u8]) -> u64 {
@@ -26,9 +31,11 @@ fn payload(b: &[u8]) -> u64 {
             return packed<<4|tag;
         }
     }
-    let mut map=OTHER.lock().unwrap();
+    let shard=if *SHARD_MASK==0 {0} else {xxhash_rust::xxh3::xxh3_64(b) as usize&*SHARD_MASK};
+    let mut map=OTHER[shard].0.lock().unwrap();
     if let Some(&key)=map.map.get(b) {return key;}
-    let index=map.names.len() as u64;assert!(index<INTERNED);
+    let local=map.names.len() as u64;assert!(local<(INTERNED>>SHARD_BITS));
+    let index=(local<<SHARD_BITS)|shard as u64;
     let key=INTERNED|index;
     let bytes:&'static [u8]=Box::leak(b.to_vec().into_boxed_slice());
     map.map.insert(bytes,key);map.names.push(bytes);key
@@ -50,7 +57,7 @@ pub fn key(b:&[u8])->u64 {mix(payload(b))}
 
 /// Decode an unlinked person's injective payload for output.
 pub fn bytes<'a>(key:u64,buffer:&'a mut [u8;9])->&'a [u8] {
-    if key&INTERNED!=0 {return OTHER.lock().unwrap().names[(key&!INTERNED) as usize];}
+    if key&INTERNED!=0 {let index=key&!INTERNED;return OTHER[index as usize&(SHARDS-1)].0.lock().unwrap().names[(index>>SHARD_BITS) as usize];}
     let tag=(key&15) as usize;
     let packed=key>>4;
     #[cfg(all(target_arch="x86_64",target_feature="bmi2"))]
@@ -67,6 +74,22 @@ pub fn bytes<'a>(key:u64,buffer:&'a mut [u8;9])->&'a [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn concurrent_opaque_ids_share_exact_keys() {
+        let names:Vec<Vec<u8>>=(0..1024).map(|i|format!("opaque-user-{i:032x}").into_bytes()).collect();
+        let expected:Vec<u64>=names.iter().map(|v|key(v)).collect();
+        assert_eq!(expected.iter().copied().collect::<std::collections::HashSet<_>>().len(),names.len());
+        std::thread::scope(|scope| {
+            for shift in 0..8 {
+                let names=&names;let expected=&expected;
+                scope.spawn(move||for i in 0..names.len()*4 {
+                    let at=(i+shift*113)%names.len();
+                    assert_eq!(key(&names[at]),expected[at]);
+                    assert_eq!(bytes(unmix(expected[at]),&mut [0;9]),names[at]);
+                });
+            }
+        });
+    }
     #[test]
     fn permutation_and_domains() {
         let mut x=123456u64;
