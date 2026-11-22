@@ -9,7 +9,7 @@ use std::sync::atomic::AtomicU64;
 pub const PD_BITS: u32 = 10; // event-id partitions of the copy records (default)
 pub static PDB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(PD_BITS);
 /// Write-combining staging with non-temporal stores for the record streams.
-pub const WC_DEFAULT: bool = true;
+pub const WC_DEFAULT: bool = false;
 pub static WC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(WC_DEFAULT);
 
 #[inline(always)]
