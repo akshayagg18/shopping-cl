@@ -1393,6 +1393,10 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     // every local index of the partition (a few hundred per partition: cheaper
     // than tracking the range in use per record)
     let (lo, hi) = (0usize, nloc - 1);
+    sc.ev_local.reserve(n);
+    // output cursors held in registers (set_len once at the end)
+    let (evp, lip, cntp) = (evb.as_mut_ptr(), sc.ev_local.as_mut_ptr(), sc.ev_cnt.as_mut_ptr());
+    let mut m = 0usize;
     for (t, s) in sinks.iter().enumerate() {
         let mut i = 0usize;
         let mut dw = 0u64;
@@ -1412,18 +1416,20 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                 if (dw >> (i % 64)) & 1 == 0 {
                     let li = (e.pid >> pbits) as usize;
                     unsafe {
-                        *sc.ev_cnt.get_unchecked_mut(li) += 1;
-                        let len = evb.len();
-                        evb.as_mut_ptr().add(len).write(Ev1 { ts: e.ts, pc: e.pc });
-                        evb.set_len(len + 1);
-                        let len = sc.ev_local.len();
-                        sc.ev_local.as_mut_ptr().add(len).write(li as u32);
-                        sc.ev_local.set_len(len + 1);
+                        *cntp.add(li) += 1;
+                        evp.add(m).write(Ev1 { ts: e.ts, pc: e.pc });
+                        lip.add(m).write(li as u32);
                     }
+                    m += 1;
                 }
                 i += 1;
             }
         }
+    }
+    debug_assert!(m <= n);
+    unsafe {
+        evb.set_len(m);
+        sc.ev_local.set_len(m);
     }
     let n = evb.len();
     if n == 0 {
