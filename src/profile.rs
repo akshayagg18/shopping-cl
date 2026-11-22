@@ -5,8 +5,20 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 pub static ALLOCS: AtomicU64 = AtomicU64::new(0);
 pub static BYTES: AtomicU64 = AtomicU64::new(0);
+static LOCKS_ON: AtomicBool=AtomicBool::new(false);
+#[repr(align(64))]
+struct AlignedCounts([AtomicU64;128*16]);
+static LOCK_COUNTS:AlignedCounts=AlignedCounts([const {AtomicU64::new(0)};128*16]);
+#[inline(always)]
+pub fn lock_count(kind:usize) {
+    if cfg!(feature="diagnostics")&&LOCKS_ON.load(Ordering::Relaxed) {
+        let thread=rayon::current_thread_index().unwrap_or(127).min(127);
+        LOCK_COUNTS.0[thread*16+kind].fetch_add(1,Ordering::Relaxed);
+    }
+}
 pub fn init() {
     ORIGIN.set(Instant::now()).ok();
+    LOCKS_ON.store(std::env::var_os("SS_LOCK_DIAG").is_some(),Ordering::Relaxed);
     ENABLED.store(std::env::var_os("SS_PROFILE").is_some(), Ordering::Relaxed);
 }
 #[inline]
@@ -64,6 +76,12 @@ impl Span {
     }
 }
 pub fn summary() {
+    if cfg!(feature="diagnostics")&&LOCKS_ON.load(Ordering::Relaxed) {
+        let labels=["registry_read","registry_create","wide_ingest","byte_intern","byte_decode","event_other","event_wide_time","event_time_read","extended_ref","person_common","person_extended","raw_cache_miss"];
+        let counts:Vec<String>=labels.iter().enumerate().map(|(kind,label)| {
+            let count:u64=(0..128).map(|thread|LOCK_COUNTS.0[thread*16+kind].load(Ordering::Relaxed)).sum();format!("{label}={count}")
+        }).collect();eprintln!("LOCK_COUNTS {}",counts.join(" "));
+    }
     if enabled() {
         let mut r: libc::rusage = unsafe { std::mem::zeroed() };
         unsafe {

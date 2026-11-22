@@ -48,7 +48,7 @@ impl Tokens {
     #[inline]
     pub fn key(&self,bytes:&[u8])->u64 {
         if let Some(key)=compact(bytes) {return key;}
-        let mut other=self.other.lock().unwrap();
+        crate::profile::lock_count(5);let mut other=self.other.lock().unwrap();
         if let Some(&key)=other.get(bytes) {return key;}
         let index=other.len() as u64;assert!(index<(1<<41));
         let key=ESC|index;other.insert(bytes.to_vec(),key);key
@@ -57,16 +57,16 @@ impl Tokens {
     pub fn stamp(&self,bytes:&[u8],seconds:i64)->(u64,u32,u64) {
         let key=self.key(bytes);
         if (0..=u32::MAX as i64).contains(&seconds) {return(key,seconds as u32,key);}
-        let mut times=self.times.lock().unwrap();let index=times.len() as u64;
+        crate::profile::lock_count(6);let mut times=self.times.lock().unwrap();let index=times.len() as u64;
         assert!(index<(1<<41));times.push((key,seconds));(RARE_TIME|index,0,key)
     }
     #[inline(always)]
     pub fn identity(&self,stored:u64)->u64 {
-        if stored<RARE_TIME {stored} else {self.times.lock().unwrap()[(stored&((1<<41)-1)) as usize].0}
+        if stored<RARE_TIME {stored} else {crate::profile::lock_count(7);self.times.lock().unwrap()[(stored&((1<<41)-1)) as usize].0}
     }
     #[inline(always)]
     pub fn seconds(&self,stored:u64,seconds:u32)->i64 {
-        if stored<RARE_TIME {seconds as i64} else {self.times.lock().unwrap()[(stored&((1<<41)-1)) as usize].1}
+        if stored<RARE_TIME {seconds as i64} else {crate::profile::lock_count(7);self.times.lock().unwrap()[(stored&((1<<41)-1)) as usize].1}
     }
     #[inline]
     pub fn location(&self,thread:usize,part:usize,index:usize)->u64 {

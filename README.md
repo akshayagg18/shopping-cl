@@ -1,3 +1,24 @@
+# Diagnostic branch: dense pipeline locks and model selection
+
+This branch is for profiling the 60M regression. **Do not submit it.** The
+recommended validated source remains `fef07368caf2e161fbf91dbf67e8176574fcfaa9`.
+Source6308907 passed exact Docker/60M validation but regressed to8089.83ms versus
+4168.96ms for the prior on the same host. See the source6308907 check and
+https://github.com/akshayagg18/shopping-cl/actions/runs/44967589723 .
+
+`--features diagnostics` plus `SS_LOCK_DIAG=1` counts lock attempts per worker
+and prints model/graph subphases. Without diagnostics,lock counters compile out.
+`SS_STRATIFY_USER=1` samples across file regions;`SS_USER_FIRST=1` selects an
+ordered match;`SS_READONLY_USER=1` freezes the identity dictionary after links.
+All modes preserve literal-graph and byte-exact fallback semantics.
+`SS_LINK_ONLY=1` is a diagnostic early exit and deliberately produces no tables.
+`SS_USER_BOUND_SCALE` is a synthetic diagnostic for model-search bounds;it is
+unset in correctness/performance submission runs.
+
+The instrumentation and optional models passed27 release units,36 official
+fixtures,the development answer,literal reference/fuzz,and adversarial cases.
+Native timing of an instrumented build is not used as a submission score.
+
 # Shopping Sessions — exact dense Rust candidate
 
 Processes `/data` into exact `/output/user_daily` and `/output/campaign_daily`

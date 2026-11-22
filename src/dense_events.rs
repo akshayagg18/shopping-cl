@@ -39,7 +39,7 @@ impl Context {
         let (time,who)=if let Some(relative)=relative.filter(|&s|s>=0&&(s as u64)<escape) {
             (relative as u64,user as u64)
         } else {
-            let mut wide=self.wide.lock().unwrap();let id=wide.len();
+            crate::profile::lock_count(2);let mut wide=self.wide.lock().unwrap();let id=wide.len();
             if id>=USER_MASK as usize {self.failed.store(true,Ordering::Relaxed);return Record{a:(u32::MAX as u64)<<32,b:0};}
             wide.push(Wide{seconds,user});(escape,id as u64)
         };
@@ -63,7 +63,7 @@ impl<'a> Resolver<'a> {
         let payload=if self.frozen.inline_users {inline_payload} else {self.sources[(code>>bits) as usize].deferred_users[(code&((1<<bits)-1)) as usize]};
         let slot=(payload.wrapping_mul(0xd6e8_feb8_6659_fd93)>>57) as usize;
         if self.cache[slot][0]==payload {return self.cache[slot][1];}
-        let mut buffer=[0u8;9];let bytes=crate::ids::bytes(payload,&mut buffer);
+        crate::profile::lock_count(11);let mut buffer=[0u8;9];let bytes=crate::ids::bytes(payload,&mut buffer);
         let key=self.users.person_index(self.users.model.user(bytes),bytes);
         self.cache[slot]=[payload,key];key
     }

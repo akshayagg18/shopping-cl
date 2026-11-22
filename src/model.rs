@@ -89,6 +89,31 @@ fn samples(files:&[usize],column:usize,prefix:u8)->Vec<u64> {
     result
 }
 
+/// Sample different byte regions, rather than only the first whale's aliases.
+fn distributed_users(files:&[usize])->Vec<u64> {
+    let mut ordered=files.to_vec();ordered.sort_unstable_by_key(|&f|std::cmp::Reverse(crate::file_bytes(f).len()));
+    let mut values=Vec::new();
+    for &file in &ordered {
+        let data=crate::file_bytes(file);
+        for fraction in 0..8 {
+            let offset=data.len()/8*fraction;
+            let mut at=crate::memchr(b'\n',&data[offset..]).map_or(data.len(),|i|offset+i+1);
+            let mut added=0;
+            for _ in 0..128 {
+                if at>=data.len()||values.len()>=64||added>=8 {break;}
+                let end=crate::memchr(b'\n',&data[at..]).map_or(data.len(),|i|at+i);
+                if let Some(fields)=crate::parse::split::<7>(&data[at..end]) {
+                    let(a,b)=fields.get(1);
+                    if let Some(value)=number(&data[at+a..at+b],b'u') {if !values.contains(&value) {values.push(value);added+=1;}}
+                }
+                at=end+1;
+            }
+        }
+        if values.len()>=64 {break;}
+    }
+    values
+}
+
 /// Search affects density, never correctness. Any selected key is a bijection;
 /// labels outside the chosen range take an exact fallback.
 pub fn learn_events(files:&[usize],bytes:usize)->Option<Model> {
@@ -107,22 +132,31 @@ pub fn learn_events(files:&[usize],bytes:usize)->Option<Model> {
     Some(Model{prefix:b'e',key,bound})
 }
 pub fn learn_users(files:&[usize],bytes:usize)->Option<Model> {
-    let s=samples(files,1,b'u');if s.len()<8 {return None;}
+    let scale=std::env::var("SS_USER_BOUND_SCALE").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(1).clamp(1,16);
+    let learned=learn_users_mode(files,bytes.saturating_mul(scale),std::env::var("SS_STRATIFY_USER").is_ok_and(|v|v!="0"),std::env::var("SS_USER_FIRST").is_ok_and(|v|v!="0"));
+    if std::env::var_os("SS_TIMING").is_some() {
+        if let Some(model)=learned {let probe=distributed_users(files);let n=probe.iter().filter(|&&v|{let n=model.decode_value(v);(n>>9)<model.bound as u64&&(n&511)<8}).count();eprintln!("dense model independent common probe: {n}/{}",probe.len());}
+    }
+    learned
+}
+fn learn_users_mode(files:&[usize],bytes:usize,distributed:bool,ordered:bool)->Option<Model> {
+    let s=if distributed {distributed_users(files)} else {samples(files,1,b'u')};if s.len()<8 {return None;}
     let zs:Vec<_>=s.iter().map(|&v|undo_second(v)).collect();
     let bound=(bytes/75/24+1024).clamp(1,1<<23) as u32;
     let domain=(bound as u64)*8;
     for anchor in 0..s.len().min(3) {
-        let key=(0..domain).into_par_iter().find_map_any(|i| {
+        let candidate=|i:u64| {
             let index=((i>>3)<<9)|(i&7);
             let key=zs[anchor]^(index.wrapping_mul(FIRST)&MASK);
-            let required=s.len()*3/4;let mut fits=0;let mut misses=0;
+            let required=if distributed {s.len()*9/10} else {s.len()*3/4};let mut fits=0;let mut misses=0;
             for &z in &zs {
                 let n=(z^key).wrapping_mul(FIRST_INV)&MASK;
                 if (n>>9)<bound as u64&&(n&511)<8 {fits+=1;} else {misses+=1;}
                 if misses>s.len()-required {return None;}
             }
             (fits>=required).then_some(key)
-        });
+        };
+        let key=if ordered {(0..domain as usize).into_par_iter().find_map_first(|i|candidate(i as u64))} else {(0..domain).into_par_iter().find_map_any(candidate)};
         if let Some(key)=key {return Some(Model{prefix:b'u',key,bound});}
     }
     None
@@ -146,5 +180,23 @@ mod tests {
         for b in [b"e00".as_slice(),b"eA",b"e+1",b"e-1",b"e1\r",b"e",b"",b"E1",b"e\xc3\xa9"] {assert_eq!(number(b,b'e'),None);}
         assert_ne!(number(b"e0",b'e'),None);
         assert_eq!(FIRST.wrapping_mul(FIRST_INV)&MASK,1);assert_eq!(SECOND.wrapping_mul(SECOND_INV)&MASK,1);
+    }
+    #[test]
+    fn distributed_learning_covers_users_beyond_the_first_whale() {
+        let _guard=crate::tests_support::LOCK.lock().unwrap_or_else(|e|e.into_inner());
+        let model=Model{prefix:b'u',key:0x98127346,bound:4096};let mut data=b"h,h,h,h,h,h,h\n".to_vec();let mut labels=Vec::new();
+        for group in 0..128 {for alias in 0..8 {let mut out=[0;10];let n=model.label((group<<9)|alias,&mut out);labels.push(out[..n].to_vec());}}
+        for row in 0..50000 {
+            let index=if row<20000 {row%6} else {row%labels.len()};
+            data.extend_from_slice(b"e0,");data.extend_from_slice(&labels[index]);data.extend_from_slice(b",2026-10-03T00:00:00Z,2026-10-03T00:00:00Z,view,p1,\n");
+        }
+        crate::tests_support::install(&data);
+        let mut chosen=None;
+        for threads in [1,2,4] {
+            let pool=rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let learned=pool.install(||learn_users_mode(&[0],data.len(),true,true)).unwrap();
+            for label in &labels {assert!(learned.user(label).is_some(),"{:?}",label);}
+            if let Some(key)=chosen {assert_eq!(learned.key,key);}chosen=Some(learned.key);
+        }
     }
 }

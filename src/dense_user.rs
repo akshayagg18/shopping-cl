@@ -12,12 +12,18 @@ pub struct UserMap {
     common:usize,
     component:Vec<AtomicU32>, // zero: unlinked; otherwise component index + 1
     registry:Mutex<Registry>,
+    known:Option<HashMap<u64,u32>>,
     pub linked_count:usize,
 }
 impl UserMap {
     fn vertex(&self,bytes:&[u8],create:bool)->Option<u32> {
         if let Some(index)=self.model.user(bytes) {return Some(index);}
-        let payload=ids::unmix(h64(bytes));let mut registry=self.registry.lock().unwrap();
+        let payload=ids::unmix(h64(bytes));
+        if let Some(known)=&self.known {
+            if let Some(&id)=known.get(&payload) {return Some(id);}
+            if !create {return None;}
+        }
+        crate::profile::lock_count(if create {1} else {0});let mut registry=self.registry.lock().unwrap();
         if let Some(&id)=registry.by_key.get(&payload) {return Some(id);}
         if !create {return None;}
         let id=self.common.checked_add(registry.names.len())?;
@@ -31,6 +37,7 @@ impl UserMap {
         }
     }
     pub fn person_index(&self,index:Option<u32>,bytes:&[u8])->u64 {
+        crate::profile::lock_count(if index.is_some() {9} else {10});
         let index=index.or_else(||self.vertex(bytes,false));
         let comp=index.and_then(|i|self.component.get(i as usize)).map_or(0,|x|x.load(Ordering::Relaxed));
         if comp==0 {ids::payload_of(bytes)} else {LINKED|(comp-1) as u64}
@@ -85,9 +92,14 @@ fn root(parent:&[AtomicU32],mut x:u32)->u32 {
 struct Endpoint {vertex:u32,name:u64}
 
 pub fn build(input:&Inputs,model:Model)->Option<Persons> {
+    build_mode(input,model,std::env::var("SS_READONLY_USER").is_ok_and(|v|v!="0"))
+}
+fn build_mode(input:&Inputs,model:Model,read_only:bool)->Option<Persons> {
+    let diagnostic=std::env::var_os("SS_TIMING").is_some();let start=std::time::Instant::now();
+    let mark=|stage:&str|if diagnostic {eprintln!("DENSE_GRAPH {stage} cumulative_ms={:.3}",start.elapsed().as_secs_f64()*1000.0);};
     let common=(model.bound as usize).checked_mul(8)?;
     if common>=LINK_CODE as usize {return None;}
-    let mut map=UserMap{model,common,component:Vec::new(),registry:Mutex::new(Registry::default()),linked_count:0};
+    let mut map=UserMap{model,common,component:Vec::new(),registry:Mutex::new(Registry::default()),known:None,linked_count:0};
     let failed=AtomicBool::new(false);
     let parts:Vec<Vec<Endpoint>>=chunks_of(&input.links,256<<10).par_iter().map(|&(file,s,e)| {
         let mut endpoints=Vec::new();
@@ -99,12 +111,14 @@ pub fn build(input:&Inputs,model:Model)->Option<Persons> {
             endpoints.push(Endpoint{vertex:vb,name:mkref(file,p+c,d-c)});
         });endpoints
     }).collect();
+    mark("parse_links");
     if failed.load(Ordering::Relaxed) {return None;}
     let endpoints:Vec<Endpoint>=parts.into_iter().flatten().collect();
     if endpoints.len()>=u32::MAX as usize {return None;}
     let count=common+map.registry.lock().unwrap().names.len();
     let parent:Vec<AtomicU32>=(0..count).into_par_iter().map(|_|AtomicU32::new(0)).collect();
     let active:Vec<AtomicU64>=(0..count.div_ceil(64)).map(|_|AtomicU64::new(0)).collect();
+    mark("initialize");
     endpoints.par_chunks_exact(2).for_each(|edge| {
         let (mut a,mut b)=(edge[0].vertex,edge[1].vertex);
         for x in [a,b] {active[x as usize/64].fetch_or(1u64<<(x%64),Ordering::Relaxed);}
@@ -114,11 +128,14 @@ pub fn build(input:&Inputs,model:Model)->Option<Persons> {
             if parent[hi as usize].compare_exchange(0,lo+1,Ordering::AcqRel,Ordering::Relaxed).is_ok() {break;}
         }
     });
+    mark("union");
     let vertices:Vec<u32>=active.par_iter().enumerate().flat_map_iter(|(word,bits)| {
         let mut b=bits.load(Ordering::Relaxed);
         std::iter::from_fn(move || {if b==0 {None} else {let bit=b.trailing_zeros();b&=b-1;Some((word*64+bit as usize) as u32)}})
     }).collect();
     let roots:Vec<u32>=vertices.par_iter().map(|&v|root(&parent,v)).collect();
+    if std::env::var_os("SS_TIMING").is_some() {eprintln!("dense identity coverage: {} common linked IDs, {} extended IDs",vertices.iter().filter(|&&v|(v as usize)<common).count(),map.registry.lock().unwrap().names.len());}
+    mark("roots");
     let best:Vec<AtomicU32>=(0..count).into_par_iter().map(|_|AtomicU32::new(0)).collect();
     endpoints.par_iter().enumerate().for_each(|(i,e)| {
         let r=root(&parent,e.vertex) as usize;let mut old=best[r].load(Ordering::Relaxed);
@@ -127,6 +144,7 @@ pub fn build(input:&Inputs,model:Model)->Option<Persons> {
             match best[r].compare_exchange_weak(old,i as u32+1,Ordering::Relaxed,Ordering::Relaxed) {Ok(_)=>break,Err(value)=>old=value}
         }
     });
+    mark("canonical_names");
     let mut names=Vec::new();let mut comp=vec![0u32;count];
     for (&v,&r) in vertices.iter().zip(&roots) {
         if v==r {
@@ -137,6 +155,8 @@ pub fn build(input:&Inputs,model:Model)->Option<Persons> {
     }
     vertices.par_iter().zip(&roots).for_each(|(&v,&r)|parent[v as usize].store(comp[r as usize],Ordering::Relaxed));
     map.linked_count=vertices.len();map.component=parent;
+    if read_only {map.known=Some(map.registry.lock().unwrap().by_key.clone());}
+    mark("complete");
     Some(Persons{map:PersonMap{shift:0,sub:0,slots:Vec::new(),dense:Some(Box::new(map))},names})
 }
 
@@ -154,12 +174,15 @@ mod tests {
         ids.push("unicode-\u{e9}".as_bytes().to_vec());
         ids.push("\u{e9}".repeat(40000).into_bytes());
         ids.push(b"u0000000".to_vec());
+        ids.push("unlinked-\u{e9}".as_bytes().to_vec());
         let edges=[(0,1),(1,2),(2,4),(4,5),(5,11),(11,12),(6,7),(8,8),(9,13)];
         let mut data=b"user_id_a,user_id_b\n".to_vec();
         for &(a,b) in &edges {data.extend_from_slice(&ids[a]);data.push(b',');data.extend_from_slice(&ids[b]);data.push(b'\n');}
         crate::tests_support::install(&data);
         let input=Inputs{events:vec![],clicks:vec![],links:vec![0],products:0,campaigns:0,window_start:0,window_end:1};
-        let people=build(&input,model).unwrap();
+        for read_only in [false,true] {
+        let people=build_mode(&input,model,read_only).unwrap();
+        assert_eq!(people.map.dense.as_ref().unwrap().known.is_some(),read_only);
         for start in 0..ids.len() {
             let mut seen=vec![false;ids.len()];let mut todo=vec![start];seen[start]=true;
             while let Some(v)=todo.pop() {
@@ -182,6 +205,7 @@ mod tests {
         for (id,code) in ids.iter().zip(codes) {
             let key=names.person_key(code);
             if let Some(expected)=people.map.get(h64(id)) {assert_eq!(key,expected);} else {assert_eq!(key,crate::unlinked_key(h64(id)));}
+        }
         }
     }
 }

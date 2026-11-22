@@ -26,7 +26,7 @@ fn payload(b: &[u8]) -> u64 {
             return packed<<4|tag;
         }
     }
-    let mut map=OTHER.lock().unwrap();
+    crate::profile::lock_count(3);let mut map=OTHER.lock().unwrap();
     if let Some(&key)=map.map.get(b) {return key;}
     let index=map.names.len() as u64;assert!(index<INTERNED);
     let key=INTERNED|index;
@@ -52,7 +52,7 @@ pub fn payload_of(b:&[u8])->u64 {payload(b)}
 
 /// Decode an unlinked person's injective payload for output.
 pub fn bytes<'a>(key:u64,buffer:&'a mut [u8;9])->&'a [u8] {
-    if key&INTERNED!=0 {return OTHER.lock().unwrap().names[(key&!INTERNED) as usize];}
+    if key&INTERNED!=0 {crate::profile::lock_count(4);return OTHER.lock().unwrap().names[(key&!INTERNED) as usize];}
     let tag=(key&15) as usize;
     let packed=key>>4;
     #[cfg(all(target_arch="x86_64",target_feature="bmi2"))]

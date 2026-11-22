@@ -80,7 +80,7 @@ fn mkref(file: usize, off: usize, len: usize) -> u64 {
     if file < 4095 && off < (1usize << 36) && len <= 0xFFFF {
         ((file as u64) << 52) | ((off as u64) << 16) | len as u64
     } else {
-        let mut refs = EXT_REFS.lock().unwrap();
+        crate::profile::lock_count(8);let mut refs = EXT_REFS.lock().unwrap();
         let i = refs.len();
         assert!(i < (1usize << 52));
         refs.push((file, off, len));
@@ -93,7 +93,7 @@ fn deref(r: u64) -> &'static [u8] {
     let files = unsafe { &*FILES.load(Ordering::Relaxed) };
     let f = (r >> 52) as usize;
     if f == 4095 {
-        let (file, off, len) = EXT_REFS.lock().unwrap()[(r & ((1u64 << 52) - 1)) as usize];
+        crate::profile::lock_count(8);let (file, off, len) = EXT_REFS.lock().unwrap()[(r & ((1u64 << 52) - 1)) as usize];
         return &files[file][off..off + len];
     }
     let off = ((r >> 16) & ((1u64 << 36) - 1)) as usize;
@@ -1631,11 +1631,16 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     // links first: every record below is routed straight to its person
     let phase=profile::Span::new("links_phase",0);
     let dense_requested=std::env::var("SS_DENSE").map_or(true,|v|v!="0");
+    let model_start=std::time::Instant::now();
     let event_model=if dense_requested {model::learn_events(&inp.events,ev_bytes)} else {None};
+    if std::env::var_os("SS_TIMING").is_some() {eprintln!("DENSE_MODEL events_ms={:.3}",model_start.elapsed().as_secs_f64()*1000.0);}
+    let user_start=std::time::Instant::now();
     let user_model=if event_model.is_some()||std::env::var_os("SS_USER_DENSE").is_some() {model::learn_users(&inp.events,ev_bytes)} else {None};
+    if std::env::var_os("SS_TIMING").is_some() {eprintln!("DENSE_MODEL users_ms={:.3}",user_start.elapsed().as_secs_f64()*1000.0);}
     let (persons, lk) = rayon::join(|| user_model.and_then(|m|dense_user::build(&inp,m)).unwrap_or_else(||links(&inp)), || lookups(&inp));
     if profile::enabled() {phase.finish(persons.map.dense.as_ref().map_or_else(||persons.map.slots.iter().filter(|s|s.key!=0).count(),|d|d.linked_count), inp.links.iter().map(|&f|file_bytes(f).len()).sum());}
     lap("links");
+    if std::env::var("SS_LINK_ONLY").is_ok_and(|v|v!="0") {return laps;}
     let tokens=event_token::Tokens::default();
     let nthreads = rayon::current_num_threads();
     let mut dense=event_model.filter(|_|persons.map.dense.is_some()).map(|m|dense_events::Context::new(m,ws));
