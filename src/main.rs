@@ -1715,7 +1715,8 @@ fn main() {
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
     let data = PathBuf::from(env("DATA_DIR", "/data"));
     let out = PathBuf::from(env("OUTPUT_DIR", "/output"));
-    let threads: usize = env("NCPU", "8").parse().unwrap_or(8);
+    // one hyperthread left to the kernel (page faults, writeback, the exit)
+    let threads: usize = { let n: usize = env("NCPU", "8").parse().unwrap_or(8); if n >= 8 { n - 1 } else { n } };
     // SS_PIN=1: worker i stays on the i-th allowed CPU (staging areas stay in its caches)
     let pin: Option<Vec<usize>> = if std::env::var("SS_PIN").is_ok_and(|v| v == "1") {
         unsafe {
