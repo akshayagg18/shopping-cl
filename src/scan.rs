@@ -319,6 +319,64 @@ fn long_line<const N: usize>(data: &[u8], p: usize, fl: &mut Flds<N>) -> (usize,
     }
 }
 
+/// `line_fields` for a line of 128..=191 bytes (192 readable): three 64-bit words.
+#[inline(never)]
+unsafe fn line_fields3<const N: usize>(ptr: *const u8, len: usize, fl: &mut Flds<N>) -> bool {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        use std::arch::x86_64::*;
+        let mm = |o: usize, k: __m256i| {
+            let a = _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_loadu_si256(ptr.add(o) as *const __m256i), k)) as u32 as u64;
+            let b = _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_loadu_si256(ptr.add(o + 32) as *const __m256i), k)) as u32 as u64;
+            a | (b << 32)
+        };
+        let kc = _mm256_set1_epi8(b',' as i8);
+        let kq = _mm256_set1_epi8(b'"' as i8);
+        debug_assert!((128..192).contains(&len));
+        // bits [0, len] (the newline included): words 0 and 1 whole, word 2 up to len - 128
+        let m2 = (2u64 << (len - 128)).wrapping_sub(1);
+        let nl2 = 1u64 << (len - 128);
+        let sep = [mm(0, kc), mm(64, kc), (mm(128, kc) & m2) | nl2];
+        let q = [mm(0, kq), mm(64, kq), mm(128, kq) & m2];
+        let mut carry_in = 0u64;
+        let mut prev_sep = 1u64;
+        let mut prev_close = 0u64;
+        let mut bad = 0u64;
+        let mut count = 0u32;
+        for w in 0..3 {
+            let inside = prefix_xor64(q[w]) ^ carry_in;
+            carry_in = 0u64.wrapping_sub(inside >> 63);
+            let prev = (sep[w] << 1) | prev_sep;
+            prev_sep = sep[w] >> 63;
+            let close = q[w] & !inside;
+            let cn = (close << 1) | prev_close;
+            prev_close = close >> 63;
+            let m = if w == 2 { m2 } else { !0u64 };
+            bad |= ((inside & sep[w]) | (q[w] & inside & !prev) | (cn & !sep[w])) & m;
+            count += sep[w].count_ones();
+        }
+        if count as usize != N || bad != 0 {
+            return false;
+        }
+        let mut k = 0usize;
+        for w in 0..3 {
+            let mut x = sep[w];
+            while x != 0 {
+                fl.e[k] = (w * 64) as u32 + x.trailing_zeros();
+                x &= x - 1;
+                k += 1;
+            }
+        }
+        true
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    {
+        let _ = (ptr, len, fl);
+        unreachable!("line_fields needs AVX2")
+    }
+}
+
+
 /// A line of `len` < 96 bytes at `ptr` (96 bytes readable, newline at
 /// `len`): the field ends if valid with exactly N fields. Same rules as stage
 /// 1: no separator inside quotes, every opening quote follows a separator (or
@@ -414,8 +472,8 @@ pub fn scan_lines<const N: usize>(f: usize, s: usize, e: usize, mut each: impl F
                 None => return,
             }
         };
-        // a line starting before fast_end has 128 readable bytes
-        let fast_end = n.saturating_sub(128);
+        // a line starting before fast_end has 192 readable bytes
+        let fast_end = n.saturating_sub(192);
         let mut fl = Flds::<N> { e: [0; N] };
         NLBUF.with(|cell| {
             let mut nlv = cell.borrow_mut();
@@ -426,7 +484,7 @@ pub fn scan_lines<const N: usize>(f: usize, s: usize, e: usize, mut each: impl F
                 }
                 // newline bitmap of [base, base + 64 * words), within fast_end + 96
                 let base = p & !63;
-                let lim = (e.min(fast_end) + 128).min(base + WIN + 192);
+                let lim = (e.min(fast_end) + 192).min(base + WIN + 256);
                 let words = (lim - base) / 64;
                 nlv.clear();
                 nlv.reserve(words);
@@ -463,6 +521,8 @@ pub fn scan_lines<const N: usize>(f: usize, s: usize, e: usize, mut each: impl F
                         unsafe { line_fields::<N, 3>(d.as_ptr().add(p), len, &mut fl) }
                     } else if len < 128 {
                         unsafe { line_fields::<N, 4>(d.as_ptr().add(p), len, &mut fl) }
+                    } else if len < 192 {
+                        unsafe { line_fields3::<N>(d.as_ptr().add(p), len, &mut fl) }
                     } else {
                         long_line::<N>(d, p, &mut fl).1
                     };
