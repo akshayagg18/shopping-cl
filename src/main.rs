@@ -209,6 +209,18 @@ struct Slot {
     val: u64,
 }
 
+/// `n` empty slots from zeroed memory: big tables come straight from fresh
+/// mappings, so no thread fills them (the first touch, by the parallel inserts,
+/// maps their pages) instead of one thread writing zeros before anyone can start.
+fn zeroed_slots(n: usize) -> Vec<Slot> {
+    let layout = std::alloc::Layout::array::<Slot>(n).unwrap();
+    unsafe {
+        let p = std::alloc::alloc_zeroed(layout) as *mut Slot;
+        assert!(!p.is_null(), "out of memory");
+        Vec::from_raw_parts(p, n, n)
+    }
+}
+
 struct U64Map {
     mask: usize,
     slots: Vec<Slot>,
@@ -793,7 +805,7 @@ impl PersonMap {
     /// distinct; link endpoints repeat, so it is far lower in practice).
     fn with_room(n: usize) -> Self {
         let bits = ((n.max(1) * 4 / 3).next_power_of_two().max(1 << 14)).trailing_zeros();
-        PersonMap { shift: 64 - bits, mask: (1 << bits) - 1, slots: vec![Slot::default(); 1 << bits] }
+        PersonMap { shift: 64 - bits, mask: (1 << bits) - 1, slots: zeroed_slots(1 << bits) }
     }
     #[inline(always)]
     fn index(&self, k: u64) -> usize {
