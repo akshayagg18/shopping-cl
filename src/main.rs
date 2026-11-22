@@ -181,12 +181,57 @@ fn aes16(b: &[u8]) -> (u64, u64) {
     (h, mum(x ^ 0x1d8e_4e27_c47d_124f, y ^ 0x9e37_79b9_7f4a_7c15 ^ l))
 }
 
-/// 64-bit ID hash, never 0. Short IDs (the common case) take two AES rounds;
-/// longer ones use xxh3.
+/// 17..=48 byte IDs: the first block through one AES round, then each later
+/// 16-byte block (the last one ending at the ID's end, overlapping the one
+/// before) xored in and two more rounds, with the length in the first key.
+#[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
+#[inline(always)]
+fn aes48(b: &[u8]) -> (u64, u64) {
+    use std::arch::x86_64::*;
+    let n = b.len();
+    debug_assert!((17..=48).contains(&n));
+    unsafe {
+        let p = b.as_ptr();
+        let k0 = _mm_set_epi64x(0x243F_6A88_85A3_08D3u64 as i64, (0x1319_8A2E_0370_7344u64 ^ n as u64) as i64);
+        let k1 = _mm_set_epi64x(0xA409_3822_299F_31D0u64 as i64, 0x082E_FA98_EC4E_6C89u64 as i64);
+        let k2 = _mm_set_epi64x(0x4528_21E6_38D0_1377u64 as i64, 0xBE54_66CF_34E9_0C6Cu64 as i64);
+        let k3 = _mm_set_epi64x(0xC0AC_29B7_C97C_50DDu64 as i64, 0x3F84_D5B5_B547_0917u64 as i64);
+        let a = _mm_loadu_si128(p as *const __m128i);
+        let z = _mm_loadu_si128(p.add(n - 16) as *const __m128i);
+        let mut v = _mm_aesenc_si128(_mm_xor_si128(a, k0), k1);
+        if n > 32 {
+            let m = _mm_loadu_si128(p.add(16) as *const __m128i);
+            v = _mm_aesenc_si128(_mm_aesenc_si128(_mm_xor_si128(v, m), k2), k3);
+        }
+        let r = _mm_aesenc_si128(_mm_aesenc_si128(_mm_xor_si128(v, z), k2), k3);
+        (_mm_cvtsi128_si64(r) as u64, _mm_extract_epi64(r, 1) as u64)
+    }
+}
+
+/// 64-bit ID hash, never 0. IDs up to 48 bytes (all of the generated data)
+/// take AES rounds; longer ones use xxh3.
 #[inline(always)]
 fn h64(b: &[u8]) -> u64 {
-    let h = if b.len() <= 16 { aes16(b).0 } else { xxh3_64(b) };
+    let h = if b.len() <= 16 {
+        aes16(b).0
+    } else if cfg!(all(target_arch = "x86_64", target_feature = "aes")) && b.len() <= 48 {
+        h_long(b).0
+    } else {
+        xxh3_64(b)
+    };
     if h == 0 { 1 } else { h }
+}
+
+#[inline(always)]
+fn h_long(b: &[u8]) -> (u64, u64) {
+    #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
+    {
+        aes48(b)
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "aes")))]
+    {
+        (xxh3_64(b), xxh3_64_with_seed(b, 0x51_7C_C1_B7))
+    }
 }
 
 /// (hash, independent 32-bit check) of an event_id.
@@ -194,6 +239,9 @@ fn h64(b: &[u8]) -> u64 {
 fn h64_chk(b: &[u8]) -> (u64, u32) {
     if b.len() <= 16 {
         let (h, c) = aes16(b);
+        (if h == 0 { 1 } else { h }, (c >> 32) as u32)
+    } else if cfg!(all(target_arch = "x86_64", target_feature = "aes")) && b.len() <= 48 {
+        let (h, c) = h_long(b);
         (if h == 0 { 1 } else { h }, (c >> 32) as u32)
     } else {
         (h64(b), xxh3_64_with_seed(b, 0x51_7C_C1_B7) as u32)
@@ -1342,7 +1390,9 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     }
     evb.clear();
     evb.reserve(n);
-    let (mut lo, mut hi) = (usize::MAX, 0usize);
+    // every local index of the partition (a few hundred per partition: cheaper
+    // than tracking the range in use per record)
+    let (lo, hi) = (0usize, nloc - 1);
     for (t, s) in sinks.iter().enumerate() {
         let mut i = 0usize;
         let mut dw = 0u64;
@@ -1370,8 +1420,6 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                         sc.ev_local.as_mut_ptr().add(len).write(li as u32);
                         sc.ev_local.set_len(len + 1);
                     }
-                    lo = lo.min(li);
-                    hi = hi.max(li);
                 }
                 i += 1;
             }
@@ -1383,15 +1431,24 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     }
     sc.ck_local.clear();
     ckb.clear();
+    let nck: usize = sinks.iter().map(|s| s.ck.len(b)).sum();
+    sc.ck_local.reserve(nck);
+    ckb.reserve(nck);
     for s in sinks {
         for sl in s.ck.slices(b) {
             for c in sl {
                 let li = (c.pid >> pbits) as usize;
                 // clicks of persons without events never matter
-                if li <= hi && unsafe { *sc.ev_cnt.get_unchecked(li) } != 0 {
-                    unsafe { *sc.ck_cnt.get_unchecked_mut(li) += 1 };
-                    ckb.push(Ck1 { cref: c.cref, ts: c.ts, camp: c.camp });
-                    sc.ck_local.push(li as u32);
+                if unsafe { *sc.ev_cnt.get_unchecked(li) } != 0 {
+                    unsafe {
+                        *sc.ck_cnt.get_unchecked_mut(li) += 1;
+                        let l = ckb.len();
+                        ckb.as_mut_ptr().add(l).write(Ck1 { cref: c.cref, ts: c.ts, camp: c.camp });
+                        ckb.set_len(l + 1);
+                        let l = sc.ck_local.len();
+                        sc.ck_local.as_mut_ptr().add(l).write(li as u32);
+                        sc.ck_local.set_len(l + 1);
+                    }
                 }
             }
         }
@@ -1475,6 +1532,8 @@ struct Run {
 fn bin_runs(evs: &[Ev1], sc: &mut Scratch) {
     sc.runs.clear();
     sc.purch.clear();
+    // at most one run per event
+    sc.runs.reserve(evs.len());
     let (mut wlo, mut whi) = (usize::MAX, 0usize);
     for e in evs {
         let b = bin_of(e.ts);
@@ -1503,7 +1562,11 @@ fn bin_runs(evs: &[Ev1], sc: &mut Scratch) {
             let b = w * 64 + m.trailing_zeros() as usize;
             m &= m - 1;
             let a = sc.bins[b];
-            sc.runs.push(Run { bin: b as u32, min: a.min, max: a.max, n: a.n, rev: a.rev, purch: a.purch != 0 });
+            unsafe {
+                let l = sc.runs.len();
+                sc.runs.as_mut_ptr().add(l).write(Run { bin: b as u32, min: a.min, max: a.max, n: a.n, rev: a.rev, purch: a.purch != 0 });
+                sc.runs.set_len(l + 1);
+            }
         }
     }
     if sc.purch.len() > 1 {

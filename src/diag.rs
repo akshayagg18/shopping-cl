@@ -508,7 +508,7 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let dev_gb = dir_gb(data);
-    eprintln!("D33 alt=v20 np=v20s(16B records) new=v24(names off critical path + dict parquet) lb0=v24 names before parse d0=v24 plain parquet {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
+    eprintln!("D34 alt=v20 np=v24 new=v25(AES long IDs, leaner sessions loop, INT32 where values fit) t12/t16=v25 with 12/16 threads {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
     eprintln!("wall/int: open links parse dedup sess write | user sys GB");
     let dg = |k: u64, line: &str, base: Option<(u64, u64)>| -> String {
         match (digests(line), base) {
@@ -548,31 +548,29 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     eprintln!("{}", child("alt-dev", data, &ob, threads, &[]));
     let kb: usize = std::env::var("SS_DIAG_BIG").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
     let km: usize = std::env::var("SS_DIAG_MID").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
-    let v20: [(&str, &[(&str, &str)]); 24] = [
+    let v20: [(&str, &[(&str, &str)]); 22] = [
         ("warm", &[]),
         ("alt", &[]),
         ("new", &[]),
-        ("lb0", &[("SS_LB", "0")]),
-        ("d0", &[("SS_DICT", "0")]),
         ("np", &[]),
+        ("t12", &[("NCPU", "12")]),
         ("alt", &[]),
         ("new", &[]),
-        ("lb0", &[("SS_LB", "0")]),
-        ("d0", &[("SS_DICT", "0")]),
         ("np", &[]),
+        ("t16", &[("NCPU", "16")]),
         ("alt", &[]),
         ("new", &[]),
-        ("lb0", &[("SS_LB", "0")]),
-        ("d0", &[("SS_DICT", "0")]),
         ("np", &[]),
+        ("t12", &[("NCPU", "12")]),
         ("alt", &[]),
         ("new", &[]),
-        ("lb0", &[("SS_LB", "0")]),
-        ("d0", &[("SS_DICT", "0")]),
+        ("np", &[]),
+        ("t16", &[("NCPU", "16")]),
+        ("alt", &[]),
+        ("new", &[]),
         ("np", &[]),
         ("new-chk", &[]),
-        ("np-chk", &[]),
-        ("lb0-chk", &[("SS_LB", "0")]),
+        ("t12-chk", &[("NCPU", "12")]),
     ];
     run_k(km, &v20);
     let v60: [(&str, &[(&str, &str)]); 5] = [("warm", &[]), ("alt", &[]), ("new", &[]), ("alt", &[]), ("new-chk", &[])];
