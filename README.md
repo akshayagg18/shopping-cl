@@ -32,12 +32,14 @@ adds almost nothing to the measured time.
    parser (impossible dates, hour 24, second 60, bad offsets are rejected). Short IDs
    are hashed with two AES rounds (a bijection of the zero-padded 16-byte ID).
 5. **One scatter per record.** With persons known up front, each valid event goes
-   straight to its person partition (24-byte record), and every event copy, valid or
+   straight to its person partition (16-byte record), and every event copy, valid or
    not, leaves a 16-byte copy record in its `event_id` partition (the hash bits that
    pick the partition are reused for check bits). Records leave through
    per-partition write-combining staging areas with non-temporal stores. Person lookups
-   are prefetched 16 lines ahead. An unlinked user's ID is copied into a per-thread name
-   buffer while the line is in cache, so output never reads the event files again.
+   are prefetched 16 lines ahead. A linked person's key holds its name; an unlinked
+   ID of up to 10 characters from `[0-9a-zA-Z]` is packed losslessly into its own key
+   (6 bits a character), so it needs no name at all. Only other unlinked IDs (long or
+   unusual ones, about 5% of events) leave a (key, name) pair in a small side table.
 6. **Dedup.** Per `event_id` partition, a fingerprint table keeps the earliest-ingested
    copy (dedup before validation: an invalid winner kills its valid copies) and marks
    every losing copy's event record dead in a bitmap. Click copies are identical
@@ -55,13 +57,20 @@ adds almost nothing to the measured time.
 9. **Exit.** The process exits without freeing anything. Event files are never mapped
    into memory pages, so the kernel's single-threaded teardown has little to do.
 
-Partition counts scale with the input size, so the 60M final keeps the same per-partition
-working sets as the 20M practice set. Large buffers come from 2 MiB-aligned mappings
-advised for transparent huge pages.
+Partition counts scale with the input size up to 1024 each: on the scorer at 60M,
+4096 person and event-id partitions made parsing about 18% slower (the staging areas
+leave the 1 MiB L2) for little gain in dedup and sessions (2.88 s against 2.62 s end to
+end). Large buffers come from 2 MiB-aligned mappings advised for transparent huge pages.
 
 ## Correctness checks
 
+- 60M (scorer, 6.7 GB input made of 60 tagged copies of the dev set): an order-independent
+  digest of both tables equals 60 times the dev digest, for every partition setting
+  tried; peak memory 10.8 GB of the 24 GB limit.
+
 - 36/36 official edge fixtures.
+- Scorer v5 data shape (1 in 8 IDs with a 32-character hex suffix): generated sets diffed
+  row for row against an independent Polars implementation.
 - The official 1M dev set matches `dev-answer` exactly (sorted-row SHA-256 of both tables).
 - Generated datasets for 10 other seeds were diffed row-for-row against an independent
   Polars implementation. They included leap-day (Feb 29, 2028) and year-crossing
