@@ -259,6 +259,9 @@ struct Chunk<'a> {
     pieces: Vec<std::borrow::Cow<'a, [u8]>>,
     dict: bool,
     size: usize,
+    /// Parquet physical type of the chunk (an INT64 column whose values all
+    /// fit is written as INT32: integer widths are free)
+    ptype: i32,
 }
 
 fn chunk_of(c: &Column, rows: usize) -> Chunk<'_> {
@@ -272,7 +275,7 @@ fn chunk_of(c: &Column, rows: usize) -> Chunk<'_> {
         pieces.push(Cow::Owned(page_header(rows, data.len(), 8)));
         pieces.push(Cow::Owned(data));
         let size = pieces.iter().map(|p| p.len()).sum();
-        return Chunk { pieces, dict: true, size };
+        return Chunk { pieces, dict: true, size, ptype: c.ptype() };
     }
     // small-range INT32: the dictionary is the range lo..=hi
     if dict_on() && matches!(c.kind, Kind::I32 | Kind::Date) && rows > 0 {
@@ -290,7 +293,24 @@ fn chunk_of(c: &Column, rows: usize) -> Chunk<'_> {
             pieces.push(Cow::Owned(page_header(rows, data.len(), 8)));
             pieces.push(Cow::Owned(data));
             let size = pieces.iter().map(|p| p.len()).sum();
-            return Chunk { pieces, dict: true, size };
+            return Chunk { pieces, dict: true, size, ptype: c.ptype() };
+        }
+    }
+    // INT64 values that all fit in INT32: PLAIN INT32
+    if dict_on() && c.kind == Kind::I64 && rows > 0 {
+        let fits = c.body.chunks_exact(8).all(|b| {
+            let v = i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
+            v == v as i32 as i64
+        });
+        if fits {
+            let mut d = Vec::with_capacity(rows * 4);
+            for b in c.body.chunks_exact(8) {
+                d.extend_from_slice(&b[..4]);
+            }
+            pieces.push(Cow::Owned(page_header(rows, d.len(), 0)));
+            pieces.push(Cow::Owned(d));
+            let size = pieces.iter().map(|p| p.len()).sum();
+            return Chunk { pieces, dict: false, size, ptype: 1 };
         }
     }
     // PLAIN
@@ -316,7 +336,7 @@ fn chunk_of(c: &Column, rows: usize) -> Chunk<'_> {
     pieces.push(Cow::Owned(hdr));
     pieces.push(Cow::Borrowed(&c.body[..]));
     let size = pieces.iter().map(|p| p.len()).sum();
-    Chunk { pieces, dict: false, size }
+    Chunk { pieces, dict: false, size, ptype: c.ptype() }
 }
 
 /// All of `bufs` to `f` with as few system calls as possible.
@@ -354,9 +374,9 @@ pub fn write_file(path: &Path, cols: &[Column]) {
     t.bin(4, b"schema");
     t.i32(5, cols.len() as i32);
     t.end();
-    for c in cols {
+    for (k, c) in cols.iter().enumerate() {
         t.elem_begin();
-        t.i32(1, c.ptype());
+        t.i32(1, layout.get(k).map_or(c.ptype(), |ch| ch.ptype));
         t.i32(3, if c.kind == Kind::OptStr { 1 } else { 0 });
         t.bin(4, c.name.as_bytes());
         match c.kind {
@@ -399,7 +419,7 @@ pub fn write_file(path: &Path, cols: &[Column]) {
         t.elem_begin();
         t.i64(2, off as i64);
         t.begin(3);
-        t.i32(1, c.ptype());
+        t.i32(1, ch.ptype);
         if ch.dict {
             t.list(2, 5, 3);
             t.zigzag(0);

@@ -1390,7 +1390,9 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     }
     evb.clear();
     evb.reserve(n);
-    let (mut lo, mut hi) = (usize::MAX, 0usize);
+    // every local index of the partition (a few hundred per partition: cheaper
+    // than tracking the range in use per record)
+    let (lo, hi) = (0usize, nloc - 1);
     for (t, s) in sinks.iter().enumerate() {
         let mut i = 0usize;
         let mut dw = 0u64;
@@ -1418,8 +1420,6 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                         sc.ev_local.as_mut_ptr().add(len).write(li as u32);
                         sc.ev_local.set_len(len + 1);
                     }
-                    lo = lo.min(li);
-                    hi = hi.max(li);
                 }
                 i += 1;
             }
@@ -1431,15 +1431,24 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     }
     sc.ck_local.clear();
     ckb.clear();
+    let nck: usize = sinks.iter().map(|s| s.ck.len(b)).sum();
+    sc.ck_local.reserve(nck);
+    ckb.reserve(nck);
     for s in sinks {
         for sl in s.ck.slices(b) {
             for c in sl {
                 let li = (c.pid >> pbits) as usize;
                 // clicks of persons without events never matter
-                if li <= hi && unsafe { *sc.ev_cnt.get_unchecked(li) } != 0 {
-                    unsafe { *sc.ck_cnt.get_unchecked_mut(li) += 1 };
-                    ckb.push(Ck1 { cref: c.cref, ts: c.ts, camp: c.camp });
-                    sc.ck_local.push(li as u32);
+                if unsafe { *sc.ev_cnt.get_unchecked(li) } != 0 {
+                    unsafe {
+                        *sc.ck_cnt.get_unchecked_mut(li) += 1;
+                        let l = ckb.len();
+                        ckb.as_mut_ptr().add(l).write(Ck1 { cref: c.cref, ts: c.ts, camp: c.camp });
+                        ckb.set_len(l + 1);
+                        let l = sc.ck_local.len();
+                        sc.ck_local.as_mut_ptr().add(l).write(li as u32);
+                        sc.ck_local.set_len(l + 1);
+                    }
                 }
             }
         }
@@ -1523,6 +1532,8 @@ struct Run {
 fn bin_runs(evs: &[Ev1], sc: &mut Scratch) {
     sc.runs.clear();
     sc.purch.clear();
+    // at most one run per event
+    sc.runs.reserve(evs.len());
     let (mut wlo, mut whi) = (usize::MAX, 0usize);
     for e in evs {
         let b = bin_of(e.ts);
@@ -1551,7 +1562,11 @@ fn bin_runs(evs: &[Ev1], sc: &mut Scratch) {
             let b = w * 64 + m.trailing_zeros() as usize;
             m &= m - 1;
             let a = sc.bins[b];
-            sc.runs.push(Run { bin: b as u32, min: a.min, max: a.max, n: a.n, rev: a.rev, purch: a.purch != 0 });
+            unsafe {
+                let l = sc.runs.len();
+                sc.runs.as_mut_ptr().add(l).write(Run { bin: b as u32, min: a.min, max: a.max, n: a.n, rev: a.rev, purch: a.purch != 0 });
+                sc.runs.set_len(l + 1);
+            }
         }
     }
     if sc.purch.len() > 1 {
