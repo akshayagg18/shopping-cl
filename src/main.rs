@@ -1867,7 +1867,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let envbits = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(d).clamp(6, 14);
     // a copy record holds the person partition in 12 bits
     P2B.store(envbits("SS_P2B", auto(P2_PER)).min(12), Ordering::Relaxed);
-    flow::PDB.store(envbits("SS_PDB", auto(PD_PER)), Ordering::Relaxed);
+    flow::PDB.store(envbits("SS_PDB", auto(PD_PER).min(9)), Ordering::Relaxed);
     lap("open");
     let (ws, we) = (inp.window_start, inp.window_end);
     let ev_units = chunks(&inp.events);
