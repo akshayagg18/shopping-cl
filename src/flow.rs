@@ -127,7 +127,7 @@ impl<T: Copy + Default> Stream<T> {
     /// Records per staging flush: a whole number of cache lines.
     const K: usize = match std::mem::size_of::<T>() {
         12 => 16,
-        16 => 4,
+        16 => 8,
         24 => 8,
         32 => 4,
         _ => 1,
