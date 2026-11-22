@@ -157,7 +157,60 @@ unsafe fn s1_word(st: &mut S1, nl: u64, cm: u64, q: u64, w: usize, nlo: *mut u64
 /// Stage 1 over `d` (starting 64-aligned, first line starting at bit `first`).
 /// `eof`: `d` ends at the end of the file; a final line without '\n' gets a
 /// virtual one there. Returns the number of bitmap words.
-fn stage1(d: &[u8], first: usize, eof: bool, buf: &mut ScanBuf) -> usize {
+/// SS_A512: 1 = stage-1 masks with AVX-512BW/VL compares on 256-bit vectors
+/// (no frequency licence change), 2 = on 512-bit vectors; only if the CPU has them.
+pub static A512: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_a512(v: u8) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let ok = std::arch::is_x86_feature_detected!("avx512bw") && std::arch::is_x86_feature_detected!("avx512vl");
+        A512.store(if ok { v.min(2) } else { 0 }, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[inline(always)]
+unsafe fn masks_avx2(p: *const u8) -> (u64, u64, u64) {
+    masks64(unsafe { std::slice::from_raw_parts(p, 64) })
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512bw,avx512vl,avx2,bmi1,bmi2,popcnt,pclmulqdq")]
+#[inline]
+unsafe fn masks_k256(p: *const u8) -> (u64, u64, u64) {
+    use std::arch::x86_64::*;
+    unsafe {
+        let v0 = _mm256_loadu_si256(p as *const __m256i);
+        let v1 = _mm256_loadu_si256(p.add(32) as *const __m256i);
+        let n = _mm256_set1_epi8(b'\n' as i8);
+        let c = _mm256_set1_epi8(b',' as i8);
+        let q = _mm256_set1_epi8(b'"' as i8);
+        let nl = (_mm256_cmpeq_epi8_mask(v0, n) as u64) | ((_mm256_cmpeq_epi8_mask(v1, n) as u64) << 32);
+        let cm = (_mm256_cmpeq_epi8_mask(v0, c) as u64) | ((_mm256_cmpeq_epi8_mask(v1, c) as u64) << 32);
+        let qq = (_mm256_cmpeq_epi8_mask(v0, q) as u64) | ((_mm256_cmpeq_epi8_mask(v1, q) as u64) << 32);
+        (nl, cm, qq)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx2,bmi1,bmi2,popcnt,pclmulqdq")]
+#[inline]
+unsafe fn masks_k512(p: *const u8) -> (u64, u64, u64) {
+    use std::arch::x86_64::*;
+    unsafe {
+        let v = _mm512_loadu_si512(p as *const __m512i);
+        (
+            _mm512_cmpeq_epi8_mask(v, _mm512_set1_epi8(b'\n' as i8)),
+            _mm512_cmpeq_epi8_mask(v, _mm512_set1_epi8(b',' as i8)),
+            _mm512_cmpeq_epi8_mask(v, _mm512_set1_epi8(b'"' as i8)),
+        )
+    }
+}
+
+macro_rules! stage1_body {
+    ($m:ident, $d:ident, $first:ident, $eof:ident, $buf:ident) => {{
+        let (d, first, eof, buf) = ($d, $first, $eof, $buf);
+
     // at EOF one more (possibly empty) partial word holds the virtual newline
     let words = if eof { d.len() / 64 + 1 } else { d.len().div_ceil(64) };
     for v in [&mut buf.nl, &mut buf.bad] {
@@ -173,7 +226,7 @@ fn stage1(d: &[u8], first: usize, eof: bool, buf: &mut ScanBuf) -> usize {
     unsafe {
         let dp = d.as_ptr();
         for w in 0..full.min(words) {
-            let (nl, cm, q) = masks64(std::slice::from_raw_parts(dp.add(w * 64), 64));
+            let (nl, cm, q) = $m(dp.add(w * 64));
             s1_word(&mut st, nl, cm, q & qmask, w, nlo, bado, sepo);
             qmask = !0;
         }
@@ -181,7 +234,7 @@ fn stage1(d: &[u8], first: usize, eof: bool, buf: &mut ScanBuf) -> usize {
             let mut tail = [0u8; 64];
             let rest = &d[full * 64..];
             tail[..rest.len()].copy_from_slice(rest);
-            let (nl, cm, q) = masks64(&tail);
+            let (nl, cm, q) = $m(tail.as_ptr());
             let nl = if eof { nl | (1u64 << rest.len()) } else { nl };
             s1_word(&mut st, nl, cm, q & qmask, full, nlo, bado, sepo);
         }
@@ -194,6 +247,29 @@ fn stage1(d: &[u8], first: usize, eof: bool, buf: &mut ScanBuf) -> usize {
         buf.sep.set_len(st.nsep);
     }
     words
+    }};
+}
+
+fn stage1(d: &[u8], first: usize, eof: bool, buf: &mut ScanBuf) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    match A512.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => return unsafe { stage1_k256(d, first, eof, buf) },
+        2 => return unsafe { stage1_k512(d, first, eof, buf) },
+        _ => {}
+    }
+    stage1_body!(masks_avx2, d, first, eof, buf)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512bw,avx512vl,avx2,bmi1,bmi2,popcnt,pclmulqdq")]
+unsafe fn stage1_k256(d: &[u8], first: usize, eof: bool, buf: &mut ScanBuf) -> usize {
+    stage1_body!(masks_k256, d, first, eof, buf)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx2,bmi1,bmi2,popcnt,pclmulqdq")]
+unsafe fn stage1_k512(d: &[u8], first: usize, eof: bool, buf: &mut ScanBuf) -> usize {
+    stage1_body!(masks_k512, d, first, eof, buf)
 }
 
 /// Any bit set in [from, to] (inclusive) of a bitmap with 3 words of padding.

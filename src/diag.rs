@@ -43,16 +43,19 @@ fn info() {
     eprintln!("cpus_allowed: {}", cat("/proc/self/status").lines().find(|l| l.starts_with("Cpus_allowed_list")).unwrap_or("?"));
 }
 
-/// Append `~k` inside the given comma-separated fields (inside quotes when quoted).
+/// Append `!k` inside the given comma-separated fields (inside quotes when quoted).
+/// '!' sorts before every ID character, so appending it keeps every byte-wise
+/// order between IDs (smallest name, click ties): the copies' outputs are exact.
 fn tag_line(line: &[u8], cols: &[usize], k: usize, out: &mut Vec<u8>) {
-    let suffix = format!("~{k}");
+    let suffix = format!("!{k}");
     let mut col = 0usize;
     let mut start = 0usize;
     let n = line.len();
     for i in 0..=n {
         if i == n || line[i] == b',' {
             let f = &line[start..i];
-            if cols.contains(&col) && !f.is_empty() {
+            // an empty field stays empty, quoted ("") or not
+            if cols.contains(&col) && !f.is_empty() && f != b"\"\"" {
                 if f.len() >= 2 && f[0] == b'"' && f[f.len() - 1] == b'"' {
                     out.extend_from_slice(&f[..f.len() - 1]);
                     out.extend_from_slice(suffix.as_bytes());
@@ -92,24 +95,33 @@ pub fn upscale(src: &Path, dst: &Path, k: usize) {
             }
         }
     }
-    jobs.par_iter().for_each(|(d, cols, f, c)| {
+    // at most 20 output files per input file (refs hold 11 bits of file number)
+    let per = k.div_ceil(20);
+    let groups: Vec<_> = jobs.iter().filter(|j| j.3 % per == 0).cloned().collect();
+    groups.par_iter().for_each(|(d, cols, f, c0)| {
         let data = std::fs::read(f).unwrap();
-        let mut out = Vec::with_capacity(data.len() + data.len() / 8);
-        let mut first = true;
-        for line in data.split(|&b| b == b'\n') {
-            if first {
-                out.extend_from_slice(line);
-                first = false;
-            } else {
-                tag_line(line, cols, *c, &mut out);
+        let mut out = Vec::with_capacity((data.len() + data.len() / 8) * per);
+        let mut wrote_header = false;
+        for c in *c0..(*c0 + per).min(k) {
+            let mut first = true;
+            for line in data.split(|&b| b == b'\n') {
+                if first {
+                    if !wrote_header {
+                        out.extend_from_slice(line);
+                        out.push(b'\n');
+                        wrote_header = true;
+                    }
+                    first = false;
+                    continue;
+                }
+                if line.is_empty() {
+                    continue;
+                }
+                tag_line(line, cols, c, &mut out);
+                out.push(b'\n');
             }
-            out.push(b'\n');
         }
-        // split() yields a trailing empty piece after the final '\n': drop the extra newline
-        if data.ends_with(b"\n") {
-            out.pop();
-        }
-        let name = format!("{}-{c:02}.csv", f.file_stem().unwrap().to_string_lossy());
+        let name = format!("{}-{c0:02}.csv", f.file_stem().unwrap().to_string_lossy());
         let mut w = std::fs::File::create(dst.join(d).join(name)).unwrap();
         w.write_all(&out).unwrap();
     });
@@ -179,9 +191,14 @@ fn rusage() -> String {
 /// included, like the scorer). Returns a compact line: wall/internal ms, lap
 /// deltas, user/sys seconds.
 fn child(tag: &str, data: &Path, out: &Path, threads: usize, extra: &[(&str, &str)]) -> String {
+    // a tag starting with "alt" runs the other build shipped in the image
+    let exe = if tag.starts_with("alt") { std::path::PathBuf::from("/ssp_alt") } else { std::env::current_exe().unwrap() };
+    child_bin(&exe, tag, data, out, threads, extra)
+}
+
+fn child_bin(exe: &Path, tag: &str, data: &Path, out: &Path, threads: usize, extra: &[(&str, &str)]) -> String {
     let _ = std::fs::remove_dir_all(out);
     std::fs::create_dir_all(out).unwrap();
-    let exe = std::env::current_exe().unwrap();
     let mut cmd = std::process::Command::new(exe);
     cmd.env_remove("SS_DIAG")
         .env("SS_TIMING", "1")
@@ -226,7 +243,17 @@ fn child(tag: &str, data: &Path, out: &Path, threads: usize, extra: &[(&str, &st
         })
         .collect();
     let sub = if sub.is_empty() { String::new() } else { format!(" L[{}]", sub.join(" ")) };
-    format!("{tag} {wall:.0}/{total:.0}: {} u{:.2} s{:.2}{sub}", d.join(" "), tv(ru.ru_utime), tv(ru.ru_stime))
+    let dg: Vec<String> = err.lines().filter_map(|l| l.strip_prefix("digest ")).map(|l| l.to_string()).collect();
+    let dg = if dg.is_empty() { String::new() } else { format!(" D[{}]", dg.join(" ")) };
+    let ok = if st != 0 { format!(" EXIT={st} {}", err.lines().rev().take(3).collect::<Vec<_>>().join(" / ")) } else { String::new() };
+    format!(
+        "{tag} {wall:.0}/{total:.0}: {} u{:.2} s{:.2} rss{}M flt{}k{sub}{dg}{ok}",
+        d.join(" "),
+        tv(ru.ru_utime),
+        tv(ru.ru_stime),
+        ru.ru_maxrss / 1024,
+        ru.ru_minflt / 1000
+    )
 }
 
 /// Map every input file and read one byte per cache line with all threads.
@@ -437,6 +464,36 @@ fn mount_opts(path: &str) -> String {
     best.map(|b| b.1).unwrap_or_default()
 }
 
+fn avail_gb(p: &Path) -> f64 {
+    let c = std::ffi::CString::new(p.to_string_lossy().as_bytes()).unwrap();
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return -1.0;
+    }
+    st.f_bavail as f64 * st.f_frsize as f64 / 1e9
+}
+
+fn dir_gb(p: &Path) -> f64 {
+    files_under(p).iter().map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)).sum::<u64>() as f64 / 1e9
+}
+
+/// ud/cd digests from a child line, as numbers
+fn digests(line: &str) -> Option<(u64, u64)> {
+    let d = line.split(" D[").nth(1)?;
+    let mut ud = None;
+    let mut cd = None;
+    let w: Vec<&str> = d.split_whitespace().collect();
+    for i in 0..w.len().saturating_sub(1) {
+        if w[i] == "ud" {
+            ud = u64::from_str_radix(w[i + 1], 16).ok();
+        }
+        if w[i] == "cd" {
+            cd = u64::from_str_radix(w[i + 1], 16).ok();
+        }
+    }
+    Some((ud?, cd?))
+}
+
 pub fn main(data: &Path, out: &Path, threads: usize) {
     let t0 = Instant::now();
     let _ = crate::run(data, out, false);
@@ -445,39 +502,69 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let scratch = std::path::PathBuf::from(std::env::var("SCRATCH_DIR").unwrap_or_else(|_| "/scratch".into()));
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
-    let k: usize = std::env::var("SS_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
-    let t = Instant::now();
-    upscale(data, &big, k);
-    eprintln!("D18 {model} | x{k} up={:.1}s | 10 scorer-like runs each, interleaved: wall ms (process start to exit)", t.elapsed().as_secs_f64());
-    // the candidate (defaults) against the per-line tokenizer (v15's), alternating
-    let cfgs: [(&str, &[(&str, &str)]); 2] = [("v16", &[]), ("v15tok", &[("SS_TOK", "2")])];
-    let mut walls: Vec<Vec<f64>> = vec![Vec::new(); cfgs.len()];
-    let mut ints: Vec<Vec<f64>> = vec![Vec::new(); cfgs.len()];
-    for r in 0..10 {
-        for c in 0..cfgs.len() {
-            let c = if r % 2 == 0 { c } else { cfgs.len() - 1 - c };
-            let line = child(cfgs[c].0, &big, &ob, threads, cfgs[c].1);
-            // "tag wall/int: ..."
-            let wi = line.split_whitespace().nth(1).unwrap_or("0/0:").trim_end_matches(':').to_string();
-            let (w, i) = wi.split_once('/').unwrap_or(("0", "0"));
-            walls[c].push(w.parse().unwrap_or(0.0));
-            ints[c].push(i.parse().unwrap_or(0.0));
-            if r == 0 {
-                eprintln!("{line}");
+    let dev_gb = dir_gb(data);
+    eprintln!("D24 (v16b + toggles: a1 = AVX-512 masks on ymm, a2 = on zmm, pin = workers pinned) {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
+    eprintln!("cols: wall/int ms: open links parse dedup sess write | user sys rss faults | digests");
+    let dg = |k: u64, line: &str, base: Option<(u64, u64)>| -> String {
+        match (digests(line), base) {
+            (Some((u, c)), Some((bu, bc))) => {
+                let ok = u == bu.wrapping_mul(k) && c == bc.wrapping_mul(k);
+                format!("{line} => {}", if ok { format!("EXACT x{k}") } else { format!("MISMATCH x{k}") })
+            }
+            _ => line.to_string(),
+        }
+    };
+    let dev = child("dev", data, &ob, threads, &[("SS_DIGEST", "1")]);
+    let base_d = digests(&dev);
+    eprintln!("{dev}");
+    let run_k = |k: usize, vars: &[(&str, &[(&str, &str)])]| {
+        let need = dev_gb * k as f64 * 1.02 + 0.5;
+        let av = avail_gb(&scratch);
+        if av >= 0.0 && av < need {
+            eprintln!("x{k}: skipped, needs {need:.1} GB, {av:.1} GB free");
+            return false;
+        }
+        let t = Instant::now();
+        upscale(data, &big, k);
+        eprintln!("x{k}: {:.2} GB in {:.1}s ({} files)", dir_gb(&big), t.elapsed().as_secs_f64(), files_under(&big).len());
+        for (tag, env) in vars.iter() {
+            let mut e: Vec<(&str, &str)> = env.to_vec();
+            // plain A/B runs time the pipeline alone; warm-ups and variants check the digest
+            if *tag == "warm" || tag.contains('-') || k == 2 {
+                e.push(("SS_DIGEST", "1"));
+            }
+            let l = child(tag, &big, &ob, threads, &e);
+            eprintln!("{}", dg(k as u64, &l, base_d));
+        }
+        let _ = std::fs::remove_dir_all(&big);
+        true
+    };
+    run_k(2, &[("x2", &[]), ("x2-a2pin", &[("SS_A512", "2"), ("SS_PIN", "1")])]);
+    let round: [(&str, &[(&str, &str)]); 5] = [
+        ("base", &[]),
+        ("a1", &[("SS_A512", "1")]),
+        ("a2", &[("SS_A512", "2")]),
+        ("pin", &[("SS_PIN", "1")]),
+        ("a1pin", &[("SS_A512", "1"), ("SS_PIN", "1")]),
+    ];
+    let checks: [(&str, &[(&str, &str)]); 2] = [("a2-chk", &[("SS_A512", "2")]), ("a1pin-chk", &[("SS_A512", "1"), ("SS_PIN", "1")])];
+    let plan = |rounds: usize| {
+        let mut v: Vec<(&str, &[(&str, &str)])> = vec![("warm", &[])];
+        for r in 0..rounds {
+            // rotate the order each round
+            for i in 0..round.len() {
+                v.push(round[(i + r) % round.len()]);
             }
         }
+        v.extend_from_slice(&checks);
+        v
+    };
+    let kb: usize = std::env::var("SS_DIAG_BIG").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+    let km: usize = std::env::var("SS_DIAG_MID").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
+    if !run_k(kb, &plan(2)) {
+        run_k(kb * 2 / 3, &plan(2));
     }
-    for (c, (tag, _)) in cfgs.iter().enumerate() {
-        let w = &walls[c];
-        let mean = w.iter().sum::<f64>() / w.len() as f64;
-        let mn = w.iter().cloned().fold(f64::MAX, f64::min);
-        let mx = w.iter().cloned().fold(0.0, f64::max);
-        let im = ints[c].iter().sum::<f64>() / ints[c].len() as f64;
-        let all: Vec<String> = w.iter().map(|x| format!("{x:.0}")).collect();
-        eprintln!("{tag}: mean {mean:.0} min {mn:.0} max {mx:.0} (in-process mean {im:.0}) | {}", all.join(" "));
-    }
-    eprintln!("{}", child("dev", data, &ob, threads, &[]));
-    let _ = std::fs::remove_dir_all(&big);
+    run_k(km, &plan(3));
     let _ = std::fs::remove_dir_all(&ob);
     eprintln!("done {:.1}s", t0.elapsed().as_secs_f64());
 }

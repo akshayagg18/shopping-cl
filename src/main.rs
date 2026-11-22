@@ -1525,7 +1525,28 @@ fn main() {
     let data = PathBuf::from(env("DATA_DIR", "/data"));
     let out = PathBuf::from(env("OUTPUT_DIR", "/output"));
     let threads: usize = env("NCPU", "8").parse().unwrap_or(8);
-    rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().unwrap();
+    // SS_PIN=1: worker i stays on the i-th allowed CPU (staging areas stay in its caches)
+    let pin: Option<Vec<usize>> = if std::env::var("SS_PIN").is_ok_and(|v| v == "1") {
+        unsafe {
+            let mut set: libc::cpu_set_t = std::mem::zeroed();
+            if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) == 0 {
+                Some((0..libc::CPU_SETSIZE as usize).filter(|&c| libc::CPU_ISSET(c, &set)).collect())
+            } else {
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut b = rayon::ThreadPoolBuilder::new().num_threads(threads);
+    if let Some(cpus) = pin.filter(|c| !c.is_empty()) {
+        b = b.start_handler(move |i| unsafe {
+            let mut set: libc::cpu_set_t = std::mem::zeroed();
+            libc::CPU_SET(cpus[i % cpus.len()], &mut set);
+            libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
+        });
+    }
+    b.build_global().unwrap();
     if let Ok(mode) = std::env::var("SS_MICRO") {
         // deterministic micro-benchmarks (run under cachegrind)
         let inp = open_all(&data);
@@ -1642,6 +1663,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     READ.store(std::env::var("SS_READ").is_ok_and(|v| v == "1"), Ordering::Relaxed);
     TOK1.store(std::env::var("SS_TOK").is_ok_and(|v| v == "2"), Ordering::Relaxed);
     POP.store(std::env::var("SS_POP").is_ok_and(|v| v == "1"), Ordering::Relaxed);
+    scan::set_a512(std::env::var("SS_A512").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
+    output::DIGEST.store(std::env::var("SS_DIGEST").is_ok_and(|v| v == "1"), Ordering::Relaxed);
     let inp = open_all(data);
     // partition counts follow the input size, so a partition's working set
     // stays about the same from the 20M practice set to the 60M final
