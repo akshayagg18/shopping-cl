@@ -898,7 +898,30 @@ impl PersonMap {
     fn val_at(&self, i: usize) -> &std::sync::atomic::AtomicU64 {
         unsafe { &*((self.slots.as_ptr().add(i) as *const std::sync::atomic::AtomicU64).add(1)) }
     }
+    /// `insert`, and whether this call put the key there.
+    #[inline(always)]
+    fn insert_new(&self, k: u64, v: u64) -> (usize, bool) {
+        let mut i = self.index(k);
+        loop {
+            let cur = self.key_at(i).load(Ordering::Relaxed);
+            if cur == k {
+                return (i, false);
+            }
+            if cur == 0 {
+                match self.key_at(i).compare_exchange(0, k, Ordering::Relaxed, Ordering::Relaxed) {
+                    Ok(_) => {
+                        self.val_at(i).store(v, Ordering::Relaxed);
+                        return (i, true);
+                    }
+                    Err(c) if c == k => return (i, false),
+                    Err(_) => {}
+                }
+            }
+            i = (i + 1) & self.mask;
+        }
+    }
     /// Concurrent insert of non-zero `k` (value `v` if new); returns its slot.
+    #[allow(dead_code)]
     #[inline(always)]
     fn insert(&self, k: u64, v: u64) -> usize {
         let mut i = self.index(k);
@@ -976,43 +999,55 @@ fn links(inp: &Inputs, users: usize) -> Persons {
         })
         .collect();
     lt("parsed");
-    // every ID into the table (slot = node), edges as slot pairs
+    // every ID into the table (slot = node), edges as slot pairs, and the list
+    // of the slots taken (the passes below visit only those: the table also
+    // has room for the users met later)
     let total: usize = parts.iter().map(|v| v.len()).sum();
     let map = PersonMap::with_room(total + users);
     let cap = map.slots.len();
-    let edges: Vec<Vec<(u32, u32)>> = parts
+    let res: Vec<(Vec<(u32, u32)>, Vec<u32>)> = parts
         .par_iter()
         .map(|v| {
             const AH: usize = 8;
             let mut e = Vec::with_capacity(v.len() / 2);
+            let mut taken = Vec::with_capacity(v.len());
             for k in (0..v.len()).step_by(2) {
                 if k + AH + 1 < v.len() {
                     map.prefetch(v[k + AH].0);
                     map.prefetch(v[k + AH + 1].0);
                 }
-                let a = map.insert(v[k].0, v[k].1);
-                let b = map.insert(v[k + 1].0, v[k + 1].1);
+                let (a, na) = map.insert_new(v[k].0, v[k].1);
+                let (b, nb) = map.insert_new(v[k + 1].0, v[k + 1].1);
+                if na {
+                    taken.push(a as u32);
+                }
+                if nb {
+                    taken.push(b as u32);
+                }
                 e.push((a as u32, b as u32));
             }
-            e
+            (e, taken)
         })
         .collect();
     drop(parts);
+    let (edges, taken): (Vec<Vec<(u32, u32)>>, Vec<Vec<u32>>) = res.into_iter().unzip();
     lt("inserted");
-    // lock-free union-find: a root only ever links to a smaller root
-    let parent: Vec<AtomicU32> = (0..cap as u32).into_par_iter().with_min_len(1 << 14).map(AtomicU32::new).collect();
+    // lock-free union-find over zeroed memory: parent[x] = p + 1, 0 for a root;
+    // a root only ever links to a smaller root
+    let parent = zeroed_u32(cap);
     #[inline(always)]
     fn find(p: &[AtomicU32], mut x: u32) -> u32 {
         loop {
             let px = p[x as usize].load(Ordering::Relaxed);
-            if px == x {
+            if px == 0 {
                 return x;
             }
-            let gx = p[px as usize].load(Ordering::Relaxed);
-            if gx != px {
-                let _ = p[x as usize].compare_exchange_weak(px, gx, Ordering::Relaxed, Ordering::Relaxed);
+            let gx = p[(px - 1) as usize].load(Ordering::Relaxed);
+            if gx == 0 {
+                return px - 1;
             }
-            x = gx;
+            let _ = p[x as usize].compare_exchange_weak(px, gx, Ordering::Relaxed, Ordering::Relaxed);
+            x = gx - 1;
         }
     }
     edges.par_iter().for_each(|es| {
@@ -1025,7 +1060,7 @@ fn links(inp: &Inputs, users: usize) -> Persons {
                     break;
                 }
                 let (hi, lo) = if a > b { (a, b) } else { (b, a) };
-                if parent[hi as usize].compare_exchange(hi, lo, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                if parent[hi as usize].compare_exchange(0, lo + 1, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
                     break;
                 }
             }
@@ -1033,74 +1068,82 @@ fn links(inp: &Inputs, users: usize) -> Persons {
     });
     drop(edges);
     lt("uf");
-    // byte-wise smallest ID per component: best[root] = its slot; every
-    // parent is set to its root on the way (later passes need one hop)
-    let best: Vec<AtomicU32> = (0..cap as u32).into_par_iter().with_min_len(1 << 14).map(AtomicU32::new).collect();
+    // byte-wise smallest ID per component: best[root] = slot + 1 (0: the root
+    // itself); every parent is set to its root on the way (one hop after)
+    let best = zeroed_u32(cap);
     let name_of = |i: usize| deref(map.val_at(i).load(Ordering::Relaxed));
-    (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
-        if map.key_at(i).load(Ordering::Relaxed) == 0 {
-            return;
-        }
-        let r = find(&parent, i as u32) as usize;
-        if r == i {
-            return;
-        }
-        parent[i].store(r as u32, Ordering::Relaxed);
-        let mine = name_of(i);
-        let mut cur = best[r].load(Ordering::Relaxed);
-        while mine < name_of(cur as usize) {
-            match best[r].compare_exchange_weak(cur, i as u32, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => break,
-                Err(c) => cur = c,
+    taken.par_iter().for_each(|ts| {
+        for &i in ts {
+            let i = i as usize;
+            let r = find(&parent, i as u32) as usize;
+            if r == i {
+                continue;
+            }
+            parent[i].store(r as u32 + 1, Ordering::Relaxed);
+            let mine = name_of(i);
+            let mut cur = best[r].load(Ordering::Relaxed);
+            loop {
+                let c = if cur == 0 { r } else { cur as usize - 1 };
+                if !(mine < name_of(c)) {
+                    break;
+                }
+                match best[r].compare_exchange_weak(cur, i as u32 + 1, Ordering::Relaxed, Ordering::Relaxed) {
+                    Ok(_) => break,
+                    Err(c) => cur = c,
+                }
             }
         }
     });
     lt("best");
-    // a dense person id per component (its root), in slot order: chunks count
-    // their roots, then number them from the chunk's base
-    let names = zeroed_atomics(cap + rayon::current_num_threads() * PID_BLOCK as usize + PID_BLOCK as usize);
-    const CH: usize = 1 << 15;
-    let is_root = |i: usize| map.key_at(i).load(Ordering::Relaxed) != 0 && parent[i].load(Ordering::Relaxed) == i as u32;
-    let counts: Vec<u32> = (0..cap.div_ceil(CH)).into_par_iter().map(|c| (c * CH..((c + 1) * CH).min(cap)).filter(|&i| is_root(i)).count() as u32).collect();
-    let mut base = Vec::with_capacity(counts.len());
-    let mut acc = 0u32;
-    for &c in &counts {
-        base.push(acc);
-        acc += c;
-    }
-    // names first (a component's best slot may be its root, whose value changes next)
-    (0..counts.len()).into_par_iter().for_each(|c| {
-        let mut p = base[c] as usize;
-        for i in c * CH..((c + 1) * CH).min(cap) {
-            if is_root(i) {
-                let b = best[i].load(Ordering::Relaxed) as usize;
-                names[p].store(map.val_at(b).load(Ordering::Relaxed), Ordering::Relaxed);
-                p += 1;
+    // a dense person id per component (its root), from blocks; the name first
+    // (the component's best slot may be the root, whose value changes here)
+    // ids: every taken slot at most once, plus a partly used block per task and per worker
+    let names = zeroed_atomics(cap + (taken.len() + rayon::current_num_threads() + 2) * PID_BLOCK as usize);
+    let next = std::sync::atomic::AtomicU32::new(0);
+    taken.par_iter().for_each(|ts| {
+        let mut blk = (0u32, 0u32);
+        for &i in ts {
+            let i = i as usize;
+            if parent[i].load(Ordering::Relaxed) != 0 {
+                continue;
             }
-        }
-    });
-    (0..counts.len()).into_par_iter().for_each(|c| {
-        let mut p = base[c] as u64;
-        for i in c * CH..((c + 1) * CH).min(cap) {
-            if is_root(i) {
-                map.val_at(i).store(VALID | p, Ordering::Relaxed);
-                p += 1;
+            if blk.0 == blk.1 {
+                let b = next.fetch_add(PID_BLOCK, Ordering::Relaxed);
+                blk = (b, b + PID_BLOCK);
             }
+            let p = blk.0;
+            blk.0 += 1;
+            let bs = best[i].load(Ordering::Relaxed);
+            let b = if bs == 0 { i } else { bs as usize - 1 };
+            names[p as usize].store(map.val_at(b).load(Ordering::Relaxed), Ordering::Relaxed);
+            map.val_at(i).store(VALID | p as u64, Ordering::Relaxed);
         }
     });
     // every other ID takes its root's id (parents point at roots after the best pass)
-    (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
-        if map.key_at(i).load(Ordering::Relaxed) != 0 {
-            let r = parent[i].load(Ordering::Relaxed) as usize;
-            if r != i {
-                map.val_at(i).store(map.val_at(r).load(Ordering::Relaxed), Ordering::Relaxed);
+    taken.par_iter().for_each(|ts| {
+        for &i in ts {
+            let i = i as usize;
+            let pr = parent[i].load(Ordering::Relaxed);
+            if pr != 0 {
+                map.val_at(i).store(map.val_at(pr as usize - 1).load(Ordering::Relaxed), Ordering::Relaxed);
             }
         }
     });
     lt("named");
     std::mem::forget(parent);
     std::mem::forget(best);
-    Persons { map, names, next: std::sync::atomic::AtomicU32::new(acc) }
+    let n = next.load(Ordering::Relaxed);
+    Persons { map, names, next: std::sync::atomic::AtomicU32::new(n) }
+}
+
+/// `n` zeroed atomics from fresh memory (no fill).
+fn zeroed_u32(n: usize) -> Vec<std::sync::atomic::AtomicU32> {
+    let layout = std::alloc::Layout::array::<std::sync::atomic::AtomicU32>(n.max(1)).unwrap();
+    unsafe {
+        let p = std::alloc::alloc_zeroed(layout) as *mut std::sync::atomic::AtomicU32;
+        assert!(!p.is_null(), "out of memory");
+        Vec::from_raw_parts(p, n.max(1), n.max(1))
+    }
 }
 
 // ---------------------------------------------------------------- records
