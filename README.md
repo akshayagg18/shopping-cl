@@ -17,12 +17,12 @@ adds almost nothing to the measured time.
    component is named by its byte-wise smallest ID with a compare-and-swap minimum, and
    the same table, its values rewritten to `LINKED | name ref`, is the person map. No
    sorting, scattering or serial pass.
-3. **Tokenizing.** One fused AVX2 pass per 64 bytes builds the newline bitmap, a bitmap
-   of quoting violations (prefix-XOR quote parity: no separator inside quotes, opening
-   quotes after a separator, closing quotes before one) and a flat list of separator
-   positions. A line is then: next newline from the bitmap, one compare that its N-th
-   separator is that newline, one test of the violation bitmap. Fields are unquoted on
-   access.
+3. **Tokenizing.** Per 192 KiB window, an AVX2 newline bitmap gives every line's start
+   and length up front. Each line (under 96 bytes; longer ones take a scalar path) is
+   then three 32-byte loads: separator and quote masks, prefix-XOR quote parity, and the
+   quoting rules as bit tests (no separator inside quotes, opening quotes after a
+   separator, closing quotes before one), exactly N separators, field ends by
+   `tzcnt`. Fields are unquoted on access.
 4. **Values.** F1/F2/F3 timestamps take inlined fast paths with a small per-thread cache
    of validated `YYYY-MM-DD` dates; anything unusual falls back to the strict general
    parser (impossible dates, hour 24, second 60, bad offsets are rejected). Short IDs
@@ -39,10 +39,10 @@ adds almost nothing to the measured time.
    every losing copy's event record dead in a bitmap. Click copies are identical
    (`rules.md`), so they need no dedup.
 7. **Sessions without sorting.** Inside each person partition (largest first), events
-   are grouped per person (8-byte events and 16-byte clicks from then on, so a partition
-   stays in L2) and ordered by half-hour bin with two counting passes. Two
-   events in one bin are never more than 30 minutes apart, so sessions are cut between
-   bins only (by each bin's min and max). A sliding 7-day click window gives the
+   are grouped per person with one counting pass (8-byte events and 16-byte clicks from
+   then on, so a partition stays in L2); each person's events are binned by half hour
+   into a bitmap of occupied bins. Two events in one bin are never more than 30 minutes
+   apart, so sessions are cut between bins only (by each bin's min and max). A sliding 7-day click window gives the
    credited click (latest `ts`, then smallest `click_id`) and the distinct assisting
    campaigns.
 8. **Output.** A small hand-written Parquet writer (PLAIN, uncompressed, one page per

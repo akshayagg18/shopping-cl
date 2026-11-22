@@ -28,7 +28,9 @@ impl<const N: usize> Flds<N> {
     pub fn span(&self, line: &[u8], i: usize) -> (usize, usize) {
         let a = if i == 0 { 0 } else { self.e[i - 1] as usize + 1 };
         let b = self.e[i] as usize;
-        let q = (b > a && unsafe { *line.get_unchecked(a) } == b'"') as usize;
+        // a field before the last is followed by its separator inside the line,
+        // so its first byte (or that separator) is always readable
+        let q = if i + 1 < N { (unsafe { *line.get_unchecked(a) } == b'"') as usize } else { (b > a && unsafe { *line.get_unchecked(a) } == b'"') as usize };
         (a + q, b - q)
     }
     #[inline(always)]
@@ -241,6 +243,166 @@ fn long_line<const N: usize>(data: &[u8], p: usize, fl: &mut Flds<N>) -> (usize,
     }
 }
 
+/// A line of `len` < 96 bytes at `ptr` (96 bytes readable, newline at
+/// `len`): the field ends if valid with exactly N fields. Same rules as stage
+/// 1: no separator inside quotes, every opening quote follows a separator (or
+/// the line start), every closing quote precedes one (or the line end).
+#[inline(always)]
+unsafe fn line_fields<const N: usize>(ptr: *const u8, len: usize, fl: &mut Flds<N>) -> bool {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        use std::arch::x86_64::*;
+        let v0 = _mm256_loadu_si256(ptr as *const __m256i);
+        let v1 = _mm256_loadu_si256(ptr.add(32) as *const __m256i);
+        let v2 = _mm256_loadu_si256(ptr.add(64) as *const __m256i);
+        let mm = |v: __m256i, k: __m256i| _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, k)) as u32 as u64;
+        let kc = _mm256_set1_epi8(b',' as i8);
+        let kq = _mm256_set1_epi8(b'"' as i8);
+        // bits [0, len] of the 96 (the newline included), without branches
+        let m_lo = if len >= 63 { !0u64 } else { (2u64 << len) - 1 };
+        let m_hi = if len >= 64 { (2u64 << (len - 64)) - 1 } else { 0 };
+        let nl_lo = if len < 64 { 1u64 << (len & 63) } else { 0 };
+        let nl_hi = if len >= 64 { 1u64 << (len & 63) } else { 0 };
+        let sep_lo = ((mm(v0, kc) | (mm(v1, kc) << 32)) & m_lo) | nl_lo;
+        let sep_hi = (mm(v2, kc) & m_hi) | nl_hi;
+        let q_lo = (mm(v0, kq) | (mm(v1, kq) << 32)) & m_lo;
+        let q_hi = mm(v2, kq) & m_hi;
+        let in_lo = prefix_xor64(q_lo);
+        let in_hi = prefix_xor64(q_hi) ^ 0u64.wrapping_sub(in_lo >> 63);
+        let prev_lo = (sep_lo << 1) | 1;
+        let prev_hi = (sep_hi << 1) | (sep_lo >> 63);
+        let close_lo = q_lo & !in_lo;
+        let close_hi = q_hi & !in_hi;
+        let cn_lo = close_lo << 1;
+        let cn_hi = (close_hi << 1) | (close_lo >> 63);
+        let bad_lo = (in_lo & sep_lo) | (q_lo & in_lo & !prev_lo) | (cn_lo & !sep_lo);
+        let bad_hi = (in_hi & sep_hi) | (q_hi & in_hi & !prev_hi) | (cn_hi & !sep_hi);
+        if (sep_lo.count_ones() + sep_hi.count_ones()) as usize != N || ((bad_lo & m_lo) | (bad_hi & m_hi)) != 0 {
+            return false;
+        }
+        let (mut a, mut b) = (sep_lo, sep_hi);
+        let ca = a.count_ones() as usize;
+        for i in 0..N {
+            if i < ca {
+                fl.e[i] = a.trailing_zeros();
+                a &= a - 1;
+            } else {
+                fl.e[i] = 64 + b.trailing_zeros();
+                b &= b.wrapping_sub(1);
+            }
+        }
+        true
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    {
+        let _ = (ptr, len, fl);
+        unreachable!("line_fields needs AVX2")
+    }
+}
+
+thread_local! {
+    static NLBUF: std::cell::RefCell<Vec<u64>> = std::cell::RefCell::new(Vec::new());
+}
+
+/// Records starting in [s, e) (a file's header skipped), straight from the
+/// mapping: a newline bitmap per 192 KiB window gives every line's start and
+/// length up front (no chain from one line's end to the next line's loads),
+/// then each line's fields come from three 32-byte loads. Lines near the
+/// file's end and the rare line of 96+ bytes take the general paths.
+#[inline(always)]
+pub fn scan_lines<const N: usize>(f: usize, s: usize, e: usize, mut each: impl FnMut(usize, &[u8], Option<&Flds<N>>)) {
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    {
+        return scan_records::<N>(f, s, e, each);
+    }
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        use std::arch::x86_64::*;
+        if crate::READ.load(Ordering::Relaxed) {
+            return scan_records::<N>(f, s, e, each);
+        }
+        let d = file_bytes(f);
+        let n = d.len();
+        let mut p = if s == 0 {
+            match memchr(b'\n', d) {
+                Some(i) => i + 1,
+                None => return,
+            }
+        } else if d[s - 1] == b'\n' {
+            s
+        } else {
+            match memchr(b'\n', &d[s..]) {
+                Some(i) => s + i + 1,
+                None => return,
+            }
+        };
+        // a line starting before fast_end has 96 readable bytes
+        let fast_end = n.saturating_sub(96);
+        let mut fl = Flds::<N> { e: [0; N] };
+        NLBUF.with(|cell| {
+            let mut nlv = cell.borrow_mut();
+            const WIN: usize = 192 << 10;
+            while p < e {
+                if p >= fast_end {
+                    return scan_records::<N>(f, p, e, &mut each);
+                }
+                // newline bitmap of [base, base + 64 * words), within fast_end + 96
+                let base = p & !63;
+                let lim = (e.min(fast_end) + 96).min(base + WIN + 128);
+                let words = (lim - base) / 64;
+                nlv.clear();
+                nlv.reserve(words);
+                unsafe {
+                    let kn = _mm256_set1_epi8(b'\n' as i8);
+                    let o = nlv.as_mut_ptr();
+                    for w in 0..words {
+                        let q = d.as_ptr().add(base + w * 64);
+                        let a = _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_loadu_si256(q as *const __m256i), kn)) as u32 as u64;
+                        let b = _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_loadu_si256(q.add(32) as *const __m256i), kn)) as u32 as u64;
+                        *o.add(w) = a | (b << 32);
+                    }
+                    nlv.set_len(words);
+                }
+                let covered = base + words * 64;
+                let mut w = (p - base) / 64;
+                let mut cur = nlv[w] & (!0u64 << ((p - base) % 64));
+                // lines whose newline lies in the bitmap
+                loop {
+                    while cur == 0 && w + 1 < words {
+                        w += 1;
+                        cur = nlv[w];
+                    }
+                    if cur == 0 {
+                        break;
+                    }
+                    let end = base + w * 64 + cur.trailing_zeros() as usize;
+                    cur &= cur - 1;
+                    let len = end - p;
+                    if p >= fast_end {
+                        break;
+                    }
+                    let ok = if len < 96 {
+                        unsafe { line_fields::<N>(d.as_ptr().add(p), len, &mut fl) }
+                    } else {
+                        long_line::<N>(d, p, &mut fl).1
+                    };
+                    each(p, &d[p..end], if ok { Some(&fl) } else { None });
+                    p = end + 1;
+                    if p >= e {
+                        return;
+                    }
+                }
+                // no newline left in the bitmap: a line running past it
+                if p < covered && p < fast_end {
+                    let (end, ok) = long_line::<N>(d, p, &mut fl);
+                    each(p, &d[p..end.min(n)], if ok { Some(&fl) } else { None });
+                    p = end + 1;
+                }
+            }
+        });
+    }
+}
+
 /// Iterate records starting in [s, e) (a file's header skipped), split into N
 /// fields: `each(line_start, line, fields)`, fields None for a malformed line.
 #[inline(always)]
@@ -415,6 +577,20 @@ mod tests {
             for w in cuts.windows(2) {
                 scan_records::<N>(0, w[0], w[1], |p, line, fs| got.push((p, fs.map(|f| f.pairs(line)))));
             }
+            let mut got_l = Vec::new();
+            for w in cuts.windows(2) {
+                scan_lines::<N>(0, w[0], w[1], |p, line, fs| got_l.push((p, fs.map(|f| f.pairs(line)))));
+            }
+            if got_l != want {
+                for (i, (a, b)) in got_l.iter().zip(want.iter()).enumerate() {
+                    if a != b {
+                        let p = a.0.min(b.0);
+                        let end = (p + 100).min(d.len());
+                        panic!("scan_lines round {round} item {i}: got {a:?} want {b:?} line {:?} n={} cuts={cuts:?}", String::from_utf8_lossy(&d[p..end]), d.len());
+                    }
+                }
+                panic!("scan_lines round {round}: lengths {} vs {}", got_l.len(), want.len());
+            }
             if got != want {
                 for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
                     if a != b {
@@ -426,6 +602,84 @@ mod tests {
                 panic!("round {round}: lengths {} vs {}", got.len(), want.len());
             }
         }
+    }
+
+    /// Realistic lines (N fields of 0-24 bytes, often quoted, occasionally
+    /// broken), lengths around the 64- and 96-byte edges.
+    fn structured<const N: usize>(seed: u64, rounds: usize) {
+        let _g = crate::tests_support::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut x: u64 = seed ^ std::env::var("SS_TSEED").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for round in 0..rounds {
+            let mut d: Vec<u8> = b"h\n".to_vec();
+            let lines = 1 + rnd() % 400;
+            for _ in 0..lines {
+                let nf = if rnd() % 20 == 0 { N + 1 - (rnd() % 3) as usize } else { N };
+                for k in 0..nf {
+                    if k > 0 {
+                        d.push(b',');
+                    }
+                    let len = (rnd() % 25) as usize;
+                    let quoted = rnd() % 3 == 0;
+                    if quoted {
+                        d.push(b'"');
+                    }
+                    for _ in 0..len {
+                        let r = rnd() % 200;
+                        d.push(if r == 0 { b'"' } else if r == 1 { b',' } else { b"abc0123xyz-:TZ"[(rnd() % 14) as usize] });
+                    }
+                    if quoted && rnd() % 30 != 0 {
+                        d.push(b'"');
+                    }
+                }
+                if rnd() % 50 == 0 {
+                    d.push(b'\r');
+                }
+                d.push(b'\n');
+            }
+            if rnd() % 2 == 0 {
+                d.pop();
+            }
+            install(&d);
+            let want = naive::<N>(&d);
+            let n = d.len();
+            for (name, which) in [("records", 0), ("lines", 1)] {
+                let mut got = Vec::new();
+                let cut = (rnd() as usize) % n;
+                for (a, b) in [(0, cut), (cut, n)] {
+                    if which == 0 {
+                        scan_records::<N>(0, a, b, |p, line, fs| got.push((p, fs.map(|f| f.pairs(line)))));
+                    } else {
+                        scan_lines::<N>(0, a, b, |p, line, fs| got.push((p, fs.map(|f| f.pairs(line)))));
+                    }
+                }
+                if got != want {
+                    for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+                        if a != b {
+                            let p = a.0.min(b.0);
+                            let end = (p + 130).min(d.len());
+                            panic!("{name} round {round} item {i}: got {a:?} want {b:?} line {:?}", String::from_utf8_lossy(&d[p..end]));
+                        }
+                    }
+                    panic!("{name} round {round}: lengths {} vs {}", got.len(), want.len());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scan_structured_7() {
+        structured::<7>(0x7777_1111, 400);
+    }
+
+    #[test]
+    fn scan_structured_4() {
+        structured::<4>(0x4444_2222, 400);
     }
 
     #[test]

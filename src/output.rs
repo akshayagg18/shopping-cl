@@ -75,7 +75,14 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
             let mut e = Column::new("events", Kind::I32, n, n * 4);
             let mut r = Column::new("revenue_cents", Kind::I64, n, n * 8);
             let mut top = Column::new("top_category", Kind::OptStr, n, n * 12);
-            for row in &a.rows {
+            for (k, row) in a.rows.iter().enumerate() {
+                // names are scattered (link files, per-thread name buffers): fetch ahead
+                if let Some(ahead) = a.rows.get(k + 16) {
+                    #[cfg(target_arch = "x86_64")]
+                    unsafe {
+                        std::arch::x86_64::_mm_prefetch(name_bytes(ahead.name).as_ptr() as *const i8, std::arch::x86_64::_MM_HINT_T0)
+                    };
+                }
                 ids.str(name_bytes(row.name));
                 day.i32(row.day);
                 s.i32(row.sessions as i32);

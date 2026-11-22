@@ -1048,9 +1048,23 @@ struct Scratch {
     // per grouped person: key and the ref of one of its events' user IDs
     pkey: Vec<u64>,
     puref: Vec<u64>,
-    bin_cnt: Vec<u32>,
-    tmp_ev: Vec<Ev1>,
-    tmp_id: Vec<u32>,
+    ev_pos: Vec<u32>,
+    ck_pos: Vec<u32>,
+    // per person: occupied half-hour bins (bitmap), their aggregates, the
+    // purchases by bin, and the runs in bin order
+    bm: Vec<u64>,
+    bins: Vec<BinAcc>,
+    purch: Vec<(u32, u32)>,
+    runs: Vec<Run>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct BinAcc {
+    min: u32,
+    max: u32,
+    n: u32,
+    purch: u32,
+    rev: i64,
 }
 
 impl Scratch {
@@ -1070,9 +1084,12 @@ impl Scratch {
             cks_sorted: Vec::new(),
             pkey: Vec::new(),
             puref: Vec::new(),
-            bin_cnt: Vec::new(),
-            tmp_ev: Vec::new(),
-            tmp_id: Vec::new(),
+            ev_pos: Vec::new(),
+            ck_pos: Vec::new(),
+            bm: Vec::new(),
+            bins: Vec::new(),
+            purch: Vec::new(),
+            runs: Vec::new(),
         }
     }
 }
@@ -1143,8 +1160,10 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     sc.ev_local.clear();
     sc.ev_local.reserve(n);
     let nb = ctx.nbins;
-    sc.bin_cnt.clear();
-    sc.bin_cnt.resize(nb + 1, 0);
+    if sc.bins.len() < nb {
+        sc.bins.resize(nb, BinAcc::default());
+        sc.bm.resize(nb.div_ceil(64), 0);
+    }
     evb.clear();
     evb.reserve(n);
     for (t, s) in sinks.iter().enumerate() {
@@ -1167,7 +1186,6 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                     }
                     unsafe {
                         *sc.ev_cnt.get_unchecked_mut(id as usize) += 1;
-                        *sc.bin_cnt.get_unchecked_mut(bin_of(e.ts) + 1) += 1;
                         let len = evb.len();
                         evb.as_mut_ptr().add(len).write(Ev1 { ts: e.ts, pc: e.pc });
                         evb.set_len(len + 1);
@@ -1240,37 +1258,21 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
         sc.evs_sorted.set_len(n);
         sc.cks_sorted.set_len(cacc as usize);
     }
-    // events by person, and inside a person by half-hour bin (two stable
-    // counting passes, no comparison sort): within one bin no two events can
-    // be more than 30 minutes apart, so a session never splits inside a bin
-    for b in 0..nb {
-        sc.bin_cnt[b + 1] += sc.bin_cnt[b];
-    }
-    sc.tmp_ev.clear();
-    sc.tmp_ev.reserve(n);
-    sc.tmp_id.clear();
-    sc.tmp_id.reserve(n);
+    // events by person (one counting pass); inside a person, events are binned
+    // by half hour in person_sessions
+    sc.ev_pos.clear();
+    sc.ev_pos.extend_from_slice(&sc.ev_cnt);
     unsafe {
-        sc.tmp_ev.set_len(n);
-        sc.tmp_id.set_len(n);
         for (e, &id) in evin.iter().zip(&sc.ev_local) {
-            let at = sc.bin_cnt.get_unchecked_mut(bin_of(e.ts));
-            *sc.tmp_ev.get_unchecked_mut(*at as usize) = *e;
-            *sc.tmp_id.get_unchecked_mut(*at as usize) = id;
-            *at += 1;
-        }
-    }
-    let mut ev_pos = sc.ev_cnt.clone();
-    unsafe {
-        for (e, &id) in sc.tmp_ev.iter().zip(&sc.tmp_id) {
-            let at = ev_pos.get_unchecked_mut(id as usize);
+            let at = sc.ev_pos.get_unchecked_mut(id as usize);
             *sc.evs_sorted.get_unchecked_mut(*at as usize) = *e;
             *at += 1;
         }
     }
-    let mut ck_pos = sc.ck_cnt.clone();
+    sc.ck_pos.clear();
+    sc.ck_pos.extend_from_slice(&sc.ck_cnt);
     for (c, &id) in ckin.iter().zip(&sc.ck_local) {
-        let at = &mut ck_pos[id as usize];
+        let at = &mut sc.ck_pos[id as usize];
         sc.cks_sorted[*at as usize] = *c;
         *at += 1;
     }
@@ -1279,8 +1281,8 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     let mut evs = evs;
     let mut cks = cks;
     for pid in 0..np {
-        let (es, ee) = (sc.ev_cnt[pid] as usize, ev_pos[pid] as usize);
-        let (cs, ce) = (sc.ck_cnt[pid] as usize, ck_pos[pid] as usize);
+        let (es, ee) = (sc.ev_cnt[pid] as usize, sc.ev_pos[pid] as usize);
+        let (cs, ce) = (sc.ck_cnt[pid] as usize, sc.ck_pos[pid] as usize);
         let ev = &mut evs[es..ee];
         let ck = &mut cks[cs..ce];
         if ck.len() > 1 {
@@ -1299,8 +1301,9 @@ fn bin_of(ts: u32) -> usize {
 }
 
 /// One run of a person's events that share a half-hour bin.
+#[derive(Clone, Copy, Default)]
 struct Run {
-    end: usize,
+    bin: u32,
     min: u32,
     max: u32,
     n: u32,
@@ -1308,35 +1311,61 @@ struct Run {
     purch: bool,
 }
 
-#[inline(always)]
-fn run_at(evs: &[Ev1], k: usize) -> Run {
-    let b = bin_of(evs[k].ts);
-    let mut r = Run { end: k, min: u32::MAX, max: 0, n: 0, rev: 0, purch: false };
-    while r.end < evs.len() && bin_of(evs[r.end].ts) == b {
-        let e = &evs[r.end];
-        r.min = r.min.min(e.ts);
-        r.max = r.max.max(e.ts);
-        r.n += 1;
-        if e.pc >= 256 {
-            r.rev += (e.pc >> 8) as i64;
-            r.purch = true;
+/// Bin a person's events (any order) and list the occupied bins' runs in bin
+/// order into `sc.runs`; purchases (bin, pc) sorted by bin into `sc.purch`.
+#[inline]
+fn bin_runs(evs: &[Ev1], sc: &mut Scratch) {
+    sc.runs.clear();
+    sc.purch.clear();
+    let (mut wlo, mut whi) = (usize::MAX, 0usize);
+    for e in evs {
+        let b = bin_of(e.ts);
+        let (w, bit) = (b >> 6, 1u64 << (b & 63));
+        let seen = unsafe { *sc.bm.get_unchecked(w) } & bit != 0;
+        let a = unsafe { sc.bins.get_unchecked_mut(b) };
+        if !seen {
+            *a = BinAcc { min: e.ts, max: e.ts, n: 0, purch: 0, rev: 0 };
+            unsafe { *sc.bm.get_unchecked_mut(w) |= bit };
+            wlo = wlo.min(w);
+            whi = whi.max(w);
         }
-        r.end += 1;
+        a.min = a.min.min(e.ts);
+        a.max = a.max.max(e.ts);
+        a.n += 1;
+        if e.pc >= 256 {
+            a.rev += (e.pc >> 8) as i64;
+            a.purch = 1;
+            sc.purch.push((b as u32, e.pc));
+        }
     }
-    r
+    for w in wlo..=whi {
+        let mut m = sc.bm[w];
+        sc.bm[w] = 0;
+        while m != 0 {
+            let b = w * 64 + m.trailing_zeros() as usize;
+            m &= m - 1;
+            let a = sc.bins[b];
+            sc.runs.push(Run { bin: b as u32, min: a.min, max: a.max, n: a.n, rev: a.rev, purch: a.purch != 0 });
+        }
+    }
+    if sc.purch.len() > 1 {
+        sc.purch.sort_unstable_by_key(|p| p.0);
+    }
 }
 
-/// `evs`: one person's events grouped by half-hour bin, bins ascending (order
-/// inside a bin is arbitrary). `cks`: the person's clicks by (ts, click_id).
+/// `evs`: one person's events, any order. `cks`: the person's clicks by (ts, click_id).
 fn person_sessions(ctx: &Ctx, key: u64, uref: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg, sc: &mut Scratch) {
     let name = if key & LINKED != 0 { key & !LINKED } else { uref };
     let (mut lo, mut hi) = (0usize, 0usize);
     let mut cur_day: i64 = i64::MIN;
     let (mut d_sess, mut d_evs, mut d_rev) = (0u32, 0u32, 0i64);
     let mut d_purch = false;
+    bin_runs(evs, sc);
+    let runs = std::mem::take(&mut sc.runs);
+    let mut pi = 0usize; // next purchase (by bin)
     let mut k = 0usize;
-    let mut r = run_at(evs, 0);
-    while k < evs.len() {
+    let mut r = runs[0];
+    while k < runs.len() {
         let start = r.min as i64;
         let day = (ctx.ws + start).div_euclid(DAY_MS) - ctx.ws_day;
         if day != cur_day {
@@ -1358,18 +1387,21 @@ fn person_sessions(ctx: &Ctx, key: u64, uref: u64, evs: &[Ev1], cks: &[Ck1], agg
             rev += r.rev;
             if r.purch {
                 purch = true;
-                for e in &evs[k..r.end] {
-                    if e.pc >= 256 {
-                        sc.cat[(e.pc & 0xFF) as usize] += (e.pc >> 8) as i64;
-                    }
+                while pi < sc.purch.len() && sc.purch[pi].0 < r.bin {
+                    pi += 1;
+                }
+                while pi < sc.purch.len() && sc.purch[pi].0 == r.bin {
+                    let pc = sc.purch[pi].1;
+                    sc.cat[(pc & 0xFF) as usize] += (pc >> 8) as i64;
+                    pi += 1;
                 }
             }
             let last = r.max as i64;
-            k = r.end;
-            if k == evs.len() {
+            k += 1;
+            if k == runs.len() {
                 break;
             }
-            r = run_at(evs, k);
+            r = runs[k];
             if r.min as i64 - last > SESSION_GAP {
                 break;
             }
@@ -1422,6 +1454,7 @@ fn person_sessions(ctx: &Ctx, key: u64, uref: u64, evs: &[Ev1], cks: &[Ck1], agg
         d_purch |= purch;
     }
     flush_day(ctx, agg, sc, name, cur_day, d_sess, d_evs, d_rev, d_purch);
+    sc.runs = runs;
     while lo < hi {
         sc.count[cks[lo].camp as usize] = 0;
         lo += 1;
@@ -1619,7 +1652,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let states: Vec<std::sync::Mutex<(Agg, Scratch, Vec<Ev1>, Vec<Ck1>)>> = (0..nthreads)
         .map(|_| {
             std::sync::Mutex::new((
-                Agg { rows: Vec::new(), credit: vec![(0u64, 0i64); (ncamp + 1) * ndays], assist: vec![0u32; (ncamp + 1) * ndays] },
+                Agg { rows: Vec::with_capacity(est_events / nthreads / 2 + 1024), credit: vec![(0u64, 0i64); (ncamp + 1) * ndays], assist: vec![0u32; (ncamp + 1) * ndays] },
                 Scratch::new(ncamp),
                 Vec::new(),
                 Vec::new(),

@@ -295,8 +295,9 @@ impl Sink {
 struct PendE {
     uh: u64,
     uref: u64,
-    eid: u64,
-    chk: u32,
+    /// copy record id (copy_id) and its event id partition
+    id: u64,
+    part: u32,
     ingest: u32,
     ts: u32,
     pc: u32,
@@ -326,7 +327,7 @@ fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
     };
     let pb = person_bucket(key);
     let i = sink.ev.push(&mut sink.arena, pb, Ev2 { key, uref, ts: pd.ts, pc: pd.pc });
-    let (part, id) = (eid_part(pd.eid), copy_id(pd.eid, pd.chk));
+    let (part, id) = (pd.part as usize, pd.id);
     if i < (1 << LOC_I) - 1 && pb < 1 << (32 - LOC_I) {
         sink.cp.push(&mut sink.arena, part, CopyR { id, ingest: pd.ingest, loc: ((pb as u32) << LOC_I) | i });
     } else {
@@ -342,7 +343,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
     let mut memo = parse::Memo::new();
     let mut head = 0usize;
     let mut filled = 0usize;
-    crate::scan::scan_records::<7>(f, s, e, |p, line, fs| {
+    crate::scan::scan_lines::<7>(f, s, e, |p, line, fs| {
         let Some(fs) = fs else { return };
         let fld = |i: usize| fs.get(line, i);
         let eid = fld(0);
@@ -351,7 +352,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
         }
         let ingest_ms = parse::ingest_memo(fld(3), &mut memo).unwrap_or(i64::MAX / 2);
         let (eid_h, eid_c) = h64_chk(eid);
-        let ingest = (ingest_ms.div_euclid(1000)).clamp(0, u32::MAX as i64) as u32;
+        let ingest = (ingest_ms.max(0) / 1000).min(u32::MAX as i64) as u32;
         'valid: {
             let user = fld(1);
             if user.is_empty() {
@@ -376,30 +377,28 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             };
             let uh = h64(user);
             persons.map.prefetch(uh);
-            let ua = fs.span(line, 1).0;
-            let mut nm = [0u8; 16];
-            if ua + 16 <= line.len() {
-                nm = unsafe { std::ptr::read_unaligned(line.as_ptr().add(ua) as *const [u8; 16]) };
-            } else {
-                let k = user.len().min(16);
-                nm[..k].copy_from_slice(&user[..k]);
-            }
-            let pd = PendE {
-                uh,
-                uref: mkref(f, p + ua, user.len()),
-                eid: eid_h,
-                chk: eid_c,
-                ingest,
-                ts: (ts - ws) as u32,
-                pc,
-                nm,
-            };
             if filled == AHEAD {
                 emit_event(sink, persons, tid, &ring[head]);
             } else {
                 filled += 1;
             }
-            ring[head] = pd;
+            // built in place in the ring slot just emitted
+            let pd = &mut ring[head];
+            let ua = user.as_ptr() as usize - line.as_ptr() as usize;
+            if ua + 16 <= line.len() {
+                pd.nm = unsafe { std::ptr::read_unaligned(line.as_ptr().add(ua) as *const [u8; 16]) };
+            } else {
+                let k = user.len().min(16);
+                pd.nm = [0; 16];
+                pd.nm[..k].copy_from_slice(&user[..k]);
+            }
+            pd.uh = uh;
+            pd.uref = mkref(f, p + ua, user.len());
+            pd.id = copy_id(eid_h, eid_c);
+            pd.part = eid_part(eid_h) as u32;
+            pd.ingest = ingest;
+            pd.ts = (ts - ws) as u32;
+            pd.pc = pc;
             head = (head + 1) % AHEAD;
             return;
         }
@@ -436,7 +435,7 @@ pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
     let mut memo = parse::Memo::new();
     let mut head = 0usize;
     let mut filled = 0usize;
-    crate::scan::scan_records::<4>(f, s, e, |p, line, fs| {
+    crate::scan::scan_lines::<4>(f, s, e, |p, line, fs| {
         let Some(fs) = fs else { return };
         let fld = |i: usize| fs.get(line, i);
         let cid = fld(0);
