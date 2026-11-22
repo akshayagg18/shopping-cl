@@ -336,7 +336,8 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
         if eid.is_empty() {
             return;
         }
-        let ingest_ms = parse::ingest_memo(fld(3), &mut memo).unwrap_or(i64::MAX / 2);
+        // both timestamps at once (ts only counts for a line with a user)
+        let (ts_opt, ingest_ms) = parse::ts_pair(fld(2), fld(3), &mut memo);
         let (eid_h, eid_c) = h64_chk(eid);
         let ingest = (ingest_ms.max(0) / 1000).min(u32::MAX as i64) as u32;
         'valid: {
@@ -344,7 +345,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             if user.is_empty() {
                 break 'valid;
             }
-            let Some(ts) = parse::ts_memo(fld(2), &mut memo) else { break 'valid };
+            let Some(ts) = ts_opt else { break 'valid };
             if ts < ws || ts >= we || ingest_ms - ts > DAY_MS {
                 break 'valid;
             }
