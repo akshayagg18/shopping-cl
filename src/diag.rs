@@ -215,7 +215,18 @@ fn child(tag: &str, data: &Path, out: &Path, threads: usize, extra: &[(&str, &st
         })
         .collect();
     let tv = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 * 1e-6;
-    format!("{tag} {wall:.0}/{total:.0}: {} u{:.2} s{:.2}", d.join(" "), tv(ru.ru_utime), tv(ru.ru_stime))
+    // sub-step laps ("  links parsed: 13.1 ms") as a compact suffix
+    let sub: Vec<String> = err
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let rest = l.strip_prefix("links ")?;
+            let (name, ms) = rest.split_once(':')?;
+            Some(format!("{}={}", &name[..name.len().min(4)], ms.trim().trim_end_matches(" ms").split('.').next()?))
+        })
+        .collect();
+    let sub = if sub.is_empty() { String::new() } else { format!(" L[{}]", sub.join(" ")) };
+    format!("{tag} {wall:.0}/{total:.0}: {} u{:.2} s{:.2}{sub}", d.join(" "), tv(ru.ru_utime), tv(ru.ru_stime))
 }
 
 /// Map every input file and read one byte per cache line with all threads.
@@ -240,6 +251,7 @@ fn read_bench(data: &Path) -> f64 {
 
 /// Random 8-byte reads from a `mb` MiB table by all threads, each read
 /// prefetched 16 ahead (like the person lookups). Returns M lookups/s.
+#[allow(dead_code)]
 fn lookup_bench(mb: usize, per_thread: usize) -> f64 {
     let n = (mb << 20) / 8;
     let t: Vec<u64> = (0..n as u64).into_par_iter().map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15)).collect();
@@ -266,6 +278,7 @@ fn lookup_bench(mb: usize, per_thread: usize) -> f64 {
 }
 
 /// All threads: sum a 1 GiB array (read GB/s), then stream-store over it (GB/s).
+#[allow(dead_code)]
 fn bw_bench() -> (f64, f64) {
     let n = (1usize << 30) / 8;
     let mut v: Vec<u64> = (0..n as u64).into_par_iter().collect();
@@ -310,32 +323,35 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let _ = crate::run(data, out, false);
     let cpu = cat("/proc/cpuinfo");
     let model = cpu.lines().find(|l| l.starts_with("model name")).unwrap_or("?").replace("model name\t: ", "");
-    eprintln!("D14 {model} | {} | {} | mem {} cpu {}", caches(), cat("/proc/sys/kernel/osrelease").trim(), cat("/sys/fs/cgroup/memory.max").trim(), cat("/sys/fs/cgroup/cpu.max").trim());
-    let (rd, wr) = bw_bench();
-    let lk: Vec<String> = [1usize, 4, 8, 16, 32, 64, 128].iter().map(|&mb| format!("{mb}M={:.0}", lookup_bench(mb, 4 << 20))).collect();
-    eprintln!("BW rd={rd:.1} ntwr={wr:.1} GB/s | lookups M/s {}", lk.join(" "));
+    let nproc_info = cpu.lines().filter(|l| l.starts_with("processor")).count();
+    let cores = cpu.lines().find(|l| l.starts_with("cpu cores")).unwrap_or("?").replace("cpu cores\t: ", "");
+    let sibs = cpu.lines().find(|l| l.starts_with("siblings")).unwrap_or("?").replace("siblings\t: ", "");
+    let aff = unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set);
+        libc::CPU_COUNT(&set)
+    };
+    eprintln!("D15 {model} | cpus {nproc_info} cores {cores} sib {sibs} aff {aff} | cpu.max {}", cat("/sys/fs/cgroup/cpu.max").trim());
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let k: usize = std::env::var("SS_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let t = Instant::now();
     upscale(data, &big, k);
     eprintln!("x{k} up={:.1}s; wall/int ms: open links parse dedup sess write | user sys", t.elapsed().as_secs_f64());
-    let vars: [(&str, usize, &[(&str, &str)]); 15] = [
+    let vars: [(&str, usize, &[(&str, &str)]); 13] = [
         ("base", threads, &[]),
+        ("lt", threads, &[("SS_LT", "1")]),
+        ("wc0", threads, &[("SS_WC", "0")]),
+        ("p8d8", threads, &[("SS_P2B", "8"), ("SS_PDB", "8")]),
+        ("p9d9", threads, &[("SS_P2B", "9"), ("SS_PDB", "9")]),
+        ("d8", threads, &[("SS_PDB", "8")]),
+        ("base", threads, &[]),
+        ("t12", 12, &[]),
+        ("t16", 16, &[]),
+        ("pread", threads, &[("SS_READ", "1")]),
         ("nolk", threads, &[("SS_EXP", "1")]),
         ("noemit", threads, &[("SS_EXPL", "3")]),
-        ("scan", threads, &[("SS_EXPL", "2")]),
-        ("scan-ck", threads, &[("SS_EXPL", "4")]),
-        ("none", threads, &[("SS_EXPL", "5")]),
         ("base", threads, &[]),
-        ("mmap", threads, &[("SS_READ", "0")]),
-        ("pf1", threads, &[("SS_PFREE", "1")]),
-        ("mmap+pf1", threads, &[("SS_READ", "0"), ("SS_PFREE", "1")]),
-        ("t4", 4, &[]),
-        ("t6", 6, &[]),
-        ("p9", threads, &[("SS_P2B", "9")]),
-        ("p11", threads, &[("SS_P2B", "11")]),
-        ("d11", threads, &[("SS_PDB", "11")]),
     ];
     for (tag, th, env) in vars.iter() {
         eprintln!("{}", child(tag, &big, &ob, *th, env));

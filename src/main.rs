@@ -744,83 +744,62 @@ fn lookups(inp: &Inputs) -> Lookups {
 
 const LINKED: u64 = 1 << 63;
 
-/// Person keys: a linked ID maps to LINKED | component index; any other ID's
-/// key is its own hash with the top bit cleared.
+/// Person keys: a linked ID maps to LINKED | ref of its component's
+/// byte-wise smallest ID (refs stay below 2^63); any other ID's key is its own
+/// hash with the top bit cleared.
 struct Persons {
     /// user hash -> person key, for every linked ID
     map: PersonMap,
-    /// component index -> ref of its byte-wise smallest ID
-    names: Vec<u64>,
 }
 
-/// Open addressing keyed by the hash's top bits, keys in sorted order, so a
-/// probe stops at an empty slot or a larger key. The table is cut into 256
-/// ranges by the top 8 bits, each followed by MARGIN spill slots, so the ranges
-/// are built in parallel.
+/// Linear probing from the hash's top bits, filled concurrently (a slot's index
+/// is the ID's node number while links are resolved).
 struct PersonMap {
     shift: u32,
-    sub: u32,
+    mask: usize,
     slots: Vec<Slot>,
 }
 
-const PM_PARTS_BITS: u32 = 8;
-const PM_PARTS: usize = 1 << PM_PARTS_BITS;
-const PM_MARGIN: usize = 128;
-
 impl PersonMap {
+    /// Room for up to `n` distinct keys (load at most 3/4 even if all are
+    /// distinct; link endpoints repeat, so it is far lower in practice).
+    fn with_room(n: usize) -> Self {
+        let bits = ((n.max(1) * 4 / 3).next_power_of_two().max(1 << 14)).trailing_zeros();
+        PersonMap { shift: 64 - bits, mask: (1 << bits) - 1, slots: vec![Slot::default(); 1 << bits] }
+    }
     #[inline(always)]
     fn index(&self, k: u64) -> usize {
-        let h = (k >> self.shift) as usize;
-        h + (h >> self.sub) * PM_MARGIN
+        (k >> self.shift) as usize
     }
-
-    /// `sorted` must be sorted by key and contain distinct, non-zero keys.
-    fn build(sorted: &[(u64, u64)]) -> Self {
-        let n = sorted.len().max(1);
-        let load_x4: usize = std::env::var("SS_PMLOAD").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
-        let bits = ((n * 4 / 3 * 4 / load_x4.max(1)).next_power_of_two().max(1 << 14)).trailing_zeros();
-        let sub = bits - PM_PARTS_BITS;
-        let range = (1usize << sub) + PM_MARGIN;
-        let mut map = PersonMap { shift: 64 - bits, sub, slots: Vec::new() };
-        let mut slots: Vec<Slot> = vec![Slot::default(); PM_PARTS * range];
-        // partition starts in `sorted`
-        let mut starts = vec![0usize; PM_PARTS + 1];
-        for p in 0..PM_PARTS {
-            starts[p + 1] = sorted.partition_point(|&(k, _)| ((k >> (64 - PM_PARTS_BITS)) as usize) <= p);
-        }
-        let ok = std::sync::atomic::AtomicBool::new(true);
-        let base = slots.as_mut_ptr() as usize;
-        (0..PM_PARTS).into_par_iter().for_each(|p| {
-            let lim = (p + 1) * range;
-            let mut next = p * range;
-            for &(k, v) in &sorted[starts[p]..starts[p + 1]] {
-                let at = map.index(k).max(next);
-                if at >= lim {
-                    ok.store(false, Ordering::Relaxed);
-                    return;
-                }
-                // each partition writes only its own range
-                unsafe { *(base as *mut Slot).add(at) = Slot { key: k, val: v } };
-                next = at + 1;
+    #[inline(always)]
+    fn key_at(&self, i: usize) -> &std::sync::atomic::AtomicU64 {
+        unsafe { &*(self.slots.as_ptr().add(i) as *const std::sync::atomic::AtomicU64) }
+    }
+    #[inline(always)]
+    fn val_at(&self, i: usize) -> &std::sync::atomic::AtomicU64 {
+        unsafe { &*((self.slots.as_ptr().add(i) as *const std::sync::atomic::AtomicU64).add(1)) }
+    }
+    /// Concurrent insert of non-zero `k` (value `v` if new); returns its slot.
+    #[inline(always)]
+    fn insert(&self, k: u64, v: u64) -> usize {
+        let mut i = self.index(k);
+        loop {
+            let cur = self.key_at(i).load(Ordering::Relaxed);
+            if cur == k {
+                return i;
             }
-        });
-        if !ok.load(Ordering::Relaxed) {
-            // a range overflowed its margin (never seen in practice): one serial pass
-            // into a single sorted table with the ranges' gaps kept as slack
-            slots.iter_mut().for_each(|s| *s = Slot::default());
-            let mut next = 0usize;
-            for &(k, v) in sorted {
-                let at = map.index(k).max(next);
-                if at >= slots.len() {
-                    slots.resize(at + PM_MARGIN, Slot::default());
+            if cur == 0 {
+                match self.key_at(i).compare_exchange(0, k, Ordering::Relaxed, Ordering::Relaxed) {
+                    Ok(_) => {
+                        self.val_at(i).store(v, Ordering::Relaxed);
+                        return i;
+                    }
+                    Err(c) if c == k => return i,
+                    Err(_) => {}
                 }
-                slots[at] = Slot { key: k, val: v };
-                next = at + 1;
             }
+            i = (i + 1) & self.mask;
         }
-        slots.resize(slots.len() + PM_MARGIN, Slot::default());
-        map.slots = slots;
-        map
     }
     #[inline(always)]
     fn prefetch(&self, k: u64) {
@@ -840,11 +819,10 @@ impl PersonMap {
             if sl.key == k {
                 return Some(sl.val);
             }
-            // keys sit in sorted order: an empty slot or a larger key ends the run
-            if sl.key == 0 || sl.key > k {
+            if sl.key == 0 {
                 return None;
             }
-            i += 1;
+            i = (i + 1) & self.mask;
         }
     }
 }
@@ -857,27 +835,6 @@ fn unlinked_key(user_hash: u64) -> u64 {
 #[inline(always)]
 fn person_bucket(key: u64) -> usize {
     (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - p2_bits())) as usize
-}
-
-/// Big-endian first 16 bytes and length: compares like the full byte string
-/// whenever the prefixes differ or both strings are at most 16 bytes.
-#[inline(always)]
-fn name_key(b: &[u8]) -> (u128, u32) {
-    let mut buf = [0u8; 16];
-    let n = b.len().min(16);
-    buf[..n].copy_from_slice(&b[..n]);
-    (u128::from_be_bytes(buf), b.len() as u32)
-}
-
-#[inline(always)]
-fn name_less(a: (u128, u32, u64), b: (u128, u32, u64)) -> bool {
-    if a.0 != b.0 {
-        return a.0 < b.0;
-    }
-    if a.1 <= 16 && b.1 <= 16 {
-        return a.1 < b.1;
-    }
-    deref(a.2) < deref(b.2)
 }
 
 fn links(inp: &Inputs) -> Persons {
@@ -906,99 +863,31 @@ fn links(inp: &Inputs) -> Persons {
         })
         .collect();
     lt("parsed");
-    // scatter endpoints by the hash's top bits: (hash, ref, endpoint index)
-    const PB: u32 = PM_PARTS_BITS;
-    let np = PM_PARTS;
-    let part = |h: u64| (h >> (64 - PB)) as usize;
-    let mut ubase = vec![0usize; parts.len() + 1];
-    for (u, v) in parts.iter().enumerate() {
-        ubase[u + 1] = ubase[u] + v.len();
-    }
-    let total = ubase[parts.len()];
-    let counts: Vec<Vec<u32>> = parts
+    // every ID into the table (slot = node), edges as slot pairs
+    let total: usize = parts.iter().map(|v| v.len()).sum();
+    let map = PersonMap::with_room(total);
+    let cap = map.slots.len();
+    let edges: Vec<Vec<(u32, u32)>> = parts
         .par_iter()
         .map(|v| {
-            let mut c = vec![0u32; np];
-            for &(h, _) in v {
-                c[part(h)] += 1;
-            }
-            c
-        })
-        .collect();
-    // offsets[u][p]: where unit u writes its partition-p endpoints
-    let mut pstart = vec![0usize; np + 1];
-    let mut offsets: Vec<Vec<usize>> = vec![vec![0usize; np]; parts.len()];
-    {
-        let mut acc = 0usize;
-        for p in 0..np {
-            pstart[p] = acc;
-            for u in 0..parts.len() {
-                offsets[u][p] = acc;
-                acc += counts[u][p] as usize;
-            }
-        }
-        pstart[np] = acc;
-    }
-    let mut scat: Vec<(u64, u64, u32)> = Vec::with_capacity(total);
-    unsafe { scat.set_len(total) };
-    let sbase = scat.as_mut_ptr() as usize;
-    parts.par_iter().zip(offsets.par_iter_mut()).enumerate().for_each(|(u, (v, off))| {
-        for (k, &(h, r)) in v.iter().enumerate() {
-            let p = part(h);
-            unsafe { *(sbase as *mut (u64, u64, u32)).add(off[p]) = (h, r, (ubase[u] + k) as u32) };
-            off[p] += 1;
-        }
-    });
-    drop(parts);
-    lt("scattered");
-    // per partition: sort by hash, number the distinct hashes
-    let scat_parts: Vec<&mut [(u64, u64, u32)]> = {
-        let mut rest: &mut [(u64, u64, u32)] = &mut scat[..];
-        let mut out = Vec::with_capacity(np);
-        for p in 0..np {
-            let (a, b) = rest.split_at_mut(pstart[p + 1] - pstart[p]);
-            out.push(a);
-            rest = b;
-        }
-        out
-    };
-    let mut ids: Vec<u32> = vec![0; total];
-    let ids_base = ids.as_mut_ptr() as usize;
-    let local: Vec<Vec<(u64, u64)>> = scat_parts
-        .into_par_iter()
-        .map(|sp| {
-            sp.sort_unstable_by_key(|x| x.0);
-            let mut uq: Vec<(u64, u64)> = Vec::with_capacity(sp.len() / 2 + 1);
-            let mut prev = 0u64;
-            for &(h, r, at) in sp.iter() {
-                if uq.is_empty() || h != prev {
-                    uq.push((h, r));
-                    prev = h;
+            const AH: usize = 8;
+            let mut e = Vec::with_capacity(v.len() / 2);
+            for k in (0..v.len()).step_by(2) {
+                if k + AH + 1 < v.len() {
+                    map.prefetch(v[k + AH].0);
+                    map.prefetch(v[k + AH + 1].0);
                 }
-                // local id for now; made global below
-                unsafe { *(ids_base as *mut u32).add(at as usize) = (uq.len() - 1) as u32 };
+                let a = map.insert(v[k].0, v[k].1);
+                let b = map.insert(v[k + 1].0, v[k + 1].1);
+                e.push((a as u32, b as u32));
             }
-            uq
+            e
         })
         .collect();
-    let mut gbase = vec![0u32; np + 1];
-    for p in 0..np {
-        gbase[p + 1] = gbase[p] + local[p].len() as u32;
-    }
-    let n = gbase[np] as usize;
-    let uniq: Vec<(u64, u64)> = local.concat();
-    // make the ids global: add each partition's base
-    (0..np).into_par_iter().for_each(|p| {
-        for &(_, _, at) in &scat[pstart[p]..pstart[p + 1]] {
-            unsafe { *(ids_base as *mut u32).add(at as usize) += gbase[p] };
-        }
-    });
-    let edges: Vec<(u32, u32)> = (0..total / 2).into_par_iter().with_min_len(4096).map(|e| (ids[2 * e], ids[2 * e + 1])).collect();
-    drop(scat);
-    drop(ids);
-    lt("edges");
+    drop(parts);
+    lt("inserted");
     // lock-free union-find: a root only ever links to a smaller root
-    let parent: Vec<AtomicU32> = (0..n as u32).into_par_iter().map(AtomicU32::new).collect();
+    let parent: Vec<AtomicU32> = (0..cap as u32).into_par_iter().with_min_len(1 << 14).map(AtomicU32::new).collect();
     #[inline(always)]
     fn find(p: &[AtomicU32], mut x: u32) -> u32 {
         loop {
@@ -1013,41 +902,38 @@ fn links(inp: &Inputs) -> Persons {
             x = gx;
         }
     }
-    edges.par_iter().with_min_len(2048).for_each(|&(a, b)| {
-        let (mut a, mut b) = (a, b);
-        loop {
-            a = find(&parent, a);
-            b = find(&parent, b);
-            if a == b {
-                return;
-            }
-            let (hi, lo) = if a > b { (a, b) } else { (b, a) };
-            if parent[hi as usize].compare_exchange(hi, lo, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
-                return;
+    edges.par_iter().for_each(|es| {
+        for &(a, b) in es {
+            let (mut a, mut b) = (a, b);
+            loop {
+                a = find(&parent, a);
+                b = find(&parent, b);
+                if a == b {
+                    break;
+                }
+                let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+                if parent[hi as usize].compare_exchange(hi, lo, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                    break;
+                }
             }
         }
     });
     drop(edges);
-    let root: Vec<u32> = (0..n as u32).into_par_iter().with_min_len(4096).map(|i| find(&parent, i)).collect();
-    drop(parent);
     lt("uf");
-    // smallest name per component
-    let keys: Vec<(u128, u32, u64)> = uniq
-        .par_iter()
-        .with_min_len(1024)
-        .map(|&(_, r)| {
-            let (k, l) = name_key(deref(r));
-            (k, l, r)
-        })
-        .collect();
-    let best: Vec<AtomicU32> = (0..n as u32).into_par_iter().map(AtomicU32::new).collect();
-    (0..n).into_par_iter().with_min_len(2048).for_each(|i| {
-        let r = root[i] as usize;
+    // byte-wise smallest ID per component: best[root] = its slot
+    let best: Vec<AtomicU32> = (0..cap as u32).into_par_iter().with_min_len(1 << 14).map(AtomicU32::new).collect();
+    let name_of = |i: usize| deref(map.val_at(i).load(Ordering::Relaxed));
+    (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
+        if map.key_at(i).load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let r = find(&parent, i as u32) as usize;
         if r == i {
             return;
         }
+        let mine = name_of(i);
         let mut cur = best[r].load(Ordering::Relaxed);
-        while name_less(keys[i], keys[cur as usize]) {
+        while mine < name_of(cur as usize) {
             match best[r].compare_exchange_weak(cur, i as u32, Ordering::Relaxed, Ordering::Relaxed) {
                 Ok(_) => break,
                 Err(c) => cur = c,
@@ -1055,23 +941,26 @@ fn links(inp: &Inputs) -> Persons {
         }
     });
     lt("best");
-    let mut comp: Vec<u32> = vec![u32::MAX; n];
-    let mut names: Vec<u64> = Vec::new();
-    for i in 0..n {
-        if root[i] as usize == i {
-            comp[i] = names.len() as u32;
-            names.push(keys[best[i].load(Ordering::Relaxed) as usize].2);
+    // a root's value becomes its component's name ref (it reads only its own
+    // component's non-root slots), then every value becomes LINKED | that ref
+    (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
+        if map.key_at(i).load(Ordering::Relaxed) != 0 && parent[i].load(Ordering::Relaxed) == i as u32 {
+            let b = best[i].load(Ordering::Relaxed) as usize;
+            if b != i {
+                map.val_at(i).store(map.val_at(b).load(Ordering::Relaxed), Ordering::Relaxed);
+            }
         }
-    }
-    let entries: Vec<(u64, u64)> =
-        (0..n).into_par_iter().with_min_len(4096).map(|i| (uniq[i].0, LINKED | comp[root[i] as usize] as u64)).collect();
-    lt("names");
-    // `uniq` is sorted by hash (partitions in order, sorted inside), so `entries` is too
-    let map = PersonMap::build(&entries);
-    lt("map");
-    std::mem::forget(entries);
-    std::mem::forget(keys);
-    Persons { map, names }
+    });
+    (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
+        if map.key_at(i).load(Ordering::Relaxed) != 0 {
+            let r = find(&parent, i as u32) as usize;
+            map.val_at(i).store(LINKED | map.val_at(r).load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+    });
+    lt("named");
+    std::mem::forget(parent);
+    std::mem::forget(best);
+    Persons { map }
 }
 
 // ---------------------------------------------------------------- records
@@ -1133,14 +1022,13 @@ pub struct Agg {
     pub assist: Vec<u32>,
 }
 
-struct Ctx<'a> {
+struct Ctx {
     ndays: usize,
     nbins: usize,
     ncamp: usize, // organic = ncamp
     ncat: usize,
     ws: i64,
     ws_day: i64,
-    persons: &'a Persons,
 }
 
 struct Scratch {
@@ -1441,7 +1329,7 @@ fn run_at(evs: &[Ev1], k: usize) -> Run {
 /// `evs`: one person's events grouped by half-hour bin, bins ascending (order
 /// inside a bin is arbitrary). `cks`: the person's clicks by (ts, click_id).
 fn person_sessions(ctx: &Ctx, key: u64, uref: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg, sc: &mut Scratch) {
-    let name = if key & LINKED != 0 { ctx.persons.names[(key & !LINKED) as usize] } else { uref };
+    let name = if key & LINKED != 0 { key & !LINKED } else { uref };
     let (mut lo, mut hi) = (0usize, 0usize);
     let mut cur_day: i64 = i64::MIN;
     let (mut d_sess, mut d_evs, mut d_rev) = (0u32, 0u32, 0i64);
@@ -1675,7 +1563,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     };
 
     flow::WC.store(std::env::var("SS_WC").map_or(flow::WC_DEFAULT, |v| v == "1"), Ordering::Relaxed);
-    READ.store(std::env::var("SS_READ").map_or(true, |v| v != "0"), Ordering::Relaxed);
+    READ.store(std::env::var("SS_READ").is_ok_and(|v| v == "1"), Ordering::Relaxed);
     flow::EXP.store(std::env::var("SS_EXP").is_ok(), Ordering::Relaxed);
     flow::EXPL.store(std::env::var("SS_EXPL").ok().and_then(|v| v.parse().ok()).unwrap_or(0), Ordering::Relaxed);
     let inp = open_all(data);
@@ -1727,7 +1615,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let ncamp = lk.campaign_names.len();
     assert!(we - ws + CLICK_REACH < u32::MAX as i64, "window too long");
     let nbins = ((we - ws) as u64 / SESSION_GAP as u64) as usize + 1;
-    let ctx = Ctx { ndays, nbins, ncamp, ncat: lk.categories.len(), ws, ws_day, persons: &persons };
+    let ctx = Ctx { ndays, nbins, ncamp, ncat: lk.categories.len(), ws, ws_day };
     // exactly one accumulator per worker thread (rayon's fold would create one
     // per split: hundreds of 0.8 MB counter arrays and output files at 8 threads)
     let states: Vec<std::sync::Mutex<(Agg, Scratch, Vec<Ev1>, Vec<Ck1>)>> = (0..nthreads)
