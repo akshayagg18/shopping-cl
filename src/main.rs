@@ -24,6 +24,8 @@ mod parse;
 #[global_allocator]
 static GLOBAL: alloc::HugeAlloc = alloc::HugeAlloc;
 
+#[cfg(all(feature="sampling",target_os="linux",target_arch="x86_64"))]
+mod pc_sample;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -1513,7 +1515,12 @@ fn main() {
     let data = PathBuf::from(env("DATA_DIR", "/data"));
     let out = PathBuf::from(env("OUTPUT_DIR", "/output"));
     let threads: usize = env("NCPU", "8").parse().unwrap_or(8);
-    rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().unwrap();
+    #[cfg(all(feature="sampling",target_os="linux",target_arch="x86_64"))]
+    pc_sample::init();
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads);
+    #[cfg(all(feature="sampling",target_os="linux",target_arch="x86_64"))]
+    let pool = pool.start_handler(|_| pc_sample::start_thread());
+    pool.build_global().unwrap();
     if let Ok(mode) = std::env::var("SS_MICRO") {
         // deterministic micro-benchmarks (run under cachegrind)
         let inp = open_all(&data);
@@ -1599,6 +1606,8 @@ fn main() {
     profile::init();
     let laps = run(&data, &out, true);
     profile::summary();
+    #[cfg(all(feature="sampling",target_os="linux",target_arch="x86_64"))]
+    pc_sample::finish();
     if std::env::var("SS_TIMING").is_ok() {
         for (what, ms) in laps {
             eprintln!("{ms:>8.1} ms  {what}");
@@ -1641,6 +1650,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let units: Vec<(bool, usize, usize, usize)> =
         ev_units.iter().map(|&(f, s, e)| (true, f, s, e)).chain(ck_units.iter().map(|&(f, s, e)| (false, f, s, e))).collect();
     let phase=profile::Span::new("parse_phase",0);
+    #[cfg(all(feature="sampling",target_os="linux",target_arch="x86_64"))]
+    pc_sample::parse_phase(true);
     units.par_iter().for_each(|&(is_ev, f, s, e)| {
         let span=profile::Span::new(if is_ev {"parse_events"} else {"parse_clicks"},s);
         let t = rayon::current_thread_index().unwrap_or(0) % nthreads;
@@ -1660,6 +1671,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let mut sinks: Vec<flow::Sink> = sinks.into_iter().map(|m| m.into_inner().unwrap()).collect();
     sinks.par_iter_mut().for_each(|s| s.finish());
     if profile::enabled() {phase.finish(sinks.iter().map(|s|s.cp.total()+s.ck.total()).sum(), units.iter().map(|u|u.3-u.2).sum());}
+    #[cfg(all(feature="sampling",target_os="linux",target_arch="x86_64"))]
+    pc_sample::parse_phase(false);
     lap("parsed");
     let phase=profile::Span::new("dedup_phase",0);
     let dead = flow::Dead::new(&sinks);

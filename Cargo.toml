@@ -5,6 +5,7 @@ edition = "2024"
 
 [features]
 diagnostics = []
+sampling = []
 
 [dependencies]
 libc = "0.2.191"

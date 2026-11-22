@@ -1,0 +1,1641 @@
+{
+  "scope": "parse phase only",
+  "nominal_period_cpu_ns": 1000000,
+  "bin_bytes": 16,
+  "executable_ticks": 5322,
+  "outside_ticks": 437,
+  "lines": [
+    {
+      "function": "ssp::scan::stage1",
+      "source": "src/scan.rs:174",
+      "ticks": 1036,
+      "percent_executable": 19.466366027809094
+    },
+    {
+      "function": "core::ptr::copy_nonoverlapping::<u8>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ptr/mod.rs:574",
+      "ticks": 439,
+      "percent_executable": 8.248778654641113
+    },
+    {
+      "function": "<hashbrown::raw::RawTable<(&[u8], u64)>>::find::<hashbrown::map::equivalent_key<[u8], &[u8], u64>::{closure#0}>::{closure#0}",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:1202",
+      "ticks": 238,
+      "percent_executable": 4.472003006388576
+    },
+    {
+      "function": "core::core_arch::x86::avx::_mm256_stream_si256",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/../../stdarch/crates/core_arch/src/x86/avx.rs:1934",
+      "ticks": 135,
+      "percent_executable": 2.5366403607666292
+    },
+    {
+      "function": "<*mut u8>::add",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ptr/mut_ptr.rs:971",
+      "ticks": 134,
+      "percent_executable": 2.5178504321683577
+    },
+    {
+      "function": "<hashbrown::control::bitmask::BitMask>::lowest_set_bit",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/control/bitmask.rs:40",
+      "ticks": 106,
+      "percent_executable": 1.9917324314167606
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::Ev2>>::push_wc",
+      "source": "src/flow.rs:145",
+      "ticks": 95,
+      "percent_executable": 1.785043216835776
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::Ev2>>::push_wc",
+      "source": "src/flow.rs:146",
+      "ticks": 78,
+      "percent_executable": 1.4656144306651635
+    },
+    {
+      "function": "<ssp::U64Map>::get",
+      "source": "src/main.rs:208",
+      "ticks": 74,
+      "percent_executable": 1.3904547162720782
+    },
+    {
+      "function": "ssp::ids::payload",
+      "source": "src/ids.rs:38",
+      "ticks": 72,
+      "percent_executable": 1.3528748590755355
+    },
+    {
+      "function": "<ssp::PersonMap>::get",
+      "source": "src/main.rs:814",
+      "ticks": 72,
+      "percent_executable": 1.3528748590755355
+    },
+    {
+      "function": "<ssp::scan::Flds<7>>::span",
+      "source": "src/scan.rs:31",
+      "ticks": 69,
+      "percent_executable": 1.2965050732807215
+    },
+    {
+      "function": "<[u8] as core::cmp::PartialEq>::eq",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/slice/cmp.rs:21",
+      "ticks": 67,
+      "percent_executable": 1.2589252160841788
+    },
+    {
+      "function": "<usize as core::slice::index::SliceIndex<[ssp::Slot]>>::get_unchecked",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/slice/index.rs:219",
+      "ticks": 65,
+      "percent_executable": 1.2213453588876362
+    },
+    {
+      "function": "<u64>::wrapping_add",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/num/uint_macros.rs:2682",
+      "ticks": 62,
+      "percent_executable": 1.1649755730928222
+    },
+    {
+      "function": "<u64>::wrapping_mul",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/num/uint_macros.rs:2758",
+      "ticks": 60,
+      "percent_executable": 1.1273957158962795
+    },
+    {
+      "function": "ssp::parse::ingest_memo",
+      "source": "src/parse.rs:448",
+      "ticks": 59,
+      "percent_executable": 1.1086057872980082
+    },
+    {
+      "function": "<core::core_arch::simd::Simd<i64, 2>>::new",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/../../stdarch/crates/core_arch/src/simd.rs:117",
+      "ticks": 59,
+      "percent_executable": 1.1086057872980082
+    },
+    {
+      "function": "ssp::scan::masks64::{closure#0}",
+      "source": "src/scan.rs:90",
+      "ticks": 57,
+      "percent_executable": 1.0710259301014655
+    },
+    {
+      "function": "ssp::scan::scan_block::<7, ssp::flow::events_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:290",
+      "ticks": 45,
+      "percent_executable": 0.8455467869222097
+    },
+    {
+      "function": "core::intrinsics::rotate_left::<u64>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/intrinsics/mod.rs:2142",
+      "ticks": 43,
+      "percent_executable": 0.8079669297256671
+    },
+    {
+      "function": "core::sync::atomic::atomic_compare_exchange::<u32>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/sync/atomic.rs:4408",
+      "ticks": 43,
+      "percent_executable": 0.8079669297256671
+    },
+    {
+      "function": "<usize as core::slice::index::SliceIndex<[ssp::Ev2]>>::get_unchecked_mut",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/slice/index.rs:232",
+      "ticks": 42,
+      "percent_executable": 0.7891770011273957
+    },
+    {
+      "function": "ssp::scan::s1_word",
+      "source": "src/scan.rs:133",
+      "ticks": 42,
+      "percent_executable": 0.7891770011273957
+    },
+    {
+      "function": "ssp::ids::mix",
+      "source": "src/ids.rs:62",
+      "ticks": 41,
+      "percent_executable": 0.7703870725291244
+    },
+    {
+      "function": "<*const ssp::Slot>::add",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ptr/const_ptr.rs:872",
+      "ticks": 40,
+      "percent_executable": 0.7515971439308531
+    },
+    {
+      "function": "<ssp::PersonMap>::get",
+      "source": "src/main.rs:807",
+      "ticks": 40,
+      "percent_executable": 0.7515971439308531
+    },
+    {
+      "function": "ssp::parse::memo_days",
+      "source": "src/parse.rs:385",
+      "ticks": 39,
+      "percent_executable": 0.7328072153325818
+    },
+    {
+      "function": "ssp::parse::tod",
+      "source": "src/parse.rs:?",
+      "ticks": 39,
+      "percent_executable": 0.7328072153325818
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/flow.rs:?",
+      "ticks": 39,
+      "percent_executable": 0.7328072153325818
+    },
+    {
+      "function": "ssp::parse::ingest_memo",
+      "source": "src/parse.rs:463",
+      "ticks": 36,
+      "percent_executable": 0.6764374295377678
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::flow::CopyR>>::flush",
+      "source": "src/flow.rs:178",
+      "ticks": 35,
+      "percent_executable": 0.6576475009394964
+    },
+    {
+      "function": "ssp::parse::memo_days",
+      "source": "src/parse.rs:384",
+      "ticks": 34,
+      "percent_executable": 0.6388575723412251
+    },
+    {
+      "function": "<ssp::PersonMap>::index",
+      "source": "src/main.rs:741",
+      "ticks": 33,
+      "percent_executable": 0.6200676437429538
+    },
+    {
+      "function": "<u64>::trailing_zeros",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/num/uint_macros.rs:178",
+      "ticks": 33,
+      "percent_executable": 0.6200676437429538
+    },
+    {
+      "function": "<ssp::PersonMap>::get",
+      "source": "src/main.rs:811",
+      "ticks": 32,
+      "percent_executable": 0.6012777151446824
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::Ev2>>::flush",
+      "source": "src/flow.rs:157",
+      "ticks": 30,
+      "percent_executable": 0.5636978579481398
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::flow::CopyR>>::push_wc",
+      "source": "src/flow.rs:146",
+      "ticks": 28,
+      "percent_executable": 0.5261180007515971
+    },
+    {
+      "function": "<core::option::Option<i64>>::unwrap_or",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/option.rs:1042",
+      "ticks": 27,
+      "percent_executable": 0.5073280721533259
+    },
+    {
+      "function": "ssp::parse::ts_memo",
+      "source": "src/parse.rs:424",
+      "ticks": 26,
+      "percent_executable": 0.4885381435550545
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::Ev2>>::push",
+      "source": "src/flow.rs:127",
+      "ticks": 26,
+      "percent_executable": 0.4885381435550545
+    },
+    {
+      "function": "<ssp::scan::Flds<7>>::span",
+      "source": "src/scan.rs:30",
+      "ticks": 25,
+      "percent_executable": 0.46974821495678315
+    },
+    {
+      "function": "<ssp::event_token::Tokens>::stamp",
+      "source": "/home/agent/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/xxhash-rust-0.8.21/src/xxh3.rs:?",
+      "ticks": 25,
+      "percent_executable": 0.46974821495678315
+    },
+    {
+      "function": "<usize as core::slice::index::SliceIndex<[ssp::flow::Tail]>>::get_unchecked",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/slice/index.rs:219",
+      "ticks": 25,
+      "percent_executable": 0.46974821495678315
+    },
+    {
+      "function": "core::core_arch::x86::avx2::_mm256_movemask_epi8",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/../../stdarch/crates/core_arch/src/x86/avx2.rs:2163",
+      "ticks": 25,
+      "percent_executable": 0.46974821495678315
+    },
+    {
+      "function": "ssp::parse::ts_fast",
+      "source": "src/parse.rs:476",
+      "ticks": 24,
+      "percent_executable": 0.4509582863585118
+    },
+    {
+      "function": "ssp::scan::s1_word",
+      "source": "src/scan.rs:141",
+      "ticks": 24,
+      "percent_executable": 0.4509582863585118
+    },
+    {
+      "function": "ssp::scan::s1_word",
+      "source": "src/scan.rs:140",
+      "ticks": 23,
+      "percent_executable": 0.4321683577602405
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/flow.rs:295",
+      "ticks": 22,
+      "percent_executable": 0.4133784291619692
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::Ck>>::push_wc",
+      "source": "src/flow.rs:146",
+      "ticks": 22,
+      "percent_executable": 0.4133784291619692
+    },
+    {
+      "function": "<u64>::wrapping_sub",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/num/uint_macros.rs:2719",
+      "ticks": 22,
+      "percent_executable": 0.4133784291619692
+    },
+    {
+      "function": "core::ptr::write_volatile::<u32>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ptr/mod.rs:2269",
+      "ticks": 22,
+      "percent_executable": 0.4133784291619692
+    },
+    {
+      "function": "<core::result::Result<&[u8; 8], core::array::TryFromSliceError>>::copied",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/result.rs:1720",
+      "ticks": 21,
+      "percent_executable": 0.3945885005636979
+    },
+    {
+      "function": "ssp::ids::payload",
+      "source": "src/ids.rs:34",
+      "ticks": 21,
+      "percent_executable": 0.3945885005636979
+    },
+    {
+      "function": "ssp::ids::unmix",
+      "source": "src/ids.rs:66",
+      "ticks": 21,
+      "percent_executable": 0.3945885005636979
+    },
+    {
+      "function": "ssp::parse::ts_memo",
+      "source": "src/parse.rs:421",
+      "ticks": 20,
+      "percent_executable": 0.37579857196542654
+    },
+    {
+      "function": "<ssp::event_token::Tokens>::source_key",
+      "source": "src/event_token.rs:?",
+      "ticks": 19,
+      "percent_executable": 0.3570086433671552
+    },
+    {
+      "function": "ssp::scan::s1_word",
+      "source": "src/scan.rs:127",
+      "ticks": 19,
+      "percent_executable": 0.3570086433671552
+    },
+    {
+      "function": "ssp::parse::eight_digits",
+      "source": "src/parse.rs:498",
+      "ticks": 18,
+      "percent_executable": 0.3382187147688839
+    },
+    {
+      "function": "ssp::ids::mix",
+      "source": "src/ids.rs:61",
+      "ticks": 18,
+      "percent_executable": 0.3382187147688839
+    },
+    {
+      "function": "<ssp::scan::Flds<7>>::span",
+      "source": "src/scan.rs:?",
+      "ticks": 17,
+      "percent_executable": 0.31942878617061254
+    },
+    {
+      "function": "ssp::parse::ts_fast",
+      "source": "src/parse.rs:489",
+      "ticks": 17,
+      "percent_executable": 0.31942878617061254
+    },
+    {
+      "function": "<i64>::div_euclid",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/num/int_macros.rs:3214",
+      "ticks": 16,
+      "percent_executable": 0.3006388575723412
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/scan.rs:?",
+      "ticks": 16,
+      "percent_executable": 0.3006388575723412
+    },
+    {
+      "function": "ssp::ids::payload",
+      "source": "src/ids.rs:46",
+      "ticks": 16,
+      "percent_executable": 0.3006388575723412
+    },
+    {
+      "function": "ssp::scan::s1_word",
+      "source": "src/scan.rs:?",
+      "ticks": 16,
+      "percent_executable": 0.3006388575723412
+    },
+    {
+      "function": "ssp::scan::s1_word",
+      "source": "src/scan.rs:130",
+      "ticks": 16,
+      "percent_executable": 0.3006388575723412
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::flow::CopyR>>::flush",
+      "source": "src/flow.rs:164",
+      "ticks": 16,
+      "percent_executable": 0.3006388575723412
+    },
+    {
+      "function": "ssp::scan::scan_block::<7, ssp::flow::events_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:302",
+      "ticks": 15,
+      "percent_executable": 0.2818489289740699
+    },
+    {
+      "function": "ssp::ids::payload",
+      "source": "src/ids.rs:?",
+      "ticks": 15,
+      "percent_executable": 0.2818489289740699
+    },
+    {
+      "function": "<core::option::Option<u64>>::unwrap_or_else::<ssp::flow::emit_event::{closure#0}>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/option.rs:1069",
+      "ticks": 15,
+      "percent_executable": 0.2818489289740699
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/flow.rs:324",
+      "ticks": 15,
+      "percent_executable": 0.2818489289740699
+    },
+    {
+      "function": "<ssp::flow::CopyR>::new",
+      "source": "src/flow.rs:33",
+      "ticks": 15,
+      "percent_executable": 0.2818489289740699
+    },
+    {
+      "function": "ssp::parse::ts_memo",
+      "source": "src/parse.rs:?",
+      "ticks": 14,
+      "percent_executable": 0.26305900037579855
+    },
+    {
+      "function": "ssp::parse::ts_memo",
+      "source": "src/parse.rs:426",
+      "ticks": 14,
+      "percent_executable": 0.26305900037579855
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::flow::CopyR>>::push_wc",
+      "source": "src/flow.rs:145",
+      "ticks": 14,
+      "percent_executable": 0.26305900037579855
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::flow::CopyR>>::flush",
+      "source": "src/flow.rs:157",
+      "ticks": 14,
+      "percent_executable": 0.26305900037579855
+    },
+    {
+      "function": "ssp::parse::ingest_memo",
+      "source": "src/parse.rs:454",
+      "ticks": 13,
+      "percent_executable": 0.24426907177752724
+    },
+    {
+      "function": "ssp::parse::pairs",
+      "source": "src/parse.rs:193",
+      "ticks": 13,
+      "percent_executable": 0.24426907177752724
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/flow.rs:322",
+      "ticks": 13,
+      "percent_executable": 0.24426907177752724
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/flow.rs:326",
+      "ticks": 13,
+      "percent_executable": 0.24426907177752724
+    },
+    {
+      "function": "core::sync::atomic::atomic_swap::<u32>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/sync/atomic.rs:4338",
+      "ticks": 13,
+      "percent_executable": 0.24426907177752724
+    },
+    {
+      "function": "<u8 as core::slice::cmp::SlicePartialEq<u8>>::equal_same_length",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/slice/cmp.rs:154",
+      "ticks": 13,
+      "percent_executable": 0.24426907177752724
+    },
+    {
+      "function": "ssp::scan::scan_block::<7, ssp::flow::events_unit::{closure#0}>::{closure#0}",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/iter/range.rs:?",
+      "ticks": 12,
+      "percent_executable": 0.2254791431792559
+    },
+    {
+      "function": "<core::ops::range::RangeInclusive<usize> as core::ops::range::RangeBounds<usize>>::contains::<usize>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ops/range.rs:891",
+      "ticks": 12,
+      "percent_executable": 0.2254791431792559
+    },
+    {
+      "function": "ssp::parse::tod",
+      "source": "src/parse.rs:403",
+      "ticks": 12,
+      "percent_executable": 0.2254791431792559
+    },
+    {
+      "function": "ssp::parse::eight_digits",
+      "source": "src/parse.rs:497",
+      "ticks": 12,
+      "percent_executable": 0.2254791431792559
+    },
+    {
+      "function": "<ssp::PersonMap>::index",
+      "source": "src/main.rs:740",
+      "ticks": 12,
+      "percent_executable": 0.2254791431792559
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::flow::CopyR>>::push_wc",
+      "source": "src/flow.rs:148",
+      "ticks": 12,
+      "percent_executable": 0.2254791431792559
+    },
+    {
+      "function": "<ssp::U64Map>::get",
+      "source": "src/main.rs:209",
+      "ticks": 12,
+      "percent_executable": 0.2254791431792559
+    },
+    {
+      "function": "<usize as core::cmp::Ord>::min",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/cmp.rs:2311",
+      "ticks": 11,
+      "percent_executable": 0.2066892145809846
+    },
+    {
+      "function": "<ssp::scan::Flds<7>>::span",
+      "source": "src/scan.rs:29",
+      "ticks": 11,
+      "percent_executable": 0.2066892145809846
+    },
+    {
+      "function": "ssp::scan::stage1",
+      "source": "src/scan.rs:?",
+      "ticks": 11,
+      "percent_executable": 0.2066892145809846
+    },
+    {
+      "function": "ssp::scan::scan_block::<7, ssp::flow::events_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:308",
+      "ticks": 10,
+      "percent_executable": 0.18789928598271327
+    },
+    {
+      "function": "<core::ops::range::Range<usize> as core::slice::index::SliceIndex<[u8]>>::get_unchecked",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/slice/index.rs:380",
+      "ticks": 10,
+      "percent_executable": 0.18789928598271327
+    },
+    {
+      "function": "core::core_arch::x86::sse2::_mm_and_si128",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/../../stdarch/crates/core_arch/src/x86/sse2.rs:869",
+      "ticks": 10,
+      "percent_executable": 0.18789928598271327
+    },
+    {
+      "function": "<ssp::scan::Flds<7>>::span",
+      "source": "src/scan.rs:32",
+      "ticks": 10,
+      "percent_executable": 0.18789928598271327
+    },
+    {
+      "function": "<ssp::event_token::Tokens>::location",
+      "source": "src/event_token.rs:174",
+      "ticks": 10,
+      "percent_executable": 0.18789928598271327
+    },
+    {
+      "function": "<ssp::event_token::Tokens>::location",
+      "source": "src/event_token.rs:175",
+      "ticks": 10,
+      "percent_executable": 0.18789928598271327
+    },
+    {
+      "function": "ssp::scan::s1_word",
+      "source": "src/scan.rs:121",
+      "ticks": 10,
+      "percent_executable": 0.18789928598271327
+    },
+    {
+      "function": "<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/hash/sip.rs:262",
+      "ticks": 10,
+      "percent_executable": 0.18789928598271327
+    },
+    {
+      "function": "<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/hash/sip.rs:292",
+      "ticks": 10,
+      "percent_executable": 0.18789928598271327
+    },
+    {
+      "function": "ssp::parse::ingest_memo",
+      "source": "src/parse.rs:462",
+      "ticks": 9,
+      "percent_executable": 0.16910935738444194
+    },
+    {
+      "function": "ssp::ids::payload",
+      "source": "src/ids.rs:41",
+      "ticks": 9,
+      "percent_executable": 0.16910935738444194
+    },
+    {
+      "function": "ssp::ids::unmix",
+      "source": "src/ids.rs:68",
+      "ticks": 9,
+      "percent_executable": 0.16910935738444194
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/flow.rs:327",
+      "ticks": 9,
+      "percent_executable": 0.16910935738444194
+    },
+    {
+      "function": "ssp::scan::scan_block::<4, ssp::flow::clicks_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:308",
+      "ticks": 9,
+      "percent_executable": 0.16910935738444194
+    },
+    {
+      "function": "<ssp::scan::Flds<4>>::span",
+      "source": "src/scan.rs:31",
+      "ticks": 9,
+      "percent_executable": 0.16910935738444194
+    },
+    {
+      "function": "ssp::flow::clicks_unit::{closure#0}",
+      "source": "src/flow.rs:?",
+      "ticks": 9,
+      "percent_executable": 0.16910935738444194
+    },
+    {
+      "function": "<ssp::event_token::Tokens>::location",
+      "source": "src/event_token.rs:176",
+      "ticks": 9,
+      "percent_executable": 0.16910935738444194
+    },
+    {
+      "function": "core::core_arch::x86_64::bmi2::_pext_u64",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/../../stdarch/crates/core_arch/src/x86_64/bmi2.rs:69",
+      "ticks": 9,
+      "percent_executable": 0.16910935738444194
+    },
+    {
+      "function": "<ssp::event_token::Tokens>::identity",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/sync/mutex/futex.rs:?",
+      "ticks": 8,
+      "percent_executable": 0.1503194287861706
+    },
+    {
+      "function": "ssp::ids::unmix",
+      "source": "src/ids.rs:67",
+      "ticks": 8,
+      "percent_executable": 0.1503194287861706
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::flow::CopyR>>::push",
+      "source": "src/flow.rs:127",
+      "ticks": 8,
+      "percent_executable": 0.1503194287861706
+    },
+    {
+      "function": "ssp::flow::clicks_unit::{closure#0}",
+      "source": "src/scan.rs:?",
+      "ticks": 8,
+      "percent_executable": 0.1503194287861706
+    },
+    {
+      "function": "<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/hash/sip.rs:279",
+      "ticks": 8,
+      "percent_executable": 0.1503194287861706
+    },
+    {
+      "function": "<core::hash::sip::Sip13Rounds as core::hash::sip::Sip>::c_rounds",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/hash/sip.rs:?",
+      "ticks": 8,
+      "percent_executable": 0.1503194287861706
+    },
+    {
+      "function": "core::hash::sip::u8to64_le",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/hash/sip.rs:139",
+      "ticks": 8,
+      "percent_executable": 0.1503194287861706
+    },
+    {
+      "function": "ssp::flow::emit_event",
+      "source": "src/flow.rs:?",
+      "ticks": 7,
+      "percent_executable": 0.13152950018789927
+    },
+    {
+      "function": "<ssp::U64Map>::get",
+      "source": "src/main.rs:211",
+      "ticks": 7,
+      "percent_executable": 0.13152950018789927
+    },
+    {
+      "function": "ssp::flow::clicks_unit::{closure#0}",
+      "source": "src/flow.rs:384",
+      "ticks": 7,
+      "percent_executable": 0.13152950018789927
+    },
+    {
+      "function": "<alloc::vec::Vec<usize>>::push_mut",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/vec/mod.rs:999",
+      "ticks": 7,
+      "percent_executable": 0.13152950018789927
+    },
+    {
+      "function": "<hashbrown::raw::RawTableInner>::find_inner",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:2032",
+      "ticks": 7,
+      "percent_executable": 0.13152950018789927
+    },
+    {
+      "function": "<[u8]>::as_array::<4>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/slice/mod.rs:856",
+      "ticks": 7,
+      "percent_executable": 0.13152950018789927
+    },
+    {
+      "function": "core::core_arch::x86::sse2::_mm_movemask_epi8",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/../../stdarch/crates/core_arch/src/x86/sse2.rs:1570",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "ssp::scan::scan_block::<7, ssp::flow::events_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:296",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "ssp::scan::scan_block::<7, ssp::flow::events_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:?",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/flow.rs:280",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "ssp::parse::ingest_memo",
+      "source": "src/parse.rs:452",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "<core::option::Option<i64>>::filter::<ssp::parse::ingest_memo::{closure#0}>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/option.rs:1581",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "ssp::parse::ingest_memo",
+      "source": "src/parse.rs:458",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "ssp::parse::tod",
+      "source": "src/parse.rs:400",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "ssp::parse::eight_digits",
+      "source": "src/parse.rs:499",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "ssp::ids::payload",
+      "source": "src/ids.rs:35",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "ssp::mkref",
+      "source": "src/main.rs:78",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "<ssp::PersonMap>::get",
+      "source": "src/main.rs:?",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "<ssp::event_token::Tokens>::location",
+      "source": "src/event_token.rs:180",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "ssp::scan::s1_word",
+      "source": "src/scan.rs:151",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/hash/sip.rs:?",
+      "ticks": 6,
+      "percent_executable": 0.11273957158962795
+    },
+    {
+      "function": "<std::sys::thread_local::native::lazy::Storage<core::cell::RefCell<std::collections::hash::map::HashMap<&[u8], u64>>, ()>>::get_or_init::<ssp::ids::LOCAL::__rust_std_internal_init_fn>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/thread_local/native/lazy.rs:59",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "<core::hash::sip::Sip13Rounds as core::hash::sip::Sip>::d_rounds",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/hash/sip.rs:79",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "ssp::parse::ingest_memo",
+      "source": "src/parse.rs:453",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "ssp::parse::ingest_memo",
+      "source": "src/parse.rs:459",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "<ssp::event_token::Tokens>::source_key",
+      "source": "src/event_token.rs:103",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "core::ptr::read::<core::ptr::Unaligned<u64>>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ptr/mod.rs:1758",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "ssp::parse::tod",
+      "source": "src/parse.rs:408",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "ssp::parse::price",
+      "source": "src/parse.rs:510",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::flow::CopyR>>::push_wc",
+      "source": "src/flow.rs:147",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "ssp::person_bucket",
+      "source": "src/main.rs:826",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "<alloc::raw_vec::RawVecInner>::non_null::<ssp::flow::Tail>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/raw_vec/mod.rs:635",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "ssp::scan::scan_block::<4, ssp::flow::clicks_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:290",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "ssp::scan::scan_block::<4, ssp::flow::clicks_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:302",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "<core::cell::BorrowRefMut>::new",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/cell.rs:2069",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "ssp::parse::digits",
+      "source": "src/parse.rs:187",
+      "ticks": 5,
+      "percent_executable": 0.09394964299135664
+    },
+    {
+      "function": "<hashbrown::raw::RawTableInner>::probe_seq",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:2452",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds>>::reset",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/hash/sip.rs:203",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds>>::reset",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/hash/mod.rs:695",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "ssp::scan::scan_block::<7, ssp::flow::events_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:299",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/flow.rs:283",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "ssp::parse::ingest",
+      "source": "src/parse.rs:245",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "<ssp::event_token::Tokens>::raw_identity",
+      "source": "src/event_token.rs:110",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "ssp::parse::ts_fast",
+      "source": "src/parse.rs:484",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "<ssp::U64Map>::get",
+      "source": "src/main.rs:214",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "ssp::ids::payload",
+      "source": "src/main.rs:?",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "ssp::flow::emit_event",
+      "source": "src/flow.rs:267",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "ssp::parse::tod",
+      "source": "src/parse.rs:411",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "<ssp::scan::Flds<4>>::span",
+      "source": "src/scan.rs:29",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "ssp::parse::ingest_memo",
+      "source": "src/parse.rs:457",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "xxhash_rust::xxh3::xxh3_64_7to128",
+      "source": "/home/agent/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/xxhash-rust-0.8.21/src/xxh3.rs:709",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/main.rs:?",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "<std::sync::once::Once>::call_once_force::<<std::sync::lazy_lock::LazyLock<bool>>::force::{closure#0}>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sync/once.rs:222",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/flow.rs:321",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "ssp::scan::scan_block::<4, ssp::flow::clicks_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:299",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "core::core_arch::x86::sse2::_mm_or_si128",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/../../stdarch/crates/core_arch/src/x86/sse2.rs:895",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "xxhash_rust::xxh3::xxh3_64_internal",
+      "source": "/home/agent/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/xxhash-rust-0.8.21/src/xxh3.rs:?",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "ssp::scan::scan_block::<4, ssp::flow::clicks_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:296",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "ssp::parse::eight_digits",
+      "source": "src/parse.rs:500",
+      "ticks": 4,
+      "percent_executable": 0.0751597143930853
+    },
+    {
+      "function": "<hashbrown::raw::RawTable<(&[u8], u64)>>::is_empty",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:1337",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "<std::thread::local::LocalKey<core::cell::RefCell<std::collections::hash::map::HashMap<&[u8], u64>>>>::with::<ssp::ids::payload::{closure#0}, u64>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/thread/local.rs:431",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::finish",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/hash/sip.rs:312",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "ssp::parse::ingest_memo",
+      "source": "src/parse.rs:468",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "ssp::event_token::compact",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ptr/mod.rs:?",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "ssp::event_token::compact",
+      "source": "src/event_token.rs:48",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "xxhash_rust::xxh3::mix16_b",
+      "source": "/home/agent/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/xxhash-rust-0.8.21/src/xxh3.rs:196",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "ssp::parse::price",
+      "source": "src/parse.rs:515",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "ssp::mkref",
+      "source": "src/main.rs:77",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "ssp::flow::clicks_unit::{closure#0}",
+      "source": "src/flow.rs:380",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "<*mut (&[u8], u64)>::sub",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/ptr/mut_ptr.rs:1055",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "ssp::event_token::compact",
+      "source": "src/event_token.rs:36",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "<ssp::event_token::Tokens>::source_key",
+      "source": "src/event_token.rs:104",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/flow.rs:302",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "<ssp::scan::Flds<4>>::span",
+      "source": "src/scan.rs:30",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "ssp::event_token::compact",
+      "source": "src/event_token.rs:38",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "xxhash_rust::xxh3_common::mul128_fold64",
+      "source": "/home/agent/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/xxhash-rust-0.8.21/src/xxh3_common.rs:58",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "ssp::ids::payload",
+      "source": "src/ids.rs:50",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "ssp::scan::scan_block::<4, ssp::flow::clicks_unit::{closure#0}>::{closure#0}",
+      "source": "src/flow.rs:?",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "ssp::parse::ts_memo",
+      "source": "src/parse.rs:436",
+      "ticks": 3,
+      "percent_executable": 0.05636978579481398
+    },
+    {
+      "function": "core::intrinsics::likely",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/intrinsics/mod.rs:512",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "<core::option::Option<u64>>::unwrap_or_else::<ssp::flow::emit_click::{closure#0}>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/option.rs:1069",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "__rustc::__rust_alloc",
+      "source": "src/main.rs:25",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "<hashbrown::control::bitmask::BitMask>::lowest_set_bit",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/control/bitmask.rs:?",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/sync/mutex/futex.rs:?",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "ssp::scan::scan_block::<4, ssp::flow::clicks_unit::{closure#0}>::{closure#0}",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/iter/range.rs:?",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "<alloc::vec::Vec<usize>>::push_mut",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/vec/mod.rs:1006",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "<std::hash::random::DefaultHasher as core::hash::Hasher>::write",
+      "source": "ssp.447ce32624ce5dc3-cgu.0:?",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "<hashbrown::raw::RawTableInner>::find_inner",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:?",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/flow.rs:291",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "ssp::parse::ts_memo",
+      "source": "src/parse.rs:435",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "ssp::parse::ts_memo",
+      "source": "src/parse.rs:434",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "<std::sys::sync::mutex::futex::Mutex>::unlock",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/sync/mutex/futex.rs:90",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "xxhash_rust::xxh3_common::mul64_to128",
+      "source": "/home/agent/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/xxhash-rust-0.8.21/src/xxh3_common.rs:51",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::finish",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/hash/sip.rs:314",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "<u8 as core::array::equality::SpecArrayEq<u8, 8>>::spec_eq",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/array/equality.rs:157",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/result.rs:?",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "ssp::ids::key",
+      "source": "src/ids.rs:?",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "ssp::scan::scan_block::<4, ssp::flow::clicks_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:?",
+      "ticks": 2,
+      "percent_executable": 0.03757985719654265
+    },
+    {
+      "function": "<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::finish",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/hash/sip.rs:323",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::scan::scan_block::<7, ssp::flow::events_unit::{closure#0}>",
+      "source": "src/scan.rs:?",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<alloc::raw_vec::RawVecInner>::non_null::<u32>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/raw_vec/mod.rs:635",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::scan::scan_block::<7, ssp::flow::events_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:320",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::parse::ts_fast",
+      "source": "src/parse.rs:485",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::flow::emit_event",
+      "source": "src/flow.rs:264",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<usize as core::slice::index::SliceIndex<[ssp::flow::CopyR]>>::get_unchecked_mut",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/slice/index.rs:232",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::flow::clicks_unit::{closure#0}",
+      "source": "src/parse.rs:?",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::flow::emit_click",
+      "source": "src/flow.rs:351",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::Ck>>::flush",
+      "source": "src/flow.rs:157",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::Ck>>::flush",
+      "source": "src/flow.rs:164",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::scan::scan_block::<4, ssp::flow::clicks_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:329",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "core::sync::atomic::atomic_load::<u32, false>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/sync/atomic.rs:4320",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "xxhash_rust::xxh3_common::xorshift64",
+      "source": "/home/agent/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/xxhash-rust-0.8.21/src/xxh3_common.rs:30",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<core::slice::iter::Iter<u8> as core::iter::traits::iterator::Iterator>::next",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/slice/iter/macros.rs:180",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "hashbrown::map::make_hash::<[u8], std::hash::random::RandomState>",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/map.rs:241",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<rayon_core::registry::WorkerThread>::index",
+      "source": "/home/agent/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rayon-core-1.13.0/src/registry.rs:724",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "xxhash_rust::xxh3::xxh3_64_internal",
+      "source": "/home/agent/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/xxhash-rust-0.8.21/src/xxh3.rs:815",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::scan::scan_block::<7, ssp::flow::events_unit::{closure#0}>::{closure#0}",
+      "source": "src/scan.rs:329",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::flow::CopyR>>::flush",
+      "source": "src/flow.rs:158",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::flow::clicks_unit::{closure#0}",
+      "source": "src/main.rs:?",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::flow::emit_click",
+      "source": "src/flow.rs:350",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::Ck>>::push",
+      "source": "src/flow.rs:127",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<hashbrown::raw::RawTableInner>::set_ctrl",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:2593",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "core::sync::atomic::atomic_load::<usize, false>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/sync/atomic.rs:4319",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<alloc::raw_vec::RawVecInner>::grow_one",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/raw_vec/mod.rs:514",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<hashbrown::control::tag::Tag>::full",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/control/tag.rs:47",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "core::mem::replace::<isize>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/mem/mod.rs:978",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<hashbrown::raw::RawTableInner>::resize_inner::<alloc::alloc::Global>",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:?",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<hashbrown::raw::RawTableInner>::bucket_ptr",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:2398",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::run::{closure#13}",
+      "source": "src/main.rs:1657",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::file_bytes",
+      "source": "src/main.rs:298",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::scan::any_bits",
+      "source": "src/scan.rs:202",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "core::slice::index::get_offset_len_noubcheck::<u8>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/slice/index.rs:90",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<ssp::event_token::Tokens>::bytes",
+      "source": "src/event_token.rs:117",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::parse::d2",
+      "source": "src/parse.rs:76",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::parse::memo_days",
+      "source": "src/parse.rs:386",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::parse::ts_memo",
+      "source": "src/parse.rs:431",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<alloc::raw_vec::RawVecInner>::grow_amortized",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/raw_vec/mod.rs:524",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<usize>::checked_sub",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/num/uint_macros.rs:1122",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::parse::d2",
+      "source": "src/parse.rs:78",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::flow::clicks_unit::{closure#0}",
+      "source": "src/flow.rs:372",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<ssp::flow::Stream<ssp::Ck>>::push_wc",
+      "source": "src/flow.rs:147",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<alloc::raw_vec::RawVecInner>::non_null::<ssp::Ck>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/raw_vec/mod.rs:635",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<ssp::flow::Arena>::block",
+      "source": "src/flow.rs:116",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<hashbrown::raw::RawTableInner>::find_or_find_insert_index_inner",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/raw.rs:?",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "core::intrinsics::unlikely",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/core/src/intrinsics/mod.rs:535",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::parse::days_in_month",
+      "source": "src/parse.rs:98",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<std::thread::local::LocalKey<core::cell::RefCell<std::collections::hash::map::HashMap<&[u8], u64>>>>::with::<ssp::ids::payload::{closure#0}, u64>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/thread/local.rs:423",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::ids::LOCAL::{K#0}::{closure#0}",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/std/src/sys/thread_local/native/mod.rs:97",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::parse::ingest_memo",
+      "source": "src/parse.rs:455",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::flow::events_unit::{closure#0}",
+      "source": "src/flow.rs:307",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<alloc::raw_vec::RawVecInner>::non_null::<ssp::Ev2>",
+      "source": "0ef1bc386059596dada8fb65b50425aab2ea637a/library/alloc/src/raw_vec/mod.rs:635",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "<hashbrown::map::HashMap<&[u8], u64, std::hash::random::RandomState>>::insert",
+      "source": "/cargo/registry/25cdd57fae9f0462/hashbrown-0.17.1/src/map.rs:1822",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "xxhash_rust::xxh3::mix16_b",
+      "source": "/home/agent/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/xxhash-rust-0.8.21/src/xxh3.rs:197",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    },
+    {
+      "function": "ssp::parse::timestamp",
+      "source": "src/parse.rs:272",
+      "ticks": 1,
+      "percent_executable": 0.018789928598271326
+    }
+  ]
+}
