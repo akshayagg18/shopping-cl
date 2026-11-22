@@ -9,15 +9,14 @@ adds almost nothing to the measured time.
 
 ## How it works
 
-1. **Input.** Work is split into ~4 MiB line-aligned units (a line belongs to the unit
-   holding its first byte). Each unit is read with `pread` in 192 KiB windows into a
-   per-thread buffer that stays in cache; files are opened per unit (a large fd table
-   would grow, and each growth waits for an RCU grace period).
-2. **Links first, in parallel.** Link endpoints are hashed and scattered into 256
-   partitions, numbered per partition, joined with a lock-free union-find (a root only
-   links to a smaller root), and every component is named by its byte-wise smallest ID
-   with a parallel compare-and-swap minimum. The person map is a sorted open-addressing
-   table built in 256 independent ranges.
+1. **Input.** Every CSV is memory-mapped. Work is split into ~4 MiB line-aligned units
+   (a line belongs to the unit holding its first byte), scanned in 192 KiB windows.
+2. **Links first, in one concurrent table.** Every link endpoint is inserted into one
+   open-addressing table with compare-and-swap; a slot's index is the ID's node number.
+   A lock-free union-find (a root only links to a smaller root) joins the nodes, each
+   component is named by its byte-wise smallest ID with a compare-and-swap minimum, and
+   the same table, its values rewritten to `LINKED | name ref`, is the person map. No
+   sorting, scattering or serial pass.
 3. **Tokenizing.** One fused AVX2 pass per 64 bytes builds the newline bitmap, a bitmap
    of quoting violations (prefix-XOR quote parity: no separator inside quotes, opening
    quotes after a separator, closing quotes before one) and a flat list of separator
