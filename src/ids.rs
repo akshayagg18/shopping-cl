@@ -1,6 +1,7 @@
 //! Injective ID values: reversible short ASCII words and exact byte interning.
 //! The permutation spreads the keys without discarding identifier information.
 use std::{collections::HashMap, sync::{LazyLock, Mutex}};
+use std::cell::RefCell;
 const INTERNED: u64 = 1 << 62;
 #[derive(Default)]
 struct Other { map:HashMap<&'static [u8],u64>, names:Vec<&'static [u8]> }
@@ -12,6 +13,20 @@ const SHARDS:usize=1<<SHARD_BITS;
 struct OtherShard(Mutex<Other>);
 static OTHER:LazyLock<Vec<OtherShard>>=LazyLock::new(||(0..SHARDS).map(|_|OtherShard(Mutex::new(Other::default()))).collect());
 static SHARD_MASK:LazyLock<usize>=LazyLock::new(||std::env::var("SS_ID_SHARDS").ok().and_then(|s|s.parse::<usize>().ok()).unwrap_or(1).clamp(1,SHARDS).next_power_of_two()-1);
+static LOCAL_CACHE:LazyLock<bool>=LazyLock::new(||std::env::var("SS_ID_LOCAL").is_ok_and(|s|s=="1"));
+thread_local! {static LOCAL:RefCell<HashMap<&'static [u8],u64>>=RefCell::new(HashMap::new());}
+
+#[inline]
+fn intern(b:&[u8])->(&'static [u8],u64) {
+    let shard=if *SHARD_MASK==0 {0} else {xxhash_rust::xxh3::xxh3_64(b) as usize&*SHARD_MASK};
+    let mut map=OTHER[shard].0.lock().unwrap();
+    if let Some((&bytes,&key))=map.map.get_key_value(b) {return (bytes,key);}
+    let local=map.names.len() as u64;assert!(local<(INTERNED>>SHARD_BITS));
+    let index=(local<<SHARD_BITS)|shard as u64;
+    let key=INTERNED|index;
+    let bytes:&'static [u8]=Box::leak(b.to_vec().into_boxed_slice());
+    map.map.insert(bytes,key);map.names.push(bytes);(bytes,key)
+}
 
 #[inline(always)]
 fn payload(b: &[u8]) -> u64 {
@@ -31,14 +46,14 @@ fn payload(b: &[u8]) -> u64 {
             return packed<<4|tag;
         }
     }
-    let shard=if *SHARD_MASK==0 {0} else {xxhash_rust::xxh3::xxh3_64(b) as usize&*SHARD_MASK};
-    let mut map=OTHER[shard].0.lock().unwrap();
-    if let Some(&key)=map.map.get(b) {return key;}
-    let local=map.names.len() as u64;assert!(local<(INTERNED>>SHARD_BITS));
-    let index=(local<<SHARD_BITS)|shard as u64;
-    let key=INTERNED|index;
-    let bytes:&'static [u8]=Box::leak(b.to_vec().into_boxed_slice());
-    map.map.insert(bytes,key);map.names.push(bytes);key
+    if *LOCAL_CACHE {
+        return LOCAL.with(|cell| {
+            let mut cache=cell.borrow_mut();
+            if let Some(&key)=cache.get(b) {return key;}
+            let (bytes,key)=intern(b);cache.insert(bytes,key);key
+        });
+    }
+    intern(b).1
 }
 
 #[inline(always)]
