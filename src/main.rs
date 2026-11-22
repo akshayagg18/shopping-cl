@@ -1889,6 +1889,20 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
             }
         });
     }
+    // SS_PR=1: one helper thread maps the input's pages ahead of the workers
+    // (MADV_POPULATE_READ, in unit order), so the parse takes no page faults
+    if std::env::var("SS_PR").is_ok_and(|v| v == "1") {
+        let order: Vec<(usize, usize, usize)> = units.iter().map(|&(_, f, s, e)| (f, s, e)).collect();
+        std::thread::spawn(move || {
+            for (f, s, e) in order {
+                let d = file_bytes(f);
+                let a = s & !4095;
+                if e > a {
+                    unsafe { libc::madvise(d.as_ptr().add(a) as *mut libc::c_void, e - a, 22 /* MADV_POPULATE_READ */) };
+                }
+            }
+        });
+    }
     // links first: every record below is routed straight to its person
     // room in the person table for the IDs met while parsing (generated data
     // has about one user ID per 15 events; this allows one per 8)
