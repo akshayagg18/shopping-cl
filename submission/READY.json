@@ -109,6 +109,12 @@
   "deadline_utc": "2026-11-22T16:00:00Z",
   "target_seconds": 0.4,
   "target_proven": false,
-  "candidate_status": "Dense candidate awaiting fresh Docker and 60M validation; scorer_commit remains prior proven source.",
-  "experimental_branch": "codex/dense-candidate"
+  "candidate_status": "Rejected for final submission pending diagnosis: exact and Docker-valid, but 60M runtime regressed.",
+  "experimental_branch": "codex/dense-candidate",
+  "candidate_commit": "6308907ca3e9f556e0292631a5059cf6c5fe1ada",
+  "candidate_validation_run": "https://github.com/akshayagg18/shopping-cl/actions/runs/44967589723",
+  "candidate_docker_image": "sha256:22364d08825c177f26d898836845953f8f4ba0f30a4e8784ecfc9b1177791d41",
+  "candidate_20m_median_ms": 1202.6010659999997,
+  "candidate_60m_median_ms": 8089.832688000001,
+  "candidate_prior_60m_median_ms": 4168.959166999968
 }

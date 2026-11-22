@@ -1,0 +1,154 @@
+{
+  "success": true,
+  "candidate": "6308907ca3e9f556e0292631a5059cf6c5fe1ada",
+  "baseline": "d2dc441e6bed67a57572a7c1f12b06dad7f163cc",
+  "official_score": false,
+  "run_url": "https://github.com/akshayagg18/shopping-cl/actions/runs/44967589723",
+  "started_utc": "2026-11-22T00:38:46.627640+00:00",
+  "prior": "fef07368caf2e161fbf91dbf67e8176574fcfaa9",
+  "measurements": {
+    "20m": {
+      "hosted-baseline": {
+        "n": 7,
+        "median_ms": 1772.9378100000304,
+        "mean_ms": 1772.1353080000029,
+        "sd_ms": 48.396885558669375,
+        "min_ms": 1680.6951739999931,
+        "max_ms": 1842.5630019999915,
+        "samples_ms": [
+          1842.5630019999915,
+          1797.474980000004,
+          1765.0755439999841,
+          1768.7559450000094,
+          1777.4447010000074,
+          1772.9378100000304,
+          1680.6951739999931
+        ],
+        "peak_rss_kib": 4282288,
+        "user_ms": 5522.67,
+        "system_ms": 746.54
+      },
+      "hosted-prior": {
+        "n": 7,
+        "median_ms": 1299.5826320000106,
+        "mean_ms": 1305.1580757142785,
+        "sd_ms": 12.432071420273026,
+        "min_ms": 1288.2719629999997,
+        "max_ms": 1323.8582639999947,
+        "samples_ms": [
+          1297.1079360000033,
+          1323.8582639999947,
+          1299.5826320000106,
+          1288.2719629999997,
+          1299.2623330000015,
+          1312.4184199999718,
+          1315.604981999968
+        ],
+        "peak_rss_kib": 3044556,
+        "user_ms": 4575.793,
+        "system_ms": 294.796
+      },
+      "hosted-candidate": {
+        "n": 7,
+        "median_ms": 1202.6010659999997,
+        "mean_ms": 1207.4943255714336,
+        "sd_ms": 13.775096440159999,
+        "min_ms": 1196.950123000022,
+        "max_ms": 1237.8359399999965,
+        "samples_ms": [
+          1201.228130000004,
+          1237.8359399999965,
+          1207.012624000015,
+          1202.6010659999997,
+          1201.1776230000066,
+          1196.950123000022,
+          1205.654772999992
+        ],
+        "peak_rss_kib": 2982392,
+        "user_ms": 4227.464,
+        "system_ms": 275.57899999999995
+      },
+      "exact_output_comparison": "passed",
+      "input_csv_bytes": 1883811848,
+      "candidate_sandbox_comparison": "passed"
+    },
+    "60m": {
+      "hosted-baseline": {
+        "n": 3,
+        "median_ms": 5666.441242000019,
+        "mean_ms": 5579.553248333335,
+        "sd_ms": 430.55516206840656,
+        "min_ms": 5112.1804780000275,
+        "max_ms": 5960.03802499996,
+        "samples_ms": [
+          5960.03802499996,
+          5666.441242000019,
+          5112.1804780000275
+        ],
+        "peak_rss_kib": 13249824,
+        "user_ms": 17851.581,
+        "system_ms": 2033.5890000000002
+      },
+      "hosted-prior": {
+        "n": 3,
+        "median_ms": 4168.959166999968,
+        "mean_ms": 4161.240781333333,
+        "sd_ms": 27.967058975932105,
+        "min_ms": 4130.225074000009,
+        "max_ms": 4184.538103000023,
+        "samples_ms": [
+          4168.959166999968,
+          4184.538103000023,
+          4130.225074000009
+        ],
+        "peak_rss_kib": 8986452,
+        "user_ms": 14588.942,
+        "system_ms": 807.1239999999999
+      },
+      "hosted-candidate": {
+        "n": 3,
+        "median_ms": 8089.832688000001,
+        "mean_ms": 8000.3517990000055,
+        "sd_ms": 404.1790399124419,
+        "min_ms": 7558.930658999998,
+        "max_ms": 8352.292050000016,
+        "samples_ms": [
+          8352.292050000016,
+          8089.832688000001,
+          7558.930658999998
+        ],
+        "peak_rss_kib": 8809220,
+        "user_ms": 21284.518,
+        "system_ms": 6123.427000000001
+      },
+      "exact_output_comparison": "passed",
+      "input_csv_bytes": 5599241326,
+      "candidate_sandbox_comparison": "passed"
+    }
+  },
+  "hardware": {
+    "affinity": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "cpu_model": "Intel(R) Xeon(R) 6975P-C",
+    "memory": {
+      "MemTotal": "16077540 kB",
+      "SwapTotal": "0 kB",
+      "SwapFree": "0 kB"
+    },
+    "cpu_max": "unavailable",
+    "memory_max": "unavailable"
+  },
+  "topology": "CPU CORE SOCKET NODE L1d:L1i:L2:L3\n  0    0      0    0 0:0:0:0\n  1    1      0    0 1:1:1:0\n  2    0      0    0 0:0:0:0\n  3    1      0    0 1:1:1:0\n",
+  "baseline_build_s": 91.481665422,
+  "baseline_image": "sha256:0af0a454a9dd4a6bef8a467a1655e4b56cf0ae877c0bc62f40d7e3765c2c7126",
+  "prior_build_s": 11.720389773000022,
+  "prior_image": "sha256:ca81656c6a92e7bc9b419d17a9d20991631bf00e4e1b126fc1b27258e8e6e3ff",
+  "candidate_build_s": 14.296277818999982,
+  "candidate_image": "sha256:22364d08825c177f26d898836845953f8f4ba0f30a4e8784ecfc9b1177791d41",
+  "generator_zip_sha256": "13724cadbac5a99d847e27cea911cd2e338ff972b46c2039da87452011bb101e",
+  "dev_and_36_fixtures": "passed"
+}

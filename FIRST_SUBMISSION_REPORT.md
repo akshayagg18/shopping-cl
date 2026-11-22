@@ -107,3 +107,36 @@ paired gain; its isolated field scanner regressed. It is excluded. PGO also
 passed correctness but its nine-pair median2591.2ms versus2567.2ms did not win.
 The next structural experiment appends records contiguously before one stable
 partition scatter, to reduce random parser bookkeeping. It remains a prototype.
+
+## Dense candidate: correctness passed, final performance gate failed
+
+Exact source `6308907ca3e9f556e0292631a5059cf6c5fe1ada` independently implements
+runtime-learned exact placement, literal global identity resolution, inline-user
+records and person-run grouping. Local nine-pair20M improvements repeated at
+13.1% and17.5%. Fresh pinned static Docker built in14.30s;36 fixtures,development
+answer,and both full20M/60M tables passed,including the restricted sandbox.
+
+The fresh same-host comparison exposed a final-size regression. Intel Xeon
+6975P-C,two physical cores/four SMT threads,16GiB,no swap. Both priors and the
+candidate used identical pinned compiler/build flags. Seed20261123 at60M is
+new relative to the earlier validation. **This source is not recommended for
+final submission until the regression is understood and fixed.**
+
+|Input|n each|Original D2 median ms|Prior fef0736 median ms|Dense median ms|Dense mean / SD / min / max ms|
+|---|---:|---:|---:|---:|---|
+|20M|7|1772.94|1299.58|1202.60|1207.49 /13.78 /1196.95 /1237.84|
+|60M|3|5666.44|4168.96|8089.83|8000.35 /404.18 /7558.93 /8352.29|
+
+At60M,candidate median system CPU was6123ms versus807ms for the prior,and user
+CPU21285ms versus14589ms. Peak RSS was8,809,220 versus8,986,452KiB. This does not
+support a simple higher-peak-memory explanation. A same-artifact diagnosis is
+collecting stage envelopes,faults,context switches,and controls for huge pages,
+stream layouts and click grouping across both60M seeds. No speculative cause
+is presented as established. The general14-day generator window fits the
+current timestamp range,so the initial range-overflow hypothesis is unproven.
+
+Evidence: https://github.com/akshayagg18/shopping-cl/actions/runs/44967589723 ;
+Check `Codex dense 20M/60M validation` at6308907. Complete measurements are in
+`experiments/results/dense-hosted-result.json`. The earlier935ms result used a
+different AMD runner; do not compare those absolute times as an improvement.
+No official submission or sub-0.4 result has been established.

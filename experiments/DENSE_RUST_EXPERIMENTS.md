@@ -115,3 +115,12 @@ small reference plus four fuzz mutations,and adversarial inputs without switches
 This repeat is17.5% lower by median;the first batch was13.1%. Means,variance
 and every sample are retained rather than discarding slow runs. Complete20M
 output equality passed. No official timing or new60M/Docker proof is claimed yet.
+
+## Fresh hosted gate
+
+Fresh Docker and exact60M correctness passed for6308907,but final performance
+failed. On the same Intel6975P-C four-logical-CPU runner,20M improved1299.58 to
+1202.60ms while60M regressed4168.96 to8089.83ms. See FIRST_SUBMISSION_REPORT.md,
+the dense-hosted-result.json receipt,and run44967589723. The recommended scorer
+source remains fef0736. Local improvements are insufficient to select this
+architecture for final scoring. Stage-level60M diagnosis is active.

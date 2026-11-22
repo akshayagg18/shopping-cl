@@ -1,4 +1,9 @@
-# Shopping Sessions — exact dense Rust candidate
+# Shopping Sessions — experimental dense Rust pipeline
+
+**Do not submit commit `6308907` for the final evaluation.** It passed fresh
+Docker and exact 60M validation, but was nearly twice as slow as the prior
+commit at 60M. The recommended validated scorer source remains
+`fef07368caf2e161fbf91dbf67e8176574fcfaa9`. See `submission/READY.json`.
 
 Processes `/data` into exact `/output/user_daily` and `/output/campaign_daily`
 Parquet tables. Build the root Dockerfile for Linux/AMD64; the static scratch
@@ -13,8 +18,7 @@ click ties, distinct assists and category ties retain the specified semantics.
 
 Local 20M median 2098.98 ms versus 2415.39 ms for fef0736, nine interleaved runs each
 on a 2-CPU VM: 13.1% less elapsed time. Both output tables match the frozen baseline.
-These are local measurements, not an official score. Fresh Docker and 60M checks
-are pending. The previous fully validated scorer source is
+These are local measurements, not an official score. Fresh Docker and 60M correctness checks passed; the 60M performance gate failed. The previous fully validated scorer source is
 `fef07368caf2e161fbf91dbf67e8176574fcfaa9`; see `submission/READY.json`.
 
 Reproduce controls with `SS_DENSE=0`; `SS_TIMING=1` reports stage envelopes.
