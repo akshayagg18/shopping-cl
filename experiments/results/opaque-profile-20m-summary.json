@@ -1,0 +1,152 @@
+{
+  "source": "experiments/results/opaque-profile-20m.json",
+  "variant": "profile",
+  "n": 3,
+  "notes": [
+    "Phase process CPU is summed across threads. Nested task spans overlap and are not added to phase walls.",
+    "RSS is sampled, not exact per-stage peak, and has a small process-start offset.",
+    "Byte counts after parsing describe logical representations, not hardware memory traffic.",
+    "Session records count incoming candidates plus clicks, including duplicate losers before live gather."
+  ],
+  "stages": {
+    "open": {
+      "wall_ms": 1.618,
+      "thread_ms": 0.833,
+      "process_ms": 2.324,
+      "records": 164.0,
+      "bytes": 2033398100.0,
+      "avg_sampled_rss_kib": null,
+      "peak_sampled_rss_kib": null
+    },
+    "links_phase": {
+      "wall_ms": 273.937,
+      "thread_ms": 4.179,
+      "process_ms": 466.847,
+      "records": 1200668.0,
+      "bytes": 23783492.0,
+      "avg_sampled_rss_kib": 117036,
+      "peak_sampled_rss_kib": 272688
+    },
+    "parse_phase": {
+      "wall_ms": 1913.264,
+      "thread_ms": 0.048,
+      "process_ms": 3798.028,
+      "records": 25996836.0,
+      "bytes": 2008877676.0,
+      "avg_sampled_rss_kib": 1655202.8421052631,
+      "peak_sampled_rss_kib": 3012988
+    },
+    "dedup_phase": {
+      "wall_ms": 463.669,
+      "thread_ms": 0.792,
+      "process_ms": 922.265,
+      "records": 20851044.0,
+      "bytes": 333616704.0,
+      "avg_sampled_rss_kib": 3033643.5555555555,
+      "peak_sampled_rss_kib": 3033644
+    },
+    "session_phase": {
+      "wall_ms": 516.264,
+      "thread_ms": 0.663,
+      "process_ms": 1025.429,
+      "records": 25686660.0,
+      "bytes": 452152896.0,
+      "avg_sampled_rss_kib": 3100658.4,
+      "peak_sampled_rss_kib": 3137812
+    },
+    "output": {
+      "wall_ms": 113.454,
+      "thread_ms": 3.77,
+      "process_ms": 210.75,
+      "records": 2227675.0,
+      "bytes": 86280227,
+      "avg_sampled_rss_kib": 3195088,
+      "peak_sampled_rss_kib": 3218640
+    },
+    "release": {
+      "wall_ms": 21.395,
+      "thread_ms": 0.013,
+      "process_ms": 21.774,
+      "records": 0.0,
+      "bytes": 0.0,
+      "avg_sampled_rss_kib": 2913540.0,
+      "peak_sampled_rss_kib": 2913540.0
+    }
+  },
+  "tasks": {
+    "parse_events": {
+      "n": 1416,
+      "median_wall_ms": 11.091000000000001,
+      "max_wall_ms": 62.721,
+      "max_records": 50603.0,
+      "summed_thread_cpu_ms": 9439.677,
+      "worker_thread_cpu_ms": {
+        "2": 2871.1370000000015,
+        "1": 2269.9169999999995,
+        "3": 1855.9990000000014,
+        "0": 2442.6240000000007
+      }
+    },
+    "parse_clicks": {
+      "n": 222,
+      "median_wall_ms": 16.794,
+      "max_wall_ms": 30.268,
+      "max_records": 77964.0,
+      "summed_thread_cpu_ms": 1886.656,
+      "worker_thread_cpu_ms": {
+        "1": 576.3910000000001,
+        "2": 163.946,
+        "0": 270.78499999999997,
+        "3": 875.5339999999999
+      }
+    },
+    "dedup_bucket": {
+      "n": 3072,
+      "median_wall_ms": 0.836,
+      "max_wall_ms": 9.597,
+      "max_records": 20825.0,
+      "summed_thread_cpu_ms": 2699.203,
+      "worker_thread_cpu_ms": {
+        "1": 673.6399999999998,
+        "0": 674.7280000000004,
+        "3": 672.7480000000002,
+        "2": 678.0869999999998
+      }
+    },
+    "session_gather": {
+      "n": 3072,
+      "median_wall_ms": 0.058,
+      "max_wall_ms": 16.757,
+      "max_records": 452897.0,
+      "summed_thread_cpu_ms": 240.511,
+      "worker_thread_cpu_ms": {
+        "3": 59.08599999999995,
+        "1": 65.06800000000003,
+        "0": 55.57899999999985,
+        "2": 60.777999999999935
+      }
+    },
+    "session_bucket": {
+      "n": 3072,
+      "median_wall_ms": 0.825,
+      "max_wall_ms": 65.151,
+      "max_records": 452897.0,
+      "summed_thread_cpu_ms": 2993.878,
+      "worker_thread_cpu_ms": {
+        "3": 753.8920000000012,
+        "0": 745.0789999999989,
+        "1": 746.0990000000003,
+        "2": 748.8080000000007
+      }
+    }
+  },
+  "allocations": {
+    "allocations": 205977,
+    "requested_bytes": 1870275127,
+    "peak_rss_kib": 3281928,
+    "minor_faults": 34204,
+    "major_faults": 0,
+    "voluntary_cs": 801,
+    "involuntary_cs": 4931
+  }
+}

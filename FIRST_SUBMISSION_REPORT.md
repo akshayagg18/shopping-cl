@@ -1,109 +1,117 @@
-# Measured candidate report — Shopping Sessions / Codex
+# Current measured candidate — Shopping Sessions
 
-The selected candidate completed the local 20M comparison with exactly matching
-user_daily and campaign_daily tables. **No official sub-0.4-second runtime has
-been achieved.** This candidate's exact published scorer SHA is recorded in the
-publication receipt; do not infer it from a moving branch name.
+**Validated source: ae0cf75dfbcc7eead8c68e20b09ad4ad6cb962c2.**
+[Fresh Docker and current-generator validation](https://github.com/akshayagg18/shopping-cl/actions/runs/44993593990).
+No official submission or runtime exists. **Sub-0.4 seconds is unproven.**
+The user-reported1.73-second practice baseline has no scorer receipt in this workspace.
 
-Frozen baseline: `d2dc441e6bed67a57572a7c1f12b06dad7f163cc`.
-Previous validated source: `1ffcf309d044cf44d38ed49c071308b73b46118c`.
-Inherited v11.3 architectural starting point: `0edb1e785c36ae85cdf53faddcfc319b7d424d48`.
+## Workload revision
 
-The v11 architecture was already present in upstream when discovered. This
-branch repairs its probabilistic equality, long-string truncation, pre-1970
-ingestion ordering and uninitialized storage, and adds compact 16-byte event
-and copy records with lossless uncommon-value fallbacks. It also adds optional
-per-stage/task CPU, wall, record/byte and allocation diagnostics that compile
-out of the default release.
+The current generator is pinned to SHA256
+78f973f75d14b48e792628284f19c75de71fa597d20952e16a9ced93c78bee4a.
+Its rules require opaque variable-width IDs, with a32-hex suffix on one in eight.
+Earlier935ms evidence used another generator and hardware; it cannot establish
+performance for this workload. Historical evidence is preserved in
+[OLD_GENERATOR_REPORT.md](experiments/OLD_GENERATOR_REPORT.md).
 
-Seven interleaved measured runs per variant, one warmup, 20M seed 2026,
-1,883,811,848 CSV bytes, Xeon8573C VM, 2-CPU quota, 8GiB, affinity0,2.
-Host noise affects these values. CPU is summed process execution, not wall.
+## Implemented architecture
 
-|Variant|n|Median ms|Mean ms|SD ms|Min ms|Max ms|CPU ms|Peak RSS GiB|
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-|frozen|7|4210.20|4159.78|293.27|3846.57|4665.76|8040.03|4.07|
-|prior|7|3628.14|3749.42|228.94|3565.31|4088.59|6712.40|3.15|
-|selected|7|2659.28|2617.52|119.50|2406.32|2752.17|4961.98|2.89|
+The inherited v11 pipeline resolves actual link edges first, parses directly into
+person streams, and separately deduplicates compact copy records before admitting
+survivors to sessions. Our exactness repairs retain injective short-ID encodings,
+full-byte fallback equality, signed ingestion ordering, lossless long references,
+initialized unsafe buffers, exact click ties, and standards-compliant DATE output.
 
-The selected median is 36.8% below the frozen baseline and 26.7% below the
-previous candidate in this batch. Much of that gain comes from the inherited
-v11 architecture. Record compaction's isolated median gain was 4.1% in one
-nine-pair batch, with weaker evidence in a noisier repeat. Every sample is in
-`experiments/results/sub400-selected-v11.json`; separate batch ratios must
-not be multiplied.
+The new opaque-ID path removes the global event dictionary from ordinary source
+fields. A16-byte copy stores an exact source offset/length. Hashes choose buckets;
+full bytes decide equality. Longer fields and unsuitable address spans fall back
+to exact owned dictionaries. Worker-local full-byte maps cache shared user keys;
+fallback dictionaries use64 cache-line-separated shards. No generator numbers
+are decoded and no identity connections are inferred. See
+[OPAQUE_IDS.md](experiments/OPAQUE_IDS.md) and source tests.
 
-Validation on the selected direct binary: 18 release units; 36/36 official
-fixtures; exact official 1M development answer; literal-reference small input
-plus four fuzz mutations; long UTF-8, signed-ingestion and boundary adversarial
-cases; exact both-table comparison of the complete 20M input against the frozen
-baseline. Fresh static Docker and exact 60M validation subsequently passed on a public runner. See the measured receipt below.
+## Repeated local20M results
 
-Earlier-source 60M evidence is in `experiments/results/hosted-result.json`:
-old `1ffcf309` passed exact comparisons and Docker sandbox checks at 20M/60M,
-with 60M medians 5553.3/5233.9ms, three pairs, 4-CPU AMD EPYC9V45 public runner.
-Those numbers do not describe the selected source.
+Current generator, seed20261123,20M events/5M clicks,2,033,398,100 CSV bytes.
+Xeon8573C VM,2-CPU quota,8GiB,4 workers,affinity0,2; seven interleaved runs and
+one warmup each. Timed combined source b4a239d has the same enabled data path
+as ae0cf75 defaults; the default binary was separately compared exactly.
 
-`experiments/SUB400_PROGRESS.md` contains the architecture assessment,
-controlled experiment table, instruction profile, empirical IO-only estimate
-and next priorities. Paired timestamp SIMD and a conservative linked-ID filter
-passed correctness but failed performance and are excluded. A user cache was
-rejected from measured reuse rates before implementation.
+|Variant|Median ms|Mean ms|SD ms|Min ms|Max ms|
+|---|---:|---:|---:|---:|---:|
+|Frozen D2|4941.34|5322.42|810.84|4405.88|6415.55|
+|Prior exact fef|5801.24|5800.90|212.55|5609.64|6222.86|
+|Sharded fallback dictionaries|4926.71|4847.30|187.50|4521.54|5076.83|
+|Event source references|3334.84|3335.03|30.08|3296.80|3389.71|
+|References + worker user cache|3182.30|3211.21|93.02|3120.55|3383.75|
 
-Official submission remains pending because the supplied browser tool failed
-to initialize, so an authenticated official interface could not be reached.
-No official submission allowance was consumed, and no rank or runtime is
-inferred from GitHub publication or CI success. The deadline is
-2026-11-22 16:00 UTC. The official scorer requires the public repository URL
-and the exact candidate commit, with the root Dockerfile.
+The combined median is35.6% below frozen D2 on this host. Both full tables match
+D2 exactly for every variant. Raw samples, CPU/RSS/faults/context switches and
+binary/asset hashes are in experiments/results/opaque-20m*.json.
 
-## Fresh Docker and 60M receipt
+|Stage|Median wall ms|Share of normal stage envelopes|Suspected cost|Potential|
+|---|---:|---:|---|---|
+|Open|1.3|0.04%|Lazy mappings; faults occur in scans|Low warm-cache|
+|Links + dimensions|259.5|8.2%|Endpoint sorting, exact identity dictionaries, union-find|Moderate|
+|Event/click parse + route|1976.0|62.8%|Tokenization, timestamps, ID handling, stream writes|Highest|
+|Dedup|301.3|9.6%|Referenced-ID cache misses, copy gathering and probing|Moderate; tested prefetch|
+|Sessions + aggregation|479.6|15.2%|Gathering, grouping and temporal aggregation|Moderate|
+|Parquet|109.7|3.5%|Strings, encoding and regular-file writes|Limited total impact|
+|Release|21.6|0.7%|Unmapping owned buffers and files|Low|
 
-Validated exact source commit: **fef07368caf2e161fbf91dbf67e8176574fcfaa9**.
-[Hosted run](https://github.com/akshayagg18/shopping-cl/actions/runs/44940061203),
-Check: `Codex measured 20M/60M validation`. Both sources use the same pinned
-Rust/static Docker configuration. Public AMD EPYC9V45,4 CPUs,16GiB,no swap.
-The candidate image built in 10.36s; the baseline in 79.03s. Both complete
-output tables,36 fixtures,development answer and static sandbox checks passed.
+Three opt-in diagnostic runs measured3316ms median versus3169.7ms normal in
+that batch (~4.6% overhead; one normal4852ms host outlier retained). Parse
+process CPU was3798ms inside1913ms wall, dedup922 inside464, sessions1025
+inside516, output211 inside113. CPU sums execution across threads. Nested
+spans overlap and are never summed as elapsed time. Diagnostic sampled peak
+RSS was3.13GiB,205,977 allocations/requested1.87GB. Largest session bucket65ms,
+452,897 input records; session CPU was balanced across workers. Hardware perf
+counters are denied here; no hardware cache-miss or IPC claims are made.
 
-|Input|n each|Baseline median ms|Candidate median ms|Candidate mean / SD / min / max ms|
-|---|---:|---:|---:|---|
-|20M|7|1550.86|935.15|936.97 / 9.94 / 924.40 / 949.37|
-|60M|3|4816.35|2857.89|2927.28 / 145.25 / 2829.73 / 3094.21|
+## Independent Docker/final-size evidence
 
-That is 39.7% and 40.7% less median elapsed time respectively. Peak RSS was
-3,043,284 versus4,280,796KiB at20M and8,996,996 versus13,324,256KiB at60M.
-These establish an independent sub-second 20M result, not an official score
-and not the requested sub-0.4 result. Full samples and hardware are in
-`experiments/results/v11-hosted-result.json` and `submission/READY.json`.
+Fresh static Linux/AMD64 build completed in16.07s. Image
+sha256:5711299fd51b6a7b503be36f42f670abe7c591a3cf1ac5d13567865b08c901a4.
+All36 fixtures, current1M development answer,20M and two60M seeds passed exact
+comparison. UID1000/read-only root/no-network/14GiB Docker runs passed too.
+Source/regression testing also passed22 release units, independent literal
+references and four fuzz mutations, long UTF-8/ingestion/boundary adversarial
+cases, concurrent dictionary insertion, and forced all-equal event hashes.
 
-## Current stage profile
+Hosted AMD EPYC7763,2 physical/4 SMT CPUs,16GiB,no swap. The retained final
+60M seed20261124 has6,230,703,912 CSV bytes:
 
-Three opt-in diagnostic runs on the local2-CPU VM,20Mseed2026. Diagnostic
-median2813.5ms versus normal2786.8ms in the same three-pair batch (~1% overhead).
-Default release diagnostics compile out. Stage medians are separate envelopes;
-nested concurrent task times must not be summed.
+|Source|n|Median ms|Mean ms|SD ms|Min ms|Max ms|Peak RSS GiB|
+|---|---:|---:|---:|---:|---:|---:|---:|
+|Frozen D2|3|7298.75|7200.34|420.87|6738.98|7563.29|13.72|
+|Prior exact fef|3|16824.04|16685.59|258.05|16387.86|16844.85|10.20|
+|Current ae0cf75|3|6965.62|7018.58|207.72|6842.47|7247.65|9.42|
 
-|Stage|Median wall ms|Process CPU ms|Share of stage envelope medians|Suspected cost / potential|
-|---|---:|---:|---:|---|
-|Open|1.24|1.77|0.04%|Lazy mapping; faults are charged during scans|
-|Links / lookup tables|220.20|363.44|7.86%|Endpoint sorting, union-find and person map construction|
-|Event and click parsing|1750.73|3313.68|62.50%|CSV/semantic instructions and stream bookkeeping; primary target|
-|Deduplication|134.09|256.76|4.79%|Copy gathering and hash probes; limited total potential|
-|Session grouping / aggregation|547.35|1089.98|19.54%|Person/bin grouping and click sorting; secondary target|
-|Parquet output|112.94|192.38|4.03%|Column serialization and79.2MB of writes|
-|Release|34.67|35.92|1.24%|Page-table and buffer reclamation|
+Candidate process user/system CPU25269/771ms; prior36570/8313ms. This removes
+the prior's long-ID lock collapse. Candidate median is4.6% below D2 here, with
+substantial variance and only three samples. Do not extrapolate the larger local
+relative gain across hardware. A reporter variable-shadowing bug overwrote the
+20M and first60M timing summaries under a stage-name key. Their correctness
+checks passed, but those timing distributions are unavailable in the retained
+receipt. The bug was fixed and another independent run is underway. Raw retained
+receipt is experiments/results/opaque-hosted-result.json, keyed released;
+its manifest unambiguously identifies the final seed. No missing numbers were
+reconstructed or claimed.
 
-Largest session task50.39ms,largest partition455,095 records; median task0.797ms.
-This is observable skew but not the dominant2-CPU critical path. Parsing tasks
-processed26,152,802 parseable event copies plus valid clicks; dedup records were
-21,113,660. Allocation diagnostics recorded12,376 calls and1,653,746,598 requested
-bytes (small system reallocations bypass counters). Sampled average/peak RSS,
-worker CPU and logical byte counts are in `sub400-stage-summary.json`. Neither
-requested bytes nor logical bytes are hardware memory traffic.
+## IO reference and next experiments
 
-AVX-512 separator compaction passed correctness but did not show a consistent
-paired gain; its isolated field scanner regressed. It is excluded. PGO also
-passed correctness but its nine-pair median2591.2ms versus2567.2ms did not win.
-The next structural experiment appends records contiguously before one stable
-partition scatter, to reduce random parser bookkeeping. It remains a prototype.
+A complete AVX2 input scan read all2.033GB in315.9ms median warm (7 runs),
+1183.5ms with cache-dropping hints (3 runs). Actual read-block counters are
+retained. Writing preloaded104.36MB frozen-baseline output bytes into one regular file took
+168.0ms median (7 runs), no fsync. These are single-worker IO-only reference
+costs, not absolute hardware minima. Parallel writes can be faster; pipeline
+output already is. The official8-hyperthread/24GB host differs from this VM.
+
+Prefetching source IDs16 records ahead passed all20M comparisons and reduced
+the paired median3218.4 to3107.7ms (3.4%); dedup371.4 to234.5ms. This remains
+an experiment pending final-size Docker validation. Cached hashes in24-byte
+copies cut dedup315 to133ms but raised parsing1910 to2006ms and RSS~160MiB;
+net median gain was2.7%, similar to prefetch and noisier. Next tests evaluate
+all-reference IDs and valid-F1 ingestion decoding, then select only measured
+wins and retest unseen final-size seeds. Repository size remains below50MB;
+no generated datasets are committed.

@@ -1,8 +1,18 @@
 {
-  "status": "pending_current_generator_large_and_docker_validation",
+  "validated_source": "ae0cf75dfbcc7eead8c68e20b09ad4ad6cb962c2",
+  "repository": "https://github.com/akshayagg18/shopping-cl",
   "official_submitted": false,
   "official_runtime_seconds": null,
   "sub_0_4_proven": false,
+  "run_url": "https://github.com/akshayagg18/shopping-cl/actions/runs/44993593990",
   "generator_zip_sha256": "78f973f75d14b48e792628284f19c75de71fa597d20952e16a9ced93c78bee4a",
-  "note": "Previous935ms evidence used an older generator. Do not infer official performance from it."
+  "validation": "Fresh Docker,36 fixtures,current1M,20M and two60M seeds exact; native units/fuzz/adversarial passed",
+  "retained_hosted_timing": {
+    "events": 60000000,
+    "seed": 20261124,
+    "baseline_median_ms": 7298.752424000099,
+    "candidate_median_ms": 6965.623783000069,
+    "n": 3
+  },
+  "caveat": "Reporter shadowing overwrote earlier study summaries; correctness passed but20M/first60M hosted distributions are not retained. Corrected rerun pending. Official sign-in is pending user response."
 }

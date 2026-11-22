@@ -1,0 +1,18 @@
+{
+  "seed": 20261123,
+  "requested_events": 20000000,
+  "requested_clicks": 5000000,
+  "generator_sha256": "78f973f75d14b48e792628284f19c75de71fa597d20952e16a9ced93c78bee4a",
+  "rules_sha256": "90e1132a605d762423ba5958bec44bfddbc3506f94b3ba1068a28b7a427f4248",
+  "manifest": {
+    "window_start": "2028-10-16T00:00:00Z",
+    "window_end": "2028-10-30T00:00:00Z"
+  },
+  "csv_bytes": 2033398100,
+  "binary_sha256": {
+    "baseline": "88b8f6c9d7d68b9958412b246ec1661c9d0c7ddab2c6338861bef4f848ed7779",
+    "v11-exact": "5168175898c74eaa3157faeec9947c6b4c5519affcac9d83e3bd80348ff3a1f0",
+    "sharded-ids": "5c183f4c50f03889f0f2f0b79f7c02481be194d5e306eefd45ff28062a80fb85",
+    "opaque-combined": "ba4928de84093c7a55399d0a8b3adfd62d82b20c04bf6c09bb457f7717259482"
+  }
+}

@@ -2,7 +2,7 @@
 Use --variants label=path ... to interleave variants and avoid ordered-run bias.
 """
 import argparse, json, os, pathlib, resource, statistics, subprocess, time, threading
-p=argparse.ArgumentParser();p.add_argument('--data',required=True);p.add_argument('--warmups',type=int,default=0);p.add_argument('--variants',nargs='+',required=True);p.add_argument('--runs',type=int,default=7);p.add_argument('--threads',type=int,default=2);p.add_argument('--result',required=True);p.add_argument('--rss-ms',type=float,default=50);p.add_argument('--affinity',help='comma-separated logical CPUs');p.add_argument('--profile',action='store_true');p.add_argument('--seq',action='store_true');p.add_argument('--cold',action='store_true');a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--data',required=True);p.add_argument('--warmups',type=int,default=0);p.add_argument('--variants',nargs='+',required=True);p.add_argument('--runs',type=int,default=7);p.add_argument('--threads',type=int,default=2);p.add_argument('--result',required=True);p.add_argument('--rss-ms',type=float,default=50);p.add_argument('--affinity',help='comma-separated logical CPUs');p.add_argument('--profile',action='store_true');p.add_argument('--seq',action='store_true');p.add_argument('--cold',action='store_true');p.add_argument('--variant-env',default='{}',help='JSON mapping variant labels to environment overrides');a=p.parse_args();variant_env=json.loads(a.variant_env)
 root=pathlib.Path(__file__).resolve().parents[1];data=pathlib.Path(a.data).resolve();results=[]
 for run in range(-a.warmups,a.runs):
  for variant in (a.variants if run%2==0 else a.variants[::-1]):
@@ -12,6 +12,7 @@ for run in range(-a.warmups,a.runs):
    for f in data.rglob('*.csv'):
     with f.open('rb') as h:os.posix_fadvise(h.fileno(),0,0,os.POSIX_FADV_DONTNEED)
   env=dict(os.environ,DATA_DIR=str(data),OUTPUT_DIR=str(out),NCPU=str(a.threads),SS_TIMING='1')
+  env.update({str(k):str(v) for k,v in variant_env.get(label,{}).items()})
   if a.profile: env['SS_PROFILE']='1'
   if a.seq: env['SS_SEQ']='1'
   log=root/'experiments'/'results'/f'{pathlib.Path(a.result).stem}-{label}-{run}.log'
@@ -34,7 +35,7 @@ for run in range(-a.warmups,a.runs):
    stop.set();sampler.join()
   if proc.returncode:raise RuntimeError(f'{label} failed: {log}')
   output_bytes=sum(f.stat().st_size for f in out.glob('*/*.parquet'))
-  row=dict(variant=label,run=run,wall_ms=elapsed*1000,user_ms=usage.ru_utime*1000,sys_ms=usage.ru_stime*1000,peak_rss_kib=usage.ru_maxrss,avg_rss_kib=statistics.mean(samples) if samples else 0,minor_faults=usage.ru_minflt,major_faults=usage.ru_majflt,voluntary_cs=usage.ru_nvcsw,involuntary_cs=usage.ru_nivcsw,input_blocks=usage.ru_inblock,output_blocks=usage.ru_oublock,output_bytes=output_bytes,threads=a.threads,affinity=a.affinity,rss_interval_ms=a.rss_ms,rss_trace=rss_trace,cold_hint=a.cold,log=str(log.relative_to(root)))
+  row=dict(variant=label,run=run,wall_ms=elapsed*1000,user_ms=usage.ru_utime*1000,sys_ms=usage.ru_stime*1000,peak_rss_kib=usage.ru_maxrss,avg_rss_kib=statistics.mean(samples) if samples else 0,minor_faults=usage.ru_minflt,major_faults=usage.ru_majflt,voluntary_cs=usage.ru_nvcsw,involuntary_cs=usage.ru_nivcsw,input_blocks=usage.ru_inblock,output_blocks=usage.ru_oublock,output_bytes=output_bytes,threads=int(env['NCPU']),variant_environment=variant_env.get(label,{}),affinity=a.affinity,rss_interval_ms=a.rss_ms,rss_trace=rss_trace,cold_hint=a.cold,log=str(log.relative_to(root)))
   row['warmup']=run<0;row['wait_method']='blocking_wait4'
   if run>=0:results.append(row)
   print(json.dumps(row),flush=True)

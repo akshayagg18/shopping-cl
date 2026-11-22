@@ -1,0 +1,145 @@
+{
+  "input_bytes": 2033398100,
+  "input_files": 164,
+  "affinity": [
+    0,
+    2
+  ],
+  "cache_drop": "POSIX_FADV_DONTNEED hint; physical-read counters retained",
+  "notes": [
+    "Input C probe XOR-reads every byte using AVX2 and MAP_POPULATE.",
+    "Writes use actual preloaded Parquet bytes into a regular file on the output filesystem, with no fsync, matching the pipeline durability contract.",
+    "These are observed IO-only reference costs on this VM, not proven physical minima or official-hardware predictions."
+  ],
+  "read_warm": [
+    {
+      "seconds": 4.762766678,
+      "checksum": 8796403103717677668,
+      "bytes_plus_tail_checksum": 2033399062,
+      "gb_s": 0.4269363245091554,
+      "cpu_s": 4.44067,
+      "major_faults": 0,
+      "input_blocks": 1392456
+    },
+    {
+      "seconds": 0.401138502,
+      "checksum": 8796403103717677668,
+      "bytes_plus_tail_checksum": 2033399062,
+      "gb_s": 5.069067391591346,
+      "cpu_s": 0.40648399999999996,
+      "major_faults": 0,
+      "input_blocks": 0
+    },
+    {
+      "seconds": 0.30428394,
+      "checksum": 8796403103717677668,
+      "bytes_plus_tail_checksum": 2033399062,
+      "gb_s": 6.682567933095648,
+      "cpu_s": 0.30716499999999997,
+      "major_faults": 0,
+      "input_blocks": 0
+    },
+    {
+      "seconds": 0.362265763,
+      "checksum": 8796403103717677668,
+      "bytes_plus_tail_checksum": 2033399062,
+      "gb_s": 5.613001027646104,
+      "cpu_s": 0.365677,
+      "major_faults": 0,
+      "input_blocks": 0
+    },
+    {
+      "seconds": 0.297616085,
+      "checksum": 8796403103717677668,
+      "bytes_plus_tail_checksum": 2033399062,
+      "gb_s": 6.832285627304049,
+      "cpu_s": 0.299381,
+      "major_faults": 0,
+      "input_blocks": 0
+    },
+    {
+      "seconds": 0.298902815,
+      "checksum": 8796403103717677668,
+      "bytes_plus_tail_checksum": 2033399062,
+      "gb_s": 6.802873703280446,
+      "cpu_s": 0.301408,
+      "major_faults": 0,
+      "input_blocks": 0
+    },
+    {
+      "seconds": 0.315862651,
+      "checksum": 8796403103717677668,
+      "bytes_plus_tail_checksum": 2033399062,
+      "gb_s": 6.43760220957558,
+      "cpu_s": 0.31841699999999995,
+      "major_faults": 0,
+      "input_blocks": 0
+    }
+  ],
+  "read_cold_hint": [
+    {
+      "seconds": 1.529592326,
+      "checksum": 8796403103717677668,
+      "bytes_plus_tail_checksum": 2033399062,
+      "gb_s": 1.329372582116367,
+      "cpu_s": 0.831862,
+      "major_faults": 0,
+      "input_blocks": 3972200
+    },
+    {
+      "seconds": 1.183493609,
+      "checksum": 8796403103717677668,
+      "bytes_plus_tail_checksum": 2033399062,
+      "gb_s": 1.7181318805076877,
+      "cpu_s": 0.746535,
+      "major_faults": 0,
+      "input_blocks": 3972200
+    },
+    {
+      "seconds": 0.983753029,
+      "checksum": 8796403103717677668,
+      "bytes_plus_tail_checksum": 2033399062,
+      "gb_s": 2.0669802684795595,
+      "cpu_s": 0.566533,
+      "major_faults": 0,
+      "input_blocks": 3972200
+    }
+  ],
+  "writes": [
+    {
+      "seconds": 0.037544635008089244,
+      "gb_s": 2.7796834082290176
+    },
+    {
+      "seconds": 0.02556418899621349,
+      "gb_s": 4.082359077202015
+    },
+    {
+      "seconds": 0.05521272799524013,
+      "gb_s": 1.8901837092526388
+    },
+    {
+      "seconds": 0.5134320039942395,
+      "gb_s": 0.2032639145750854
+    },
+    {
+      "seconds": 0.5237015540042194,
+      "gb_s": 0.19927800137701934
+    },
+    {
+      "seconds": 0.1900097470061155,
+      "gb_s": 0.5492465552129865
+    },
+    {
+      "seconds": 0.16796998599602375,
+      "gb_s": 0.6213145662968055
+    }
+  ],
+  "output_bytes": 104362199,
+  "output_files": 146,
+  "reference_ms": {
+    "read_warm": 315.86265099999997,
+    "read_cold_hint": 1183.4936089999999,
+    "write": 167.96998599602375
+  }
+}

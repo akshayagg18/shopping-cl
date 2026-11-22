@@ -1,0 +1,138 @@
+{
+  "success": true,
+  "candidate": "ae0cf75dfbcc7eead8c68e20b09ad4ad6cb962c2",
+  "baseline": "d2dc441e6bed67a57572a7c1f12b06dad7f163cc",
+  "official_score": false,
+  "run_url": "https://github.com/akshayagg18/shopping-cl/actions/runs/44993593990",
+  "started_utc": "2026-11-22T06:25:02.258531+00:00",
+  "prior": "fef07368caf2e161fbf91dbf67e8176574fcfaa9",
+  "measurements": {
+    "released": {
+      "hosted-baseline": {
+        "n": 3,
+        "median_ms": 7298.752424000099,
+        "mean_ms": 7200.340486000035,
+        "sd_ms": 420.8728937679908,
+        "min_ms": 6738.981255999988,
+        "max_ms": 7563.287778000017,
+        "samples_ms": [
+          7563.287778000017,
+          7298.752424000099,
+          6738.981255999988
+        ],
+        "peak_rss_kib": 14387372,
+        "user_ms": 23334.748,
+        "system_ms": 2095.3309999999997,
+        "major_faults": 0,
+        "minor_faults": 187418,
+        "voluntary_cs": 468,
+        "involuntary_cs": 3903,
+        "stage_median_ms": {
+          "sessionized": 6609.4,
+          "open": 300.4,
+          "written": 312.1999999999998
+        },
+        "binary_sha256": "f7e8a5ba3108f4cdec3ba9ac54613d50af286afaab52da6f428e1f06138e4be1"
+      },
+      "hosted-prior": {
+        "n": 3,
+        "median_ms": 16824.039685000003,
+        "mean_ms": 16685.58513933332,
+        "sd_ms": 258.04551290547903,
+        "min_ms": 16387.862262999988,
+        "max_ms": 16844.853469999976,
+        "samples_ms": [
+          16844.853469999976,
+          16387.862262999988,
+          16824.039685000003
+        ],
+        "peak_rss_kib": 10697664,
+        "user_ms": 36570.107,
+        "system_ms": 8313.305,
+        "major_faults": 0,
+        "minor_faults": 144720,
+        "voluntary_cs": 787760,
+        "involuntary_cs": 2651,
+        "stage_median_ms": {
+          "open": 1.3,
+          "links": 904.7,
+          "released": 69.80000000000109,
+          "sessionized": 935.0,
+          "written": 196.39999999999964,
+          "dedup": 289.39999999999964,
+          "parsed": 13440.300000000001
+        },
+        "binary_sha256": "afae337fcd035d61f738ec0f5b7209d8f309f90c19fceb3622ccab6056d87f10"
+      },
+      "hosted-candidate": {
+        "n": 3,
+        "median_ms": 6965.623783000069,
+        "mean_ms": 7018.581442666648,
+        "sd_ms": 207.7159339913572,
+        "min_ms": 6842.470726999977,
+        "max_ms": 7247.6498179999,
+        "samples_ms": [
+          7247.6498179999,
+          6965.623783000069,
+          6842.470726999977
+        ],
+        "peak_rss_kib": 9875436,
+        "user_ms": 25269.09,
+        "system_ms": 771.061,
+        "major_faults": 0,
+        "minor_faults": 80892,
+        "voluntary_cs": 1749,
+        "involuntary_cs": 3940,
+        "stage_median_ms": {
+          "open": 1.1,
+          "links": 602.0,
+          "released": 66.80000000000018,
+          "sessionized": 922.0999999999995,
+          "written": 194.89999999999964,
+          "dedup": 817.1999999999998,
+          "parsed": 4302.5
+        },
+        "binary_sha256": "33873df6d6590f3b8322b141fbb0fdae79cd60f4fef4207c7162df14a8de551d"
+      },
+      "seed": 20261124,
+      "manifest": {
+        "window_start": "2025-02-12T00:00:00Z",
+        "window_end": "2025-02-26T00:00:00Z"
+      },
+      "exact_output_comparison": "passed",
+      "input_csv_bytes": 6230703912,
+      "candidate_sandbox_comparison": "passed"
+    }
+  },
+  "hardware": {
+    "affinity": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "cpu_model": "AMD EPYC 7763 64-Core Processor",
+    "memory": {
+      "MemTotal": "16366632 kB",
+      "SwapTotal": "0 kB",
+      "SwapFree": "0 kB"
+    },
+    "cpu_max": "unavailable",
+    "memory_max": "unavailable"
+  },
+  "topology": "CPU CORE SOCKET NODE L1d:L1i:L2:L3\n  0    0      0    0 0:0:0:0\n  1    0      0    0 0:0:0:0\n  2    1      0    0 1:1:1:0\n  3    1      0    0 1:1:1:0\n",
+  "baseline_build_s": 110.54279358199999,
+  "baseline_image": "sha256:80e0822bd4963da5ec1a58b06a60aec4ae9a773547557237a12f1545a473458f",
+  "prior_build_s": 15.786098995999993,
+  "prior_image": "sha256:66f115b3d331466e33a3daba4ea94ee3abc4635c601e8f28ac617ce0f49babd3",
+  "candidate_build_s": 16.066097504999988,
+  "candidate_image": "sha256:5711299fd51b6a7b503be36f42f670abe7c591a3cf1ac5d13567865b08c901a4",
+  "asset_sha256": {
+    "generator.zip": "78f973f75d14b48e792628284f19c75de71fa597d20952e16a9ced93c78bee4a",
+    "starter-polars.zip": "0faa7a2cb78f78682f606f88748cdf7290622db2ee55a71261091f3e01392d60",
+    "dev-answer.zip": "c2439e0e2e7456d721852814e9928e077648803d5c57a1760a40c7d3b0864d20"
+  },
+  "generator_zip_sha256": "78f973f75d14b48e792628284f19c75de71fa597d20952e16a9ced93c78bee4a",
+  "rules_sha256": "90e1132a605d762423ba5958bec44bfddbc3506f94b3ba1068a28b7a427f4248",
+  "dev_and_36_fixtures": "passed"
+}
