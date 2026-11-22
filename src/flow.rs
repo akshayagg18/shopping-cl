@@ -295,7 +295,10 @@ pub struct Sink {
     /// the event files' mapping (no page faults, nothing mapped to tear down at
     /// exit). Refs into it use file number `name_file`.
     pub names: Vec<u8>,
+    #[allow(dead_code)]
     name_file: usize,
+    /// (hashed key, name ref) of events of unlinked users whose IDs do not pack
+    pub longs: Vec<(u64, u64)>,
     pub wide: Vec<Wide>,
 }
 
@@ -312,6 +315,7 @@ impl Sink {
             ck: Stream::new(p2()),
             names: Vec::with_capacity(name_cap + 16),
             name_file,
+            longs: Vec::new(),
             wide: Vec::new(),
         }
     }
@@ -346,25 +350,24 @@ struct PendE {
 
 #[inline(always)]
 fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
-    let (key, uref) = match persons.map.get(pd.uh) {
-        Some(k) => (k, 0),
+    let key = match persons.map.get(pd.uh) {
+        Some(k) => k,
         None => {
-            // unlinked: the name comes from this event (any of the user's would do)
-            let n = sink.names.len();
+            // unlinked: a short ID is its own key (and name); any other is
+            // named from this event (any of the user's would do)
             let nl = (pd.uref & 0xFFFF) as usize;
-            if nl <= 16 && n + 16 <= sink.names.capacity() {
-                unsafe {
-                    std::ptr::write_unaligned(sink.names.as_mut_ptr().add(n) as *mut [u8; 16], pd.nm);
-                    sink.names.set_len(n + nl);
-                }
-                (unlinked_key(pd.uh), mkref(sink.name_file, n, nl))
+            let pk = crate::pack_id(&pd.nm[..nl.min(16)]);
+            if pk != 0 {
+                pk
             } else {
-                (unlinked_key(pd.uh), pd.uref)
+                let k = unlinked_key(pd.uh);
+                sink.longs.push((k, pd.uref));
+                k
             }
         }
     };
     let pb = person_bucket(key);
-    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { key, uref, ts: pd.ts, pc: pd.pc });
+    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { key, ts: pd.ts, pc: pd.pc });
     let (part, id) = (pd.part as usize, pd.id);
     if i < (1 << LOC_I) - 1 && pb < 1 << (32 - LOC_I) {
         sink.cp.push(&mut sink.arena, part, CopyR { id, ingest: pd.ingest, loc: ((pb as u32) << LOC_I) | i });
@@ -456,6 +459,8 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
 #[derive(Clone, Copy, Default)]
 struct PendC {
     uh: u64,
+    /// the user's packed key (0: the ID does not pack)
+    upk: u64,
     cref: u64,
     ts: u32,
     camp: u32,
@@ -463,7 +468,7 @@ struct PendC {
 
 #[inline(always)]
 fn emit_click(sink: &mut Sink, persons: &Persons, pd: &PendC) {
-    let key = persons.map.get(pd.uh).unwrap_or_else(|| unlinked_key(pd.uh));
+    let key = persons.map.get(pd.uh).unwrap_or_else(|| if pd.upk != 0 { pd.upk } else { unlinked_key(pd.uh) });
     sink.ck.push(&mut sink.arena, person_bucket(key), Ck { key, cref: pd.cref, ts: pd.ts, camp: pd.camp });
 }
 
@@ -491,7 +496,7 @@ pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
         let Some(camp) = lk.campaigns.get(h64(fld(2))) else { return };
         let uh = h64(user);
         persons.map.prefetch(uh);
-        let pd = PendC { uh, cref: mkref(f, p + fs.span(line, 0).0, cid.len()), ts: (ts - lo) as u32, camp: camp as u32 };
+        let pd = PendC { uh, upk: crate::pack_id(user), cref: mkref(f, p + fs.span(line, 0).0, cid.len()), ts: (ts - lo) as u32, camp: camp as u32 };
         if filled == ahead {
             emit_click(sink, persons, &ring[head]);
         } else {

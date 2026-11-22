@@ -75,7 +75,7 @@ pub static TOK1: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// Person partitions of at least SPLIT_MIN events are split 2^P2SPLIT ways
 /// before grouping (0: never).
 pub static P2SPLIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-const SPLIT_MIN: usize = 40_000;
+pub static SPLIT_MIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(40_000);
 /// Stage-1 window per block (bytes).
 pub static SUB_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(192 << 10);
 /// Map inputs with MAP_POPULATE.
@@ -116,7 +116,7 @@ fn mkref(file: usize, off: usize, len: usize) -> u64 {
 static NAMES: AtomicPtr<Vec<&'static [u8]>> = AtomicPtr::new(std::ptr::null_mut());
 
 #[inline(always)]
-fn deref(r: u64) -> &'static [u8] {
+pub fn deref(r: u64) -> &'static [u8] {
     let files = unsafe { &*FILES.load(Ordering::Relaxed) };
     let f = (r >> 52) as usize;
     let off = ((r >> 16) & ((1u64 << 36) - 1)) as usize;
@@ -861,9 +861,99 @@ impl PersonMap {
     }
 }
 
+/// Person key of an unlinked ID that packs: PACKED | its characters (see
+/// `pack_id`). Hashed keys of other unlinked IDs have both top bits clear.
+pub const PACKED: u64 = 1 << 62;
+
+/// 6-bit codes of the characters a packed ID may hold (0: not packable).
+const PACK_CODE: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut c = 0;
+    while c < 10 {
+        t[b'0' as usize + c] = 1 + c as u8;
+        c += 1;
+    }
+    c = 0;
+    while c < 26 {
+        t[b'a' as usize + c] = 11 + c as u8;
+        t[b'A' as usize + c] = 37 + c as u8;
+        c += 1;
+    }
+    t
+};
+const PACK_CHAR: [u8; 64] = {
+    let mut t = [0u8; 64];
+    let mut c = 0;
+    while c < 256 {
+        if PACK_CODE[c] != 0 {
+            t[PACK_CODE[c] as usize] = c as u8;
+        }
+        c += 1;
+    }
+    t
+};
+pub const PACK_MAX: usize = 10;
+
+/// An ID of 1..=10 characters from [0-9a-zA-Z], losslessly as PACKED | six
+/// bits a character (first character highest, unused positions 0); 0 if it
+/// does not pack. Distinct IDs never share a packed key.
+#[inline(always)]
+pub fn pack_id(b: &[u8]) -> u64 {
+    let n = b.len();
+    if n == 0 || n > PACK_MAX {
+        return 0;
+    }
+    let mut acc = 0u64;
+    let mut ok = 1u8;
+    for i in 0..PACK_MAX {
+        let c = if i < n { PACK_CODE[b[i] as usize] } else { 0 };
+        ok &= (i >= n || c != 0) as u8;
+        acc = (acc << 6) | c as u64;
+    }
+    if ok == 0 { 0 } else { PACKED | acc }
+}
+
+/// The ID a packed key stands for, into `buf`.
+#[inline]
+pub fn unpack_id(key: u64, buf: &mut [u8; 16]) -> &[u8] {
+    let mut n = 0;
+    for i in 0..PACK_MAX {
+        let c = ((key >> (6 * (PACK_MAX - 1 - i))) & 63) as usize;
+        if c == 0 {
+            break;
+        }
+        buf[n] = PACK_CHAR[c];
+        n += 1;
+    }
+    &buf[..n]
+}
+
 #[inline(always)]
 fn unlinked_key(user_hash: u64) -> u64 {
-    user_hash & !LINKED
+    user_hash & !(LINKED | PACKED)
+}
+
+/// Names of unlinked users whose IDs do not pack: hashed key -> ref, built
+/// after parsing from the sinks' lists.
+static LONGS: AtomicPtr<PersonMap> = AtomicPtr::new(std::ptr::null_mut());
+
+#[inline(always)]
+fn longs_key(k: u64) -> u64 {
+    // spread over the table's top-bit index; never 0 for a non-zero key
+    k.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+/// A person's name (a ref, or for a packed key the key with bit 63 set).
+#[inline(always)]
+fn person_name(key: u64) -> u64 {
+    if key & LINKED != 0 {
+        key & !LINKED
+    } else if key & PACKED != 0 {
+        key | LINKED
+    } else {
+        let m = unsafe { &*LONGS.load(Ordering::Relaxed) };
+        m.get(longs_key(key)).expect("name of an unlinked user")
+    }
 }
 
 #[inline(always)]
@@ -1035,14 +1125,13 @@ fn links(inp: &Inputs) -> Persons {
 
 // ---------------------------------------------------------------- records
 
-/// A surviving event, keyed by person. 24 bytes.
+/// A surviving event, keyed by person. 16 bytes.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
-struct Ev2 {
-    key: u64,
-    uref: u64,
-    ts: u32,
-    pc: u32,
+pub struct Ev2 {
+    pub key: u64,
+    pub ts: u32,
+    pub pc: u32,
 }
 
 /// An event inside a person partition, once grouped: the person is known by
@@ -1119,7 +1208,6 @@ struct Scratch {
     cks_sorted: Vec<Ck1>,
     // per grouped person: key and the ref of one of its events' user IDs
     pkey: Vec<u64>,
-    puref: Vec<u64>,
     ev_pos: Vec<u32>,
     ck_pos: Vec<u32>,
     // per person: occupied half-hour bins (bitmap), their aggregates, the
@@ -1157,7 +1245,6 @@ impl Scratch {
             evs_sorted: Vec::new(),
             cks_sorted: Vec::new(),
             pkey: Vec::new(),
-            puref: Vec::new(),
             ev_pos: Vec::new(),
             ck_pos: Vec::new(),
             bm: Vec::new(),
@@ -1224,7 +1311,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
         return;
     }
     let split = P2SPLIT.load(Ordering::Relaxed);
-    if split > 0 && n >= SPLIT_MIN {
+    if split > 0 && n >= SPLIT_MIN.load(Ordering::Relaxed) {
         // a big partition: live records into 2^split sub-partitions first (by
         // the next bits of the person bucket hash), each processed in cache
         let nsub = 1usize << split;
@@ -1280,7 +1367,6 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     sc.used.clear();
     sc.ev_cnt.clear();
     sc.pkey.clear();
-    sc.puref.clear();
     sc.ev_local.clear();
     sc.ev_local.reserve(n);
     let nb = ctx.nbins;
@@ -1310,7 +1396,6 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                     let id = group_id(sc, e.key, &mut cap);
                     if id as usize == sc.pkey.len() {
                         sc.pkey.push(e.key);
-                        sc.puref.push(e.uref);
                     }
                     unsafe {
                         *sc.ev_cnt.get_unchecked_mut(id as usize) += 1;
@@ -1416,7 +1501,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
         if ck.len() > 1 {
             ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
         }
-        person_sessions(ctx, sc.pkey[pid], sc.puref[pid], ev, ck, agg, sc);
+        person_sessions(ctx, sc.pkey[pid], ev, ck, agg, sc);
     }
     sc.evs_sorted = evs;
     sc.cks_sorted = cks;
@@ -1437,7 +1522,6 @@ fn process_list(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evs_in: &[Ev2], cks_
     sc.used.clear();
     sc.ev_cnt.clear();
     sc.pkey.clear();
-    sc.puref.clear();
     sc.ev_local.clear();
     sc.ev_local.reserve(n);
     let nb = ctx.nbins;
@@ -1452,8 +1536,7 @@ fn process_list(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evs_in: &[Ev2], cks_
             let id = group_id(sc, e.key, &mut cap);
             if id as usize == sc.pkey.len() {
                 sc.pkey.push(e.key);
-                sc.puref.push(e.uref);
-            }
+                            }
             unsafe {
                 *sc.ev_cnt.get_unchecked_mut(id as usize) += 1;
                 let len = evb.len();
@@ -1556,7 +1639,7 @@ fn process_list(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evs_in: &[Ev2], cks_
         if ck.len() > 1 {
             ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
         }
-        person_sessions(ctx, sc.pkey[pid], sc.puref[pid], ev, ck, agg, sc);
+        person_sessions(ctx, sc.pkey[pid], ev, ck, agg, sc);
     }
     sc.evs_sorted = evs;
     sc.cks_sorted = cks;
@@ -1622,8 +1705,8 @@ fn bin_runs(evs: &[Ev1], sc: &mut Scratch) {
 }
 
 /// `evs`: one person's events, any order. `cks`: the person's clicks by (ts, click_id).
-fn person_sessions(ctx: &Ctx, key: u64, uref: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg, sc: &mut Scratch) {
-    let name = if key & LINKED != 0 { key & !LINKED } else { uref };
+fn person_sessions(ctx: &Ctx, key: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg, sc: &mut Scratch) {
+    let name = person_name(key);
     let (mut lo, mut hi) = (0usize, 0usize);
     let mut cur_day: i64 = i64::MIN;
     let (mut d_sess, mut d_evs, mut d_rev) = (0u32, 0u32, 0i64);
@@ -1881,6 +1964,9 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         flow::AHEAD_N.store(a.clamp(1, flow::RING), Ordering::Relaxed);
     }
     flow::STAGE_HUGE.store(std::env::var("SS_STH").is_ok_and(|v| v == "1"), Ordering::Relaxed);
+    if let Some(v) = std::env::var("SS_SPLITMIN").ok().and_then(|v| v.parse().ok()) {
+        SPLIT_MIN.store(v, Ordering::Relaxed);
+    }
     P2SPLIT.store(std::env::var("SS_P2SPLIT").ok().and_then(|v| v.parse().ok()).unwrap_or(0u32).min(6), Ordering::Relaxed);
     flow::NT_DIRECT.store(std::env::var("SS_NTD").is_ok_and(|v| v == "1"), Ordering::Relaxed);
     output::DIGEST.store(std::env::var("SS_DIGEST").is_ok_and(|v| v == "1"), Ordering::Relaxed);
@@ -1920,8 +2006,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     lap("links");
     let nthreads = rayon::current_num_threads();
     let nfiles = unsafe { &*FILES.load(Ordering::Relaxed) }.len();
-    // room for every event's user ID, at twice a thread's share (spare virtual memory)
-    let name_cap = est_events / nthreads * 32 + (1 << 20);
+    // unlinked IDs pack into their keys or are named from the input: no copies
+    let name_cap = 0;
     let sinks: Vec<std::sync::Mutex<flow::Sink>> =
         (0..nthreads).map(|t| std::sync::Mutex::new(flow::Sink::new(nfiles + t, name_cap))).collect();
     // every worker takes the next unit in list order (the order read ahead)
@@ -1943,6 +2029,17 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     sinks.par_iter_mut().for_each(|s| s.finish());
     let names: Vec<&'static [u8]> = sinks.iter_mut().map(|s| &*std::mem::take(&mut s.names).leak()).collect();
     NAMES.store(Box::into_raw(Box::new(names)), Ordering::Release);
+    // names of unlinked users whose IDs do not pack (a few percent of events)
+    let nlong: usize = sinks.iter().map(|s| s.longs.len()).sum();
+    let longs = PersonMap::with_room(nlong);
+    sinks.par_iter().for_each(|s| {
+        s.longs.par_chunks(1 << 12).for_each(|c| {
+            for &(k, r) in c {
+                longs.insert(longs_key(k), r);
+            }
+        })
+    });
+    LONGS.store(Box::into_raw(Box::new(longs)), Ordering::Release);
     lap("parsed");
     let dead = flow::Dead::new(&sinks);
     let wide = flow::wide_sorted(&mut sinks);
@@ -2014,8 +2111,16 @@ fn ctx_info(ctx: &Ctx, _lk: &Lookups) -> OutInfo {
     OutInfo { ndays: ctx.ndays, ncamp: ctx.ncamp, ws_day: ctx.ws_day }
 }
 
-pub fn name_bytes(r: u64) -> &'static [u8] {
-    deref(r)
+/// A person's name bytes (`person_name`): a ref, or a packed ID decoded into `buf`.
+#[inline(always)]
+pub fn name_bytes<'a>(r: u64, buf: &'a mut [u8; 16]) -> &'a [u8] {
+    if r & LINKED != 0 { unpack_id(r, buf) } else { deref(r) }
+}
+
+/// Bytes of a name, at most (for sizing columns).
+#[inline(always)]
+pub fn name_len(r: u64) -> usize {
+    if r & LINKED != 0 { PACK_MAX } else { (r & 0xFFFF) as usize }
 }
 
 #[cfg(test)]
@@ -2162,4 +2267,34 @@ pub(crate) mod tests_support {
         out
     }
 
+}
+
+#[cfg(test)]
+mod pack_tests {
+    use super::*;
+    #[test]
+    fn pack_roundtrip_and_distinct() {
+        let mut seen = std::collections::HashMap::new();
+        let alpha = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let mut x: u64 = 12345;
+        for _ in 0..200_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let n = 1 + (x % 10) as usize;
+            let id: Vec<u8> = (0..n).map(|i| alpha[((x >> (i * 6)) as usize) % 62]).collect();
+            let k = pack_id(&id);
+            assert!(k & PACKED != 0 && k & LINKED == 0);
+            let mut b = [0u8; 16];
+            assert_eq!(unpack_id(k, &mut b), &id[..]);
+            if let Some(prev) = seen.insert(k, id.clone()) {
+                assert_eq!(prev, id);
+            }
+        }
+        for bad in [&b""[..], b"u1 ", b"u_1", b"abcdefghijk", b"u!0", b"\"u1", b"\xff"] {
+            assert_eq!(pack_id(bad), 0, "{:?}", bad);
+        }
+        assert_ne!(pack_id(b"u1"), pack_id(b"u10"));
+        assert_ne!(pack_id(b"0"), pack_id(b"00"));
+    }
 }

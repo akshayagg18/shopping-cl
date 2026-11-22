@@ -498,7 +498,7 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let dev_gb = dir_gb(data);
-    eprintln!("D21 {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
+    eprintln!("D22 (16-byte event records) {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
     eprintln!("cols: wall/int ms: open links parse dedup sess write | user sys rss faults | digests");
     let dg = |k: u64, line: &str, base: Option<(u64, u64)>| -> String {
         match (digests(line), base) {
@@ -532,27 +532,34 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
         true
     };
     run_k(2, &[("x2", &[])]);
-    let v60: [(&str, &[(&str, &str)]); 9] = [
-        ("base", &[]),
-        ("p11d11", &[("SS_P2B", "11"), ("SS_PDB", "11")]),
+    let v60: [(&str, &[(&str, &str)]); 13] = [
+        ("warm", &[("SS_P2B", "10"), ("SS_PDB", "10")]),
         ("p10d10", &[("SS_P2B", "10"), ("SS_PDB", "10")]),
-        ("p11d12", &[("SS_P2B", "11")]),
-        ("p12d11", &[("SS_PDB", "11")]),
-        ("base", &[]),
         ("p11d11", &[("SS_P2B", "11"), ("SS_PDB", "11")]),
-        ("n5", &[("NCPU", "5")]),
-        ("base", &[]),
+        ("p10d11", &[("SS_P2B", "10"), ("SS_PDB", "11")]),
+        ("p11d10", &[("SS_P2B", "11"), ("SS_PDB", "10")]),
+        ("auto", &[]),
+        ("p10d10s2", &[("SS_P2B", "10"), ("SS_PDB", "10"), ("SS_P2SPLIT", "2"), ("SS_SPLITMIN", "20000")]),
+        ("p9d10s2", &[("SS_P2B", "9"), ("SS_PDB", "10"), ("SS_P2SPLIT", "2"), ("SS_SPLITMIN", "20000")]),
+        ("p10d10", &[("SS_P2B", "10"), ("SS_PDB", "10")]),
+        ("p11d11", &[("SS_P2B", "11"), ("SS_PDB", "11")]),
+        ("p10d11", &[("SS_P2B", "10"), ("SS_PDB", "11")]),
+        ("p10d10s2", &[("SS_P2B", "10"), ("SS_PDB", "10"), ("SS_P2SPLIT", "2"), ("SS_SPLITMIN", "20000")]),
+        ("p10d10", &[("SS_P2B", "10"), ("SS_PDB", "10")]),
     ];
     let kb: usize = std::env::var("SS_DIAG_BIG").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
     let km: usize = std::env::var("SS_DIAG_MID").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     if !run_k(kb, &v60) {
         run_k(kb * 2 / 3, &v60);
     }
-    let v20: [(&str, &[(&str, &str)]); 4] = [
-        ("base", &[]),
+    let v20: [(&str, &[(&str, &str)]); 7] = [
+        ("warm", &[]),
+        ("auto", &[]),
         ("p9d9", &[("SS_P2B", "9"), ("SS_PDB", "9")]),
-        ("p11d11", &[("SS_P2B", "11"), ("SS_PDB", "11")]),
-        ("base", &[]),
+        ("p9d10", &[("SS_P2B", "9")]),
+        ("p10d9", &[("SS_PDB", "9")]),
+        ("p9d9s1", &[("SS_P2B", "9"), ("SS_PDB", "9"), ("SS_P2SPLIT", "1"), ("SS_SPLITMIN", "20000")]),
+        ("auto", &[]),
     ];
     run_k(km, &v20);
     let _ = std::fs::remove_dir_all(&ob);
