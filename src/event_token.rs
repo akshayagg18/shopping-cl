@@ -98,7 +98,6 @@ impl Tokens {
     }
     #[inline]
     fn source_key(&self,bytes:&'static [u8])->u64 {
-        if let Some(key)=compact(bytes) {return key;}
         let address=bytes.as_ptr().expose_provenance();
         if self.refs && self.base!=0 && (1..=63).contains(&bytes.len()) && address>=self.base && address<=self.end && bytes.len()<=self.end-address {
             return ESC|(((address-self.base) as u64)<<6)|bytes.len() as u64;
@@ -127,8 +126,11 @@ impl Tokens {
     }
     #[inline]
     pub fn stamp(&self,bytes:&'static [u8],seconds:i64)->(u64,u32,u64) {
-        let key=self.source_key(bytes);
-        let hash=self.identity(key);
+        let (key,hash)=if let Some(key)=compact(bytes) {(key,key)} else {
+            let key=self.source_key(bytes);
+            (key,if self.refs {xxhash_rust::xxh3::xxh3_64(bytes)} else {key})
+        };
+        #[cfg(test)] let hash=self.forced_hash.unwrap_or(hash);
         if (0..=u32::MAX as i64).contains(&seconds) {return(key,seconds as u32,hash);}
         let mut times=self.times.lock().unwrap();let index=times.len() as u64;
         assert!(index<(1<<41));times.push((key,seconds));(RARE_TIME|index,0,hash)
@@ -136,6 +138,7 @@ impl Tokens {
     #[inline(always)]
     pub fn identity(&self,stored:u64)->u64 {
         #[cfg(test)] if let Some(hash)=self.forced_hash {return hash;}
+        if stored<ESC {return stored;}
         let key=self.raw_identity(stored);
         if !self.refs || key<ESC {return key;}
         if key&63!=0 {return xxhash_rust::xxh3::xxh3_64(self.bytes(key));}
