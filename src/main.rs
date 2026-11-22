@@ -1692,6 +1692,9 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         flow::AHEAD_N.store(a.clamp(1, flow::RING), Ordering::Relaxed);
     }
     flow::STAGE_HUGE.store(std::env::var("SS_STH").is_ok_and(|v| v == "1"), Ordering::Relaxed);
+    flow::NT_DIRECT.store(std::env::var("SS_NTD").is_ok_and(|v| v == "1"), Ordering::Relaxed);
+    flow::EXP.store(std::env::var("SS_EXP").is_ok(), Ordering::Relaxed);
+    flow::EXPL.store(std::env::var("SS_EXPL").ok().and_then(|v| v.parse().ok()).unwrap_or(0), Ordering::Relaxed);
     let inp = open_all(data);
     // partition counts follow the input size, so a partition's working set
     // stays about the same from the 20M practice set to the 60M final

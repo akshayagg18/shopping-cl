@@ -448,23 +448,21 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let k: usize = std::env::var("SS_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let t = Instant::now();
     upscale(data, &big, k);
-    eprintln!("D19 {model} | x{k} up={:.1}s; wall/int ms: open links parse dedup sess write | user sys", t.elapsed().as_secs_f64());
-    let vars: [(&str, &[(&str, &str)]); 16] = [
+    eprintln!("D20 {model} | x{k} up={:.1}s; wall/int ms: open links parse dedup sess write | user sys", t.elapsed().as_secs_f64());
+    let vars: [(&str, &[(&str, &str)]); 14] = [
         ("base", &[]),
-        ("sub64", &[("SS_SUB", "64")]),
-        ("sub32", &[("SS_SUB", "32")]),
-        ("sub96", &[("SS_SUB", "96")]),
-        ("ah8", &[("SS_AHEAD", "8")]),
-        ("ah32", &[("SS_AHEAD", "32")]),
+        ("nocp", &[("SS_EXPL", "6")]),
+        ("noev+cp", &[("SS_EXPL", "7")]),
+        ("nonames", &[("SS_EXPL", "8")]),
+        ("nolk", &[("SS_EXP", "1")]),
+        ("noemit", &[("SS_EXPL", "3")]),
         ("base", &[]),
-        ("sth", &[("SS_STH", "1")]),
-        ("lb1", &[("SS_LB", "1"), ("SS_LT", "1")]),
-        ("sub64", &[("SS_SUB", "64")]),
-        ("sub32", &[("SS_SUB", "32")]),
-        ("ah8", &[("SS_AHEAD", "8")]),
-        ("ah32", &[("SS_AHEAD", "32")]),
-        ("sth", &[("SS_STH", "1")]),
-        ("lt", &[("SS_LT", "1")]),
+        ("d6", &[("SS_PDB", "6")]),
+        ("p6", &[("SS_P2B", "6")]),
+        ("p6d6", &[("SS_P2B", "6"), ("SS_PDB", "6")]),
+        ("nocp", &[("SS_EXPL", "6")]),
+        ("noev+cp", &[("SS_EXPL", "7")]),
+        ("noemit", &[("SS_EXPL", "3")]),
         ("base", &[]),
     ];
     for (tag, env) in vars.iter() {
