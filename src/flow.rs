@@ -126,6 +126,7 @@ pub struct Stream<T> {
 impl<T: Copy + Default> Stream<T> {
     /// Records per staging flush: a whole number of cache lines.
     const K: usize = match std::mem::size_of::<T>() {
+        8 => 16,
         12 => 16,
         16 => 4,
         24 => 8,
@@ -251,7 +252,10 @@ impl<T: Copy + Default> Stream<T> {
 /// One worker's output of the parse phase.
 pub struct Sink {
     arena: Arena,
-    pub ev: Stream<Ev2>,
+    /// views and carts: person and time only (8 bytes)
+    pub ev: Stream<Ev8>,
+    /// purchases (about 3% of events), with price and category
+    pub pu: Stream<Ev2>,
     pub cp: Stream<CopyR>,
     pub ck: Stream<Ck>,
     /// IDs of unlinked users, copied while they are in cache: names never read
@@ -274,6 +278,7 @@ impl Sink {
         Sink {
             arena: Arena::new(),
             ev: Stream::new(p2()),
+            pu: Stream::new(p2()),
             cp: Stream::new(pd()),
             ck: Stream::new(p2()),
             names: Vec::with_capacity(name_cap + 16),
@@ -285,6 +290,7 @@ impl Sink {
     /// End of the parse phase: everything staged goes to its blocks.
     pub fn finish(&mut self) {
         self.ev.finish(&mut self.arena);
+        self.pu.finish(&mut self.arena);
         self.cp.finish(&mut self.arena);
         self.ck.finish(&mut self.arena);
         #[cfg(target_arch = "x86_64")]
@@ -312,7 +318,13 @@ struct PendE {
 fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
     let pid = persons.pid(pd.uh, pd.uref, &mut sink.pids);
     let pb = (pid as usize) & (p2() - 1);
-    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { pid, ts: pd.ts, pc: pd.pc });
+    // purchases live in their own stream: the record's dead-flag partition
+    // is p2 + pb there
+    let (i, pb) = if pd.pc == 0 {
+        (sink.ev.push(&mut sink.arena, pb, Ev8 { pid, ts: pd.ts }), pb)
+    } else {
+        (sink.pu.push(&mut sink.arena, pb, Ev2 { pid, ts: pd.ts, pc: pd.pc }), p2() + pb)
+    };
     let (part, id) = (pd.part as usize, pd.id);
     if i < (1 << LOC_I) - 1 && pb < 1 << (32 - LOC_I) {
         sink.cp.push(&mut sink.arena, part, CopyR { id, ingest: pd.ingest, loc: ((pb as u32) << LOC_I) | i });
@@ -458,13 +470,14 @@ pub struct Dead {
 
 impl Dead {
     pub fn new(sinks: &[Sink]) -> Self {
-        let np = p2();
+        // partitions p2..2 * p2 are the purchase streams
+        let np = 2 * p2();
         let mut off = Vec::with_capacity(sinks.len() * np);
         let mut n = 0usize;
         for s in sinks {
             for p in 0..np {
                 off.push(n);
-                n += s.ev.len(p).div_ceil(64);
+                n += if p < p2() { s.ev.len(p) } else { s.pu.len(p - p2()) }.div_ceil(64);
             }
         }
         let words = (0..n).map(|_| AtomicU64::new(0)).collect();
