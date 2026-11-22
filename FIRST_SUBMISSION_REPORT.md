@@ -82,6 +82,16 @@ Docker CLI wall2039.7ms. CLI wall includes daemon startup and cleanup; neither
 is the organizer's official timing. The official hardware has8 pinned logical
 CPUs and24GB, so these four-logical-CPU CI times must not be relabeled as scores.
 
+A new local nine-pair comparison also measured selected82 directly against
+frozen D2 on the same current20M input:3094.08 versus4145.42ms, a25.4%
+decrease. Selected mean/SD/min/max3107.22/115.67/2993.44/3320.19ms; frozen
+4128.15/303.77/3595.83/4511.96ms. Both complete outputs matched the frozen
+reference. CPU quota2,4 Rayon workers,affinity0,2 on the Xeon8573C VM;
+median peak RSS3,234,160 versus4,614,276KiB. This later batch illustrates the
+noise and workload-dependent size of the gain; it does not supersede official
+timing or justify choosing the largest ratio from separate batches.
+`experiments/results/frozen-vs-combined-20m-summary.json` retains these metrics.
+
 An earlier corrected current-generator hosted run compared ae0 directly with
 frozen D2:1682.74 versus1981.93ms at20M;5399.00 versus5872.20ms and5375.52 versus
 5958.23ms at60M. [Receipt](https://github.com/akshayagg18/shopping-cl/actions/runs/44995086022).
