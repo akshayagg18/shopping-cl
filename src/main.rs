@@ -72,6 +72,8 @@ pub static READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// (stage 1). Off: on the scorer's Cascade Lake cores stage 1 is ~110 ms faster
 /// at 20M (same-run A/B), though per line wins on newer cores.
 pub static TOK1: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Stage-1 window per block (bytes).
+pub static SUB_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(192 << 10);
 /// Map inputs with MAP_POPULATE.
 pub static POP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -952,24 +954,65 @@ fn links(inp: &Inputs) -> Persons {
     // parent is set to its root on the way (later passes need one hop)
     let best: Vec<AtomicU32> = (0..cap as u32).into_par_iter().with_min_len(1 << 14).map(AtomicU32::new).collect();
     let name_of = |i: usize| deref(map.val_at(i).load(Ordering::Relaxed));
-    (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
-        if map.key_at(i).load(Ordering::Relaxed) == 0 {
-            return;
-        }
-        let r = find(&parent, i as u32) as usize;
-        if r == i {
-            return;
-        }
-        parent[i].store(r as u32, Ordering::Relaxed);
-        let mine = name_of(i);
-        let mut cur = best[r].load(Ordering::Relaxed);
-        while mine < name_of(cur as usize) {
-            match best[r].compare_exchange_weak(cur, i as u32, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => break,
-                Err(c) => cur = c,
+    if std::env::var("SS_LB").is_ok_and(|v| v == "1") {
+        // first the smallest 8-byte prefix per component (one atomic min, no
+        // name reads), then full compares only among the slots that hold it
+        let pre_of = |i: usize| {
+            let b = name_of(i);
+            let mut x = [0u8; 8];
+            let k = b.len().min(8);
+            x[..k].copy_from_slice(&b[..k]);
+            u64::from_be_bytes(x)
+        };
+        let minp: Vec<std::sync::atomic::AtomicU64> = (0..cap).into_par_iter().with_min_len(1 << 14).map(|_| std::sync::atomic::AtomicU64::new(u64::MAX)).collect();
+        (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
+            if map.key_at(i).load(Ordering::Relaxed) == 0 {
+                return;
             }
-        }
-    });
+            let r = find(&parent, i as u32) as usize;
+            if r != i {
+                parent[i].store(r as u32, Ordering::Relaxed);
+            }
+            minp[r].fetch_min(pre_of(i), Ordering::Relaxed);
+        });
+        (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
+            if map.key_at(i).load(Ordering::Relaxed) == 0 {
+                return;
+            }
+            let r = parent[i].load(Ordering::Relaxed) as usize;
+            if r == i || pre_of(i) != minp[r].load(Ordering::Relaxed) {
+                return;
+            }
+            let mine = name_of(i);
+            let mut cur = best[r].load(Ordering::Relaxed);
+            while (cur as usize == r && pre_of(r) != minp[r].load(Ordering::Relaxed)) || mine < name_of(cur as usize) {
+                match best[r].compare_exchange_weak(cur, i as u32, Ordering::Relaxed, Ordering::Relaxed) {
+                    Ok(_) => break,
+                    Err(c) => cur = c,
+                }
+            }
+        });
+        std::mem::forget(minp);
+    } else {
+        (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
+            if map.key_at(i).load(Ordering::Relaxed) == 0 {
+                return;
+            }
+            let r = find(&parent, i as u32) as usize;
+            if r == i {
+                return;
+            }
+            parent[i].store(r as u32, Ordering::Relaxed);
+            let mine = name_of(i);
+            let mut cur = best[r].load(Ordering::Relaxed);
+            while mine < name_of(cur as usize) {
+                match best[r].compare_exchange_weak(cur, i as u32, Ordering::Relaxed, Ordering::Relaxed) {
+                    Ok(_) => break,
+                    Err(c) => cur = c,
+                }
+            }
+        });
+    }
     lt("best");
     // a root's value becomes its component's name ref (it reads only its own
     // component's non-root slots), then every value becomes LINKED | that ref
@@ -1642,6 +1685,13 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     READ.store(std::env::var("SS_READ").is_ok_and(|v| v == "1"), Ordering::Relaxed);
     TOK1.store(std::env::var("SS_TOK").is_ok_and(|v| v == "2"), Ordering::Relaxed);
     POP.store(std::env::var("SS_POP").is_ok_and(|v| v == "1"), Ordering::Relaxed);
+    if let Some(kb) = std::env::var("SS_SUB").ok().and_then(|v| v.parse::<usize>().ok()) {
+        SUB_BYTES.store(kb.clamp(16, 4096) << 10, Ordering::Relaxed);
+    }
+    if let Some(a) = std::env::var("SS_AHEAD").ok().and_then(|v| v.parse::<usize>().ok()) {
+        flow::AHEAD_N.store(a.clamp(1, flow::RING), Ordering::Relaxed);
+    }
+    flow::STAGE_HUGE.store(std::env::var("SS_STH").is_ok_and(|v| v == "1"), Ordering::Relaxed);
     let inp = open_all(data);
     // partition counts follow the input size, so a partition's working set
     // stays about the same from the 20M practice set to the 60M final

@@ -5,6 +5,11 @@
 use super::*;
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicU64;
+/// Ring capacity; lookups are prefetched AHEAD_N records ahead (<= RING).
+pub const RING: usize = 32;
+pub static AHEAD_N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(16);
+/// Staging areas in 2 MiB pages.
+pub static STAGE_HUGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub const PD_BITS: u32 = 10; // event-id partitions of the copy records (default)
 pub static PDB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(PD_BITS);
@@ -137,7 +142,16 @@ impl<T: Copy + Default> Stream<T> {
 
     fn new(parts: usize) -> Self {
         let wc = WC.load(Ordering::Relaxed) && Self::K > 1;
-        let stage = if wc { vec![Line([0; 64]); parts * Self::ROW_LINES] } else { Vec::new() };
+        let stage = if wc {
+            let n = parts * Self::ROW_LINES;
+            // a 2 MiB request comes from the huge-page allocator
+            let cap = if STAGE_HUGE.load(Ordering::Relaxed) { n.max((2 << 20) / 64) } else { n };
+            let mut v = Vec::with_capacity(cap);
+            v.resize(n, Line([0; 64]));
+            v
+        } else {
+            Vec::new()
+        };
         Stream { tails: vec![Tail::default(); parts], blocks: (0..parts).map(|_| Vec::new()).collect(), stage, wc, _t: PhantomData }
     }
 
@@ -338,8 +352,8 @@ fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
 /// Parse one unit of event lines into `sink`.
 #[allow(clippy::too_many_arguments)]
 pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons, ws: i64, we: i64, sink: &mut Sink, tid: u64) {
-    const AHEAD: usize = 16;
-    let mut ring = [PendE::default(); AHEAD];
+    let ahead = AHEAD_N.load(Ordering::Relaxed);
+    let mut ring = [PendE::default(); RING];
     let mut memo = parse::Memo::new();
     let mut head = 0usize;
     let mut filled = 0usize;
@@ -377,7 +391,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             };
             let uh = h64(user);
             persons.map.prefetch(uh);
-            if filled == AHEAD {
+            if filled == ahead {
                 emit_event(sink, persons, tid, &ring[head]);
             } else {
                 filled += 1;
@@ -399,15 +413,18 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             pd.ingest = ingest;
             pd.ts = (ts - ws) as u32;
             pd.pc = pc;
-            head = (head + 1) % AHEAD;
+            head += 1;
+            if head == ahead {
+                head = 0;
+            }
             return;
         }
         // an invalid copy still takes part in dedup
         sink.cp.push(&mut sink.arena, eid_part(eid_h), CopyR { id: copy_id(eid_h, eid_c), ingest, loc: NOLOC });
     });
-    let start = if filled == AHEAD { head } else { 0 };
+    let start = if filled == ahead { head } else { 0 };
     for k in 0..filled {
-        let pd = ring[(start + k) % AHEAD];
+        let pd = ring[(start + k) % ahead];
         emit_event(sink, persons, tid, &pd);
     }
 }
@@ -429,9 +446,9 @@ fn emit_click(sink: &mut Sink, persons: &Persons, pd: &PendC) {
 /// Parse one unit of click lines into `sink`.
 #[allow(clippy::too_many_arguments)]
 pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons, ws: i64, we: i64, sink: &mut Sink) {
-    const AHEAD: usize = 16;
+    let ahead = AHEAD_N.load(Ordering::Relaxed);
     let lo = ws - CLICK_REACH;
-    let mut ring = [PendC::default(); AHEAD];
+    let mut ring = [PendC::default(); RING];
     let mut memo = parse::Memo::new();
     let mut head = 0usize;
     let mut filled = 0usize;
@@ -451,17 +468,20 @@ pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
         let uh = h64(user);
         persons.map.prefetch(uh);
         let pd = PendC { uh, cref: mkref(f, p + fs.span(line, 0).0, cid.len()), ts: (ts - lo) as u32, camp: camp as u32 };
-        if filled == AHEAD {
+        if filled == ahead {
             emit_click(sink, persons, &ring[head]);
         } else {
             filled += 1;
         }
         ring[head] = pd;
-        head = (head + 1) % AHEAD;
+        head += 1;
+            if head == ahead {
+                head = 0;
+            }
     });
-    let start = if filled == AHEAD { head } else { 0 };
+    let start = if filled == ahead { head } else { 0 };
     for k in 0..filled {
-        let pd = ring[(start + k) % AHEAD];
+        let pd = ring[(start + k) % ahead];
         emit_click(sink, persons, &pd);
     }
 }

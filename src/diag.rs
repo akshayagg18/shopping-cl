@@ -448,33 +448,27 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let k: usize = std::env::var("SS_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let t = Instant::now();
     upscale(data, &big, k);
-    eprintln!("D18 {model} | x{k} up={:.1}s | 10 scorer-like runs each, interleaved: wall ms (process start to exit)", t.elapsed().as_secs_f64());
-    // the candidate (defaults) against the per-line tokenizer (v15's), alternating
-    let cfgs: [(&str, &[(&str, &str)]); 2] = [("v16", &[]), ("v15tok", &[("SS_TOK", "2")])];
-    let mut walls: Vec<Vec<f64>> = vec![Vec::new(); cfgs.len()];
-    let mut ints: Vec<Vec<f64>> = vec![Vec::new(); cfgs.len()];
-    for r in 0..10 {
-        for c in 0..cfgs.len() {
-            let c = if r % 2 == 0 { c } else { cfgs.len() - 1 - c };
-            let line = child(cfgs[c].0, &big, &ob, threads, cfgs[c].1);
-            // "tag wall/int: ..."
-            let wi = line.split_whitespace().nth(1).unwrap_or("0/0:").trim_end_matches(':').to_string();
-            let (w, i) = wi.split_once('/').unwrap_or(("0", "0"));
-            walls[c].push(w.parse().unwrap_or(0.0));
-            ints[c].push(i.parse().unwrap_or(0.0));
-            if r == 0 {
-                eprintln!("{line}");
-            }
-        }
-    }
-    for (c, (tag, _)) in cfgs.iter().enumerate() {
-        let w = &walls[c];
-        let mean = w.iter().sum::<f64>() / w.len() as f64;
-        let mn = w.iter().cloned().fold(f64::MAX, f64::min);
-        let mx = w.iter().cloned().fold(0.0, f64::max);
-        let im = ints[c].iter().sum::<f64>() / ints[c].len() as f64;
-        let all: Vec<String> = w.iter().map(|x| format!("{x:.0}")).collect();
-        eprintln!("{tag}: mean {mean:.0} min {mn:.0} max {mx:.0} (in-process mean {im:.0}) | {}", all.join(" "));
+    eprintln!("D19 {model} | x{k} up={:.1}s; wall/int ms: open links parse dedup sess write | user sys", t.elapsed().as_secs_f64());
+    let vars: [(&str, &[(&str, &str)]); 16] = [
+        ("base", &[]),
+        ("sub64", &[("SS_SUB", "64")]),
+        ("sub32", &[("SS_SUB", "32")]),
+        ("sub96", &[("SS_SUB", "96")]),
+        ("ah8", &[("SS_AHEAD", "8")]),
+        ("ah32", &[("SS_AHEAD", "32")]),
+        ("base", &[]),
+        ("sth", &[("SS_STH", "1")]),
+        ("lb1", &[("SS_LB", "1"), ("SS_LT", "1")]),
+        ("sub64", &[("SS_SUB", "64")]),
+        ("sub32", &[("SS_SUB", "32")]),
+        ("ah8", &[("SS_AHEAD", "8")]),
+        ("ah32", &[("SS_AHEAD", "32")]),
+        ("sth", &[("SS_STH", "1")]),
+        ("lt", &[("SS_LT", "1")]),
+        ("base", &[]),
+    ];
+    for (tag, env) in vars.iter() {
+        eprintln!("{}", child(tag, &big, &ob, threads, env));
     }
     eprintln!("{}", child("dev", data, &ob, threads, &[]));
     let _ = std::fs::remove_dir_all(&big);

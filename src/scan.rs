@@ -407,11 +407,11 @@ pub fn scan_lines<const N: usize>(f: usize, s: usize, e: usize, mut each: impl F
 /// fields: `each(line_start, line, fields)`, fields None for a malformed line.
 #[inline(always)]
 pub fn scan_records<const N: usize>(f: usize, s: usize, e: usize, mut each: impl FnMut(usize, &[u8], Option<&Flds<N>>)) {
-    const SUB: usize = 192 << 10;
+    let sub = crate::SUB_BYTES.load(Ordering::Relaxed);
     let file = if crate::READ.load(Ordering::Relaxed) { Some(crate::open_input(f)) } else { None };
     let mut a = s;
     while a < e {
-        let b = (a + SUB).min(e);
+        let b = (a + sub).min(e);
         scan_block::<N>(f, file.as_ref(), a, b, &mut each);
         a = b;
     }
