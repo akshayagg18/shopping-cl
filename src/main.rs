@@ -1561,7 +1561,7 @@ fn bin_runs(evs: &[Ev1], sc: &mut Scratch) {
         while m != 0 {
             let b = w * 64 + m.trailing_zeros() as usize;
             m &= m - 1;
-            let a = sc.bins[b];
+            let a = unsafe { *sc.bins.get_unchecked(b) };
             unsafe {
                 let l = sc.runs.len();
                 sc.runs.as_mut_ptr().add(l).write(Run { bin: b as u32, min: a.min, max: a.max, n: a.n, rev: a.rev, purch: a.purch != 0 });
@@ -1621,15 +1621,15 @@ fn person_sessions(ctx: &Ctx, name: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg
             if k == runs.len() {
                 break;
             }
-            r = runs[k];
+            r = unsafe { *runs.get_unchecked(k) };
             if r.min as i64 - last > SESSION_GAP {
                 break;
             }
         }
         // attribution window [start - 7d, start]
         // click times are shifted by +CLICK_REACH: ts <= start and ts >= start - 7d
-        while hi < cks.len() && (cks[hi].ts as i64) <= start + CLICK_REACH {
-            let c = cks[hi].camp as usize;
+        while hi < cks.len() && (unsafe { cks.get_unchecked(hi) }.ts as i64) <= start + CLICK_REACH {
+            let c = unsafe { cks.get_unchecked(hi) }.camp as usize;
             if sc.count[c] == 0 {
                 sc.pos[c] = sc.active.len() as u32;
                 sc.active.push(c as u32);
@@ -1637,8 +1637,8 @@ fn person_sessions(ctx: &Ctx, name: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg
             sc.count[c] += 1;
             hi += 1;
         }
-        while lo < hi && (cks[lo].ts as i64) < start {
-            let c = cks[lo].camp as usize;
+        while lo < hi && (unsafe { cks.get_unchecked(lo) }.ts as i64) < start {
+            let c = unsafe { cks.get_unchecked(lo) }.camp as usize;
             sc.count[c] -= 1;
             if sc.count[c] == 0 {
                 let p = sc.pos[c] as usize;
@@ -1665,9 +1665,10 @@ fn person_sessions(ctx: &Ctx, name: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg
         if rev != 0 {
             agg.credit_rev[row + credit] += rev;
         }
+        // every active campaign is < ncamp: row + c stays in the day's row
         let arow = &mut agg.assist[row..row + ctx.ncamp + 1];
         for &c in &sc.active {
-            arow[c as usize] += 1;
+            unsafe { *arow.get_unchecked_mut(c as usize) += 1 };
         }
         d_sess += 1;
         d_evs += n;
