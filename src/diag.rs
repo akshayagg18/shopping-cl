@@ -337,6 +337,7 @@ fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
 }
 
 /// (resident pages, total pages) of the files under `dir`, by mincore.
+#[allow(dead_code)]
 fn residency(dir: &Path) -> (usize, usize) {
     let (mut yes, mut all) = (0usize, 0usize);
     for p in files_under(dir) {
@@ -417,6 +418,7 @@ fn mounts_for(paths: &[&str]) -> String {
     out.join(" ")
 }
 
+#[allow(dead_code)]
 fn mount_opts(path: &str) -> String {
     let mi = cat("/proc/self/mountinfo");
     let mut best: Option<(usize, String)> = None;
@@ -440,39 +442,39 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let _ = crate::run(data, out, false);
     let cpu = cat("/proc/cpuinfo");
     let model = cpu.lines().find(|l| l.starts_with("model name")).unwrap_or("?").replace("model name\t: ", "");
-    eprintln!(
-        "D17 {model} | /data [{}] | /tmp [{}] | shmem {}",
-        mount_opts(&data.to_string_lossy()),
-        mount_opts("/tmp"),
-        cat("/sys/kernel/mm/transparent_hugepage/shmem_enabled").trim()
-    );
-    // the scorer's input lives on tmpfs: so does this copy
-    let scratch = std::path::PathBuf::from(std::env::var("SCRATCH_DIR").unwrap_or_else(|_| "/tmp".into()));
+    let scratch = std::path::PathBuf::from(std::env::var("SCRATCH_DIR").unwrap_or_else(|_| "/scratch".into()));
     let big = scratch.join("big");
-    let ob = std::path::PathBuf::from("/scratch").join("o_big");
-    let ob = if std::path::Path::new("/scratch").exists() { ob } else { scratch.join("o_big") };
+    let ob = scratch.join("o_big");
     let k: usize = std::env::var("SS_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let t = Instant::now();
     upscale(data, &big, k);
-    let (y, a) = residency(&big);
-    eprintln!("x{k} on {} up={:.1}s cached {y}/{a}; wall/int ms: open links parse dedup sess write [rel] | user sys", scratch.display(), t.elapsed().as_secs_f64());
-    let vars: [(&str, &[(&str, &str)]); 13] = [
-        ("base", &[]),
-        ("tok1", &[("SS_TOK", "1")]),
-        ("pread", &[("SS_READ", "1")]),
-        ("pop", &[("SS_POP", "1")]),
-        ("pf2", &[("SS_PFREE", "2")]),
-        ("base", &[]),
-        ("nolk", &[("SS_EXP", "1")]),
-        ("noemit", &[("SS_EXPL", "3")]),
-        ("scan", &[("SS_EXPL", "2")]),
-        ("lt", &[("SS_LT", "1")]),
-        ("tok1", &[("SS_TOK", "1")]),
-        ("pread", &[("SS_READ", "1")]),
-        ("base", &[]),
-    ];
-    for (tag, env) in vars.iter() {
-        eprintln!("{}", child(tag, &big, &ob, threads, env));
+    eprintln!("D18 {model} | x{k} up={:.1}s | 10 scorer-like runs each, interleaved: wall ms (process start to exit)", t.elapsed().as_secs_f64());
+    // the candidate (defaults) against the per-line tokenizer (v15's), alternating
+    let cfgs: [(&str, &[(&str, &str)]); 2] = [("v16", &[]), ("v15tok", &[("SS_TOK", "2")])];
+    let mut walls: Vec<Vec<f64>> = vec![Vec::new(); cfgs.len()];
+    let mut ints: Vec<Vec<f64>> = vec![Vec::new(); cfgs.len()];
+    for r in 0..10 {
+        for c in 0..cfgs.len() {
+            let c = if r % 2 == 0 { c } else { cfgs.len() - 1 - c };
+            let line = child(cfgs[c].0, &big, &ob, threads, cfgs[c].1);
+            // "tag wall/int: ..."
+            let wi = line.split_whitespace().nth(1).unwrap_or("0/0:").trim_end_matches(':').to_string();
+            let (w, i) = wi.split_once('/').unwrap_or(("0", "0"));
+            walls[c].push(w.parse().unwrap_or(0.0));
+            ints[c].push(i.parse().unwrap_or(0.0));
+            if r == 0 {
+                eprintln!("{line}");
+            }
+        }
+    }
+    for (c, (tag, _)) in cfgs.iter().enumerate() {
+        let w = &walls[c];
+        let mean = w.iter().sum::<f64>() / w.len() as f64;
+        let mn = w.iter().cloned().fold(f64::MAX, f64::min);
+        let mx = w.iter().cloned().fold(0.0, f64::max);
+        let im = ints[c].iter().sum::<f64>() / ints[c].len() as f64;
+        let all: Vec<String> = w.iter().map(|x| format!("{x:.0}")).collect();
+        eprintln!("{tag}: mean {mean:.0} min {mn:.0} max {mx:.0} (in-process mean {im:.0}) | {}", all.join(" "));
     }
     eprintln!("{}", child("dev", data, &ob, threads, &[]));
     let _ = std::fs::remove_dir_all(&big);

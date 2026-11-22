@@ -68,7 +68,9 @@ static LENS: AtomicPtr<Vec<usize>> = AtomicPtr::new(std::ptr::null_mut());
 static PATHS: AtomicPtr<Vec<PathBuf>> = AtomicPtr::new(std::ptr::null_mut());
 /// Bulk parsing reads through pread into small buffers instead of the mapping.
 pub static READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// Events and clicks through the bitmap tokenizer (stage 1) instead of per line.
+/// Events and clicks through the per-line tokenizer instead of the bitmap one
+/// (stage 1). Off: on the scorer's Cascade Lake cores stage 1 is ~110 ms faster
+/// at 20M (same-run A/B), though per line wins on newer cores.
 pub static TOK1: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Map inputs with MAP_POPULATE.
 pub static POP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -946,7 +948,8 @@ fn links(inp: &Inputs) -> Persons {
     });
     drop(edges);
     lt("uf");
-    // byte-wise smallest ID per component: best[root] = its slot
+    // byte-wise smallest ID per component: best[root] = its slot; every
+    // parent is set to its root on the way (later passes need one hop)
     let best: Vec<AtomicU32> = (0..cap as u32).into_par_iter().with_min_len(1 << 14).map(AtomicU32::new).collect();
     let name_of = |i: usize| deref(map.val_at(i).load(Ordering::Relaxed));
     (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
@@ -957,6 +960,7 @@ fn links(inp: &Inputs) -> Persons {
         if r == i {
             return;
         }
+        parent[i].store(r as u32, Ordering::Relaxed);
         let mine = name_of(i);
         let mut cur = best[r].load(Ordering::Relaxed);
         while mine < name_of(cur as usize) {
@@ -979,7 +983,7 @@ fn links(inp: &Inputs) -> Persons {
     });
     (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
         if map.key_at(i).load(Ordering::Relaxed) != 0 {
-            let r = find(&parent, i as u32) as usize;
+            let r = parent[i].load(Ordering::Relaxed) as usize;
             map.val_at(i).store(LINKED | map.val_at(r).load(Ordering::Relaxed), Ordering::Relaxed);
         }
     });
@@ -1196,8 +1200,12 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     evb.reserve(n);
     for (t, s) in sinks.iter().enumerate() {
         let mut i = 0usize;
+        let mut dw = 0u64;
         for sl in s.ev.slices(b) {
             for (j, e) in sl.iter().enumerate() {
+                if i % 64 == 0 {
+                    dw = dead.word(t, b, i / 64);
+                }
                 if j % 4 == 0 {
                     // records were streamed out of the cache: fetch ahead (the
                     // hardware prefetcher restarts at every 4 KiB)
@@ -1206,7 +1214,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                         std::arch::x86_64::_mm_prefetch(sl.as_ptr().wrapping_add(j + 24) as *const i8, std::arch::x86_64::_MM_HINT_T0)
                     };
                 }
-                if (dead.word(t, b, i / 64) >> (i % 64)) & 1 == 0 {
+                if (dw >> (i % 64)) & 1 == 0 {
                     let id = group_id(sc, e.key, &mut cap);
                     if id as usize == sc.pkey.len() {
                         sc.pkey.push(e.key);
@@ -1632,10 +1640,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
 
     flow::WC.store(std::env::var("SS_WC").map_or(flow::WC_DEFAULT, |v| v == "1"), Ordering::Relaxed);
     READ.store(std::env::var("SS_READ").is_ok_and(|v| v == "1"), Ordering::Relaxed);
-    TOK1.store(std::env::var("SS_TOK").is_ok_and(|v| v == "1"), Ordering::Relaxed);
+    TOK1.store(std::env::var("SS_TOK").is_ok_and(|v| v == "2"), Ordering::Relaxed);
     POP.store(std::env::var("SS_POP").is_ok_and(|v| v == "1"), Ordering::Relaxed);
-    flow::EXP.store(std::env::var("SS_EXP").is_ok(), Ordering::Relaxed);
-    flow::EXPL.store(std::env::var("SS_EXPL").ok().and_then(|v| v.parse().ok()).unwrap_or(0), Ordering::Relaxed);
     let inp = open_all(data);
     // partition counts follow the input size, so a partition's working set
     // stays about the same from the 20M practice set to the 60M final

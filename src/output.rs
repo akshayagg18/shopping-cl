@@ -63,32 +63,50 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
     };
 
     let user_jobs = || {
-        aggs.par_iter().enumerate().for_each(|(i, a)| {
-            if a.rows.is_empty() && i > 0 {
+        // equal shares of all rows per file (workers' row counts differ)
+        let total: usize = aggs.iter().map(|a| a.rows.len()).sum();
+        let nf = rayon::current_num_threads().max(1);
+        let mut starts = vec![0usize; aggs.len() + 1];
+        for (k, a) in aggs.iter().enumerate() {
+            starts[k + 1] = starts[k] + a.rows.len();
+        }
+        (0..nf).into_par_iter().for_each(|i| {
+            let (lo, hi) = (total * i / nf, total * (i + 1) / nf);
+            if lo == hi && i > 0 {
                 return;
             }
-            let n = a.rows.len();
-            let bytes: usize = a.rows.iter().map(|r| (r.name & 0xFFFF) as usize + 4).sum();
+            // the rows [lo, hi) of the concatenation, as slices of the aggs
+            let mut parts: Vec<&[crate::UserRow]> = Vec::new();
+            for (k, a) in aggs.iter().enumerate() {
+                let (s0, s1) = (starts[k].max(lo), starts[k + 1].min(hi));
+                if s0 < s1 {
+                    parts.push(&a.rows[s0 - starts[k]..s1 - starts[k]]);
+                }
+            }
+            let n = hi - lo;
+            let bytes: usize = parts.iter().flat_map(|p| p.iter()).map(|r| (r.name & 0xFFFF) as usize + 4).sum();
             let mut ids = Column::new("user_id", Kind::Str, n, bytes);
             let mut day = Column::new("day", Kind::Date, n, n * 4);
             let mut s = Column::new("sessions", Kind::I32, n, n * 4);
             let mut e = Column::new("events", Kind::I32, n, n * 4);
             let mut r = Column::new("revenue_cents", Kind::I64, n, n * 8);
             let mut top = Column::new("top_category", Kind::OptStr, n, n * 12);
-            for (k, row) in a.rows.iter().enumerate() {
-                // names are scattered (link files, per-thread name buffers): fetch ahead
-                if let Some(ahead) = a.rows.get(k + 16) {
-                    #[cfg(target_arch = "x86_64")]
-                    unsafe {
-                        std::arch::x86_64::_mm_prefetch(name_bytes(ahead.name).as_ptr() as *const i8, std::arch::x86_64::_MM_HINT_T0)
-                    };
+            for rows in parts {
+                for (k, row) in rows.iter().enumerate() {
+                    // names are scattered (link files, per-thread name buffers): fetch ahead
+                    if let Some(ahead) = rows.get(k + 16) {
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            std::arch::x86_64::_mm_prefetch(name_bytes(ahead.name).as_ptr() as *const i8, std::arch::x86_64::_MM_HINT_T0)
+                        };
+                    }
+                    ids.str(name_bytes(row.name));
+                    day.i32(row.day);
+                    s.i32(row.sessions as i32);
+                    e.i32(row.events as i32);
+                    r.i64(row.revenue);
+                    top.opt_str(if row.top == 255 { None } else { Some(&cats[row.top as usize]) });
                 }
-                ids.str(name_bytes(row.name));
-                day.i32(row.day);
-                s.i32(row.sessions as i32);
-                e.i32(row.events as i32);
-                r.i64(row.revenue);
-                top.opt_str(if row.top == 255 { None } else { Some(&cats[row.top as usize]) });
             }
             write_file(&ud.join(format!("part-{i}.parquet")), &[ids, day, s, e, r, top]);
         });
