@@ -1,0 +1,125 @@
+   Compiling ssp v0.1.0 (/workspace/hack22/02-shopping-sessions/experiments/replay/dense-candidate)
+warning: unused import: `file_bytes`
+ --> src/dense_user.rs:6:58
+  |
+6 | use crate::{model::Model,Inputs,Persons,PersonMap,LINKED,file_bytes,for_records,mkref,deref,h64,ids,chunks_of};
+  |                                                          ^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `xxh3_64_with_seed` and `xxh3_64`
+  --> src/main.rs:38:25
+   |
+38 | use xxhash_rust::xxh3::{xxh3_64, xxh3_64_with_seed};
+   |                         ^^^^^^^  ^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `p`
+   --> src/flow.rs:291:41
+    |
+291 |     crate::csv_local::records(f, s, e, |p, line, fs| {
+    |                                         ^ help: if this is intentional, prefix it with an underscore: `_p`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `P1_BITS` is never used
+  --> src/main.rs:42:7
+   |
+42 | const P1_BITS: u32 = 9; // event_id buckets
+   |       ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `P1` is never used
+  --> src/main.rs:43:7
+   |
+43 | const P1: usize = 1 << P1_BITS;
+   |       ^^
+
+warning: function `mum` is never used
+   --> src/main.rs:105:4
+    |
+105 | fn mum(a: u64, b: u64) -> u64 {
+    |    ^^^
+
+warning: function `aes16` is never used
+   --> src/main.rs:138:4
+    |
+138 | fn aes16(b: &[u8]) -> (u64, u64) {
+    |    ^^^^^
+
+warning: constant `INVALID` is never used
+    --> src/main.rs:1052:7
+     |
+1052 | const INVALID: u32 = u32::MAX;
+     |       ^^^^^^^
+
+warning: fields `ev_src`, `ck_src`, and `radix_tmp` are never read
+    --> src/main.rs:1103:5
+     |
+1102 | struct Scratch<'s> {
+     |        ------- fields in this struct
+1103 |     ev_src: Vec<&'s [Ev2]>,
+     |     ^^^^^^
+1104 |     ck_src: Vec<&'s [Ck]>,
+     |     ^^^^^^
+...
+1118 |     radix_tmp: Vec<Ev2>,
+     |     ^^^^^^^^^
+
+warning: constant `RADIX_MIN` is never used
+    --> src/main.rs:1149:7
+     |
+1149 | const RADIX_MIN: usize = 192;
+     |       ^^^^^^^^^
+
+warning: function `zero_bench` is never used
+   --> src/diag.rs:118:4
+    |
+118 | fn zero_bench(huge: bool, mb: usize) -> f64 {
+    |    ^^^^^^^^^^
+
+warning: function `read_bench` is never used
+   --> src/diag.rs:221:4
+    |
+221 | fn read_bench(data: &Path) -> f64 {
+    |    ^^^^^^^^^^
+
+warning: function `ingest_ni` is never used
+   --> src/parse.rs:732:8
+    |
+732 | pub fn ingest_ni(b: &[u8]) -> Option<i64> {
+    |        ^^^^^^^^^
+
+warning: `ssp` (bin "ssp" test) generated 13 warnings (run `cargo fix --bin "ssp" -p ssp --tests` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 17.44s
+     Running unittests src/main.rs (/workspace/hack22/02-shopping-sessions/target-v11/release/build/ssp/4a0a28c8266b1537/out/ssp-4a0a28c8266b1537)
+
+running 26 tests
+test csv_local::tests::carry_quote_check_matches_literal_dialect ... ok
+test csv_local::tests::local_windows_match_scalar_with_chunks_and_long_fields ... ok
+test dense_events::tests::signed_ingestion_and_slot_fields_are_lossless ... ok
+test dense_events::tests::deferred_payloads_preserve_links_fallbacks_and_cache_collisions ... ok
+test dense_runs::tests::run_boundaries_preserve_every_value ... ok
+test dense_runs::tests::fragmented_dense_and_generic_events_match_general_aggregation ... ok
+test event_token::tests::full_time_and_wide_locations_round_trip ... ok
+test dense_user::tests::literal_graph_names_and_unlinked_codes_are_exact ... ok
+test flow::copy_layout_tests::copy_fields_do_not_overlap ... ok
+test event_token::tests::symbols_lengths_and_fallback_are_exact ... ok
+test hash_tests::radix_matches_sort ... ok
+test hash_tests::words16_matches_copy ... ok
+test ids::tests::permutation_and_domains ... ok
+test model::tests::reversible_labels_and_exact_spellings ... ok
+test parse::tests::civil_fast_matches_slow ... ok
+test parse::tests::ingest_matches_timestamp_on_valid_f1 ... ok
+test parse::tests::memo_matches_timestamp ... ok
+test parse::tests::splitting ... ok
+test parse::tests::ts_fast_matches_timestamp ... ok
+test parse::tests::ts_forms ... ok
+test scan::tests::scan_matches_scalar_2 ... ok
+test scan::tests::scan_matches_scalar_4 ... ok
+test scan::tests::scan_matches_scalar_7 ... ok
+test tests::prefix_xor_matches ... ok
+test tok_tests::tokenizer_matches_scalar ... ok
+test hash_tests::no_collisions_on_generator_like_ids ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.25s

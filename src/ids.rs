@@ -47,6 +47,8 @@ pub fn unmix(mut x:u64)->u64 {
 }
 #[inline(always)]
 pub fn key(b:&[u8])->u64 {mix(payload(b))}
+#[inline(always)]
+pub fn payload_of(b:&[u8])->u64 {payload(b)}
 
 /// Decode an unlinked person's injective payload for output.
 pub fn bytes<'a>(key:u64,buffer:&'a mut [u8;9])->&'a [u8] {

@@ -13,6 +13,11 @@
 mod alloc;
 mod profile;
 mod ids;
+mod model;
+mod csv_local;
+mod dense_user;
+mod dense_events;
+mod dense_runs;
 mod event_token;
 mod diag;
 mod flow;
@@ -726,6 +731,7 @@ struct PersonMap {
     shift: u32,
     sub: u32,
     slots: Vec<Slot>,
+    dense: Option<Box<dense_user::UserMap>>,
 }
 
 const PM_PARTS_BITS: u32 = 8;
@@ -746,7 +752,7 @@ impl PersonMap {
         let bits = ((n * 4 / 3 * 4 / load_x4.max(1)).next_power_of_two().max(1 << 14)).trailing_zeros();
         let sub = bits - PM_PARTS_BITS;
         let range = (1usize << sub) + PM_MARGIN;
-        let mut map = PersonMap { shift: 64 - bits, sub, slots: Vec::new() };
+        let mut map = PersonMap { shift: 64 - bits, sub, slots: Vec::new(), dense:None };
         let mut slots: Vec<Slot> = vec![Slot::default(); PM_PARTS * range];
         // partition starts in `sorted`
         let mut starts = vec![0usize; PM_PARTS + 1];
@@ -789,6 +795,7 @@ impl PersonMap {
     }
     #[inline(always)]
     fn prefetch(&self, k: u64) {
+        if let Some(dense)=&self.dense {dense.prefetch_hash(k);return;}
         let i = self.index(k);
         #[cfg(target_arch = "x86_64")]
         unsafe {
@@ -799,6 +806,7 @@ impl PersonMap {
     /// Lookup; the caller prefetches, so no filter in front (its own load would miss).
     #[inline(always)]
     fn get(&self, k: u64) -> Option<u64> {
+        if let Some(dense)=&self.dense {return dense.get_hash(k);}
         let mut i = self.index(k);
         loop {
             let sl = unsafe { self.slots.get_unchecked(i) };
@@ -1622,35 +1630,52 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let ck_units = chunks(&inp.clicks);
     // links first: every record below is routed straight to its person
     let phase=profile::Span::new("links_phase",0);
-    let (persons, lk) = rayon::join(|| links(&inp), || lookups(&inp));
-    if profile::enabled() {phase.finish(persons.map.slots.iter().filter(|s|s.key!=0).count(), inp.links.iter().map(|&f|file_bytes(f).len()).sum());}
+    let dense_requested=std::env::var("SS_DENSE").map_or(true,|v|v!="0");
+    let event_model=if dense_requested {model::learn_events(&inp.events,ev_bytes)} else {None};
+    let user_model=if event_model.is_some()||std::env::var_os("SS_USER_DENSE").is_some() {model::learn_users(&inp.events,ev_bytes)} else {None};
+    let (persons, lk) = rayon::join(|| user_model.and_then(|m|dense_user::build(&inp,m)).unwrap_or_else(||links(&inp)), || lookups(&inp));
+    if profile::enabled() {phase.finish(persons.map.dense.as_ref().map_or_else(||persons.map.slots.iter().filter(|s|s.key!=0).count(),|d|d.linked_count), inp.links.iter().map(|&f|file_bytes(f).len()).sum());}
     lap("links");
     let tokens=event_token::Tokens::default();
     let nthreads = rayon::current_num_threads();
-    let sinks: Vec<std::sync::Mutex<flow::Sink>> = (0..nthreads).map(|_| std::sync::Mutex::new(flow::Sink::new())).collect();
+    let mut dense=event_model.filter(|_|persons.map.dense.is_some()).map(|m|dense_events::Context::new(m,ws));
     let units: Vec<(bool, usize, usize, usize)> =
         ev_units.iter().map(|&(f, s, e)| (true, f, s, e)).chain(ck_units.iter().map(|&(f, s, e)| (false, f, s, e))).collect();
-    let phase=profile::Span::new("parse_phase",0);
-    units.par_iter().for_each(|&(is_ev, f, s, e)| {
-        let span=profile::Span::new(if is_ev {"parse_events"} else {"parse_clicks"},s);
-        let t = rayon::current_thread_index().unwrap_or(0) % nthreads;
-        let mut sink = sinks[t].lock().unwrap();
-        let before=if profile::enabled() {sink.cp.total()+sink.ck.total()} else {0};
-        if is_ev {
-            flow::events_unit(f, s, e, &lk, &persons, &tokens, ws, we, &mut sink, t as u64);
-        } else {
-            flow::clicks_unit(f, s, e, &lk, &persons, ws, we, &mut sink);
-        }
-        // The thread that performed streaming writes publishes them before
-        // releasing its sink or the phase's completion latch.
-        #[cfg(target_arch="x86_64")]
-        unsafe { std::arch::x86_64::_mm_sfence(); }
-        if profile::enabled() {span.finish(sink.cp.total()+sink.ck.total()-before,e-s);}
-    });
-    let mut sinks: Vec<flow::Sink> = sinks.into_iter().map(|m| m.into_inner().unwrap()).collect();
-    sinks.par_iter_mut().for_each(|s| s.finish());
-    if profile::enabled() {phase.finish(sinks.iter().map(|s|s.cp.total()+s.ck.total()).sum(), units.iter().map(|u|u.3-u.2).sum());}
+    let mut sinks=loop {
+        let sinks:Vec<std::sync::Mutex<flow::Sink>>=(0..nthreads).map(|_| {
+            let mut sink=flow::Sink::new();if let Some(d)=&dense {sink.enable_dense(d.parts(),d.inline_users);}std::sync::Mutex::new(sink)
+        }).collect();
+        let phase=profile::Span::new("parse_phase",0);
+        units.par_iter().for_each(|&(is_ev,f,s,e)| {
+            let span=profile::Span::new(if is_ev {"parse_events"} else {"parse_clicks"},s);
+            let t=rayon::current_thread_index().unwrap_or(0)%nthreads;
+            let mut sink=sinks[t].lock().unwrap();
+            let before=if profile::enabled() {sink.cp.total()+sink.ck.total()+sink.dense_total()} else {0};
+            if let Some(d)=&dense {
+                if is_ev {flow::events_unit_dense(f,s,e,&lk,&persons,&tokens,d,ws,we,&mut sink,t as u64);}
+                else {flow::clicks_unit_dense(f,s,e,&lk,&persons,ws,we,&mut sink);}
+            } else if is_ev {flow::events_unit(f,s,e,&lk,&persons,&tokens,ws,we,&mut sink,t as u64);}
+            else {flow::clicks_unit(f,s,e,&lk,&persons,ws,we,&mut sink);}
+            #[cfg(target_arch="x86_64")]
+            unsafe {std::arch::x86_64::_mm_sfence();}
+            if profile::enabled() {span.finish(sink.cp.total()+sink.ck.total()+sink.dense_total()-before,e-s);}
+        });
+        let mut sinks:Vec<flow::Sink>=sinks.into_iter().map(|m|m.into_inner().unwrap()).collect();
+        sinks.par_iter_mut().for_each(flow::Sink::finish);
+        if profile::enabled() {phase.finish(sinks.iter().map(|s|s.cp.total()+s.ck.total()+s.dense_total()).sum(),units.iter().map(|u|u.3-u.2).sum());}
+        if dense.as_ref().is_some_and(|d|d.failed.load(Ordering::Relaxed)) {dense=None;continue;}
+        break sinks;
+    };
     lap("parsed");
+    let mut runs=None;
+    if let Some(d)=dense {
+        let phase=profile::Span::new("dense_dedup_phase",0);let parts=d.parts();
+        let frozen=d.freeze(persons.map.dense.as_ref().unwrap().snapshot());
+        let users=persons.map.dense.as_ref().unwrap();
+        if std::env::var("SS_DENSE_RUNS").map_or(true,|v|v!="0") {runs=Some(frozen.runs(parts,&sinks,users));}
+        else {let outputs=frozen.emit(parts,&sinks,nthreads,users);sinks.extend(outputs);}
+        phase.finish(0,0);lap("dense-dedup");
+    }
     let phase=profile::Span::new("dedup_phase",0);
     let dead = flow::Dead::new(&sinks);
     (0..flow::pd()).into_par_iter().for_each(|b| flow::dedup_part(b, &sinks, &dead, &tokens));
@@ -1677,7 +1702,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         })
         .collect();
     // largest partitions first, so a giant component never starts last
-    let mut order: Vec<(usize, usize)> = (0..p2()).map(|b| (sinks.iter().map(|s| s.ev.len(b)).sum::<usize>(), b)).collect();
+    let mut order: Vec<(usize, usize)> = (0..p2()).map(|b| (sinks.iter().map(|s| s.ev.len(b)).sum::<usize>()+runs.as_ref().map_or(0,|r|r.count(b)), b)).collect();
     order.sort_unstable_by(|a, b| b.cmp(a));
     order.par_iter().with_max_len(1).for_each(|&(_, b)| {
         let span=profile::Span::new("session_bucket",b);
@@ -1688,7 +1713,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         flow::live_events(b, &sinks, &dead, evb);
         flow::clicks_of(b, &sinks, ckb);
         gather.finish(evb.len()+ckb.len(),evb.len()*std::mem::size_of::<Ev2>()+ckb.len()*std::mem::size_of::<Ck>());
-        process_bucket(&ctx, agg, sc, evb, ckb);
+        if let Some(runs)=&runs {dense_runs::process_bucket(&ctx,agg,sc,evb,ckb,runs,b);}
+        else {process_bucket(&ctx, agg, sc, evb, ckb);}
         span.finish(evb.len()+ckb.len(),evb.len()*std::mem::size_of::<Ev2>()+ckb.len()*std::mem::size_of::<Ck>());
     });
     let aggs: Vec<Agg> = states.into_iter().map(|m| m.into_inner().unwrap().0).collect();

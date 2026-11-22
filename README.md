@@ -1,8 +1,31 @@
-# Exact Shopping Sessions pipeline
+# Shopping Sessions — exact dense Rust candidate
 
-Rust solution for the [Builders Shopping Sessions track](https://www.joinbuilders.org/buildathon/tracks/shopping-sessions). The target is a verified official runtime below 0.4 seconds. **That target has not been achieved or verified.** Local and GitHub Actions measurements are not official scores.
+Processes `/data` into exact `/output/user_daily` and `/output/campaign_daily`
+Parquet tables. Build the root Dockerfile for Linux/AMD64; the static scratch
+runtime needs no network and runs as uid 1000.
 
-The original submission is preserved at `d2dc441e6bed67a57572a7c1f12b06dad7f163cc`. This branch adapts the repository's subsequent v11.3 architecture (`0edb1e785c36ae85cdf53faddcfc319b7d424d48`), adds exact identifier representations and edge-case repairs, and measures event/copy compaction. The inherited architecture and new experiments are distinguished in `experiments/SUB400_PROGRESS.md`.
+The new default path learns a reversible ID layout from input labels, resolves
+only literal identity links, deduplicates 24-byte event records before emitting
+winners, then groups literal person runs and clicks. Unrecognized labels and
+unsupported layouts use the exact general path. Full signed ingestion and long
+UTF-8 labels retain lossless fallbacks. CSV dialect, UTC dates, session boundaries,
+click ties, distinct assists and category ties retain the specified semantics.
+
+Local 20M median 2098.98 ms versus 2415.39 ms for fef0736, nine interleaved runs each
+on a 2-CPU VM: 13.1% less elapsed time. Both output tables match the frozen baseline.
+These are local measurements, not an official score. Fresh Docker and 60M checks
+are pending. The previous fully validated scorer source is
+`fef07368caf2e161fbf91dbf67e8176574fcfaa9`; see `submission/READY.json`.
+
+Reproduce controls with `SS_DENSE=0`; `SS_TIMING=1` reports stage envelopes.
+Default release compiles out diagnostics; build `--features diagnostics` and set
+`SS_PROFILE=1` for per-task wall/CPU, records,bytes and allocation measurements.
+See `experiments/DENSE_RUST_EXPERIMENTS.md` for hypotheses, distributions, rejections,
+correctness coverage and provenance. Source uses no other entrant's engine.
+
+Dependencies are open source: libc (MIT/Apache-2.0), memmap2 (MIT/Apache-2.0),
+Rayon (MIT/Apache-2.0), xxhash-rust (BSL-1.0). This deliverable is MIT licensed;
+see LICENSE. Generated data and answers are excluded from the repository.
 
 ## Build and run
 
@@ -15,27 +38,26 @@ docker run --rm --network none --read-only --user 1000:1000 \
   -v "$PWD/data:/data:ro" -v "$PWD/out:/output" shopping
 ```
 
-The root Dockerfile pins the Rust builder image and produces a static Linux/AMD64 executable in a scratch image. Runtime needs no network. Input/output default to `/data` and `/output`; `DATA_DIR`, `OUTPUT_DIR` and `NCPU` override them. Do not commit generated data. An optional BuildKit `build_ca` secret supplies a local proxy's trusted CA bundle during compilation; ordinary public builds need no secret.
+Input/output default to `/data` and `/output`; `DATA_DIR`, `OUTPUT_DIR`, `NCPU`
+override them. For direct runs, use `cargo build --release --locked` then
+`DATA_DIR=data OUTPUT_DIR=out NCPU=8 target/release/ssp`. Target CPUs need
+x86-64-v3 and PCLMULQDQ, as in the inherited implementation.
 
-For direct runs: `cargo build --release --locked`, then `DATA_DIR=data OUTPUT_DIR=out NCPU=8 target/release/ssp`. AVX2/BMI2 and PCLMULQDQ retain the upstream CPU requirements; newer instruction sets require runtime dispatch.
+## Validation and provenance
 
-## Data flow and exactness
+`tools/validate.py BINARY --threads 8 --fuzz-rounds 5` runs 36 official fixtures,
+the official development answer, and a literal reference on small data plus four
+fuzz mutations. `tests/adversarial.py BINARY` checks long UTF-8 names, pre-1970
+ingestion and boundaries. `tools/check.py` compares complete tables while
+ignoring permitted row/file order. `cargo test --release --locked` runs 26 units.
+Downloaded fixtures, generator, data and answers are excluded from the repository.
 
-* Memory-map input; partition scans into line-owned chunks with a SIMD dialect tokenizer. Only LF separates lines. Malformed quotes and field counts are rejected; CR is preserved.
-* Resolve literal identity edges with parallel union-find; choose each component's byte-wise smallest ID. A bijective integer permutation of reversible ASCII keys or exact interned bytes replaces probabilistic identifier equality. No identifier bits are discarded.
-* Route valid event candidates directly to person streams. Keep every parseable event copy, including invalid candidates, in an independent deduplication stream. Earliest ingestion wins before validation can affect the result. Rare dates outside unsigned epoch seconds retain full signed comparisons.
-* Use 16-byte surviving-event candidates and 16-byte copy records. Event IDs have a lossless base62 encoding when possible; every other ID is interned exactly. Wide references, stream locations and timestamps use explicit side tables instead of truncation.
-* Deduplication marks losing candidates dead. Group surviving events by person and half-hour bins. Track each bin's minimum and maximum to form sessions under the strictly-greater-than-30-minute rule without sorting every event timestamp. Click ordering, inclusive seven-day attribution and distinct assistance are preserved.
-* Decode user names only when writing output. Write standards-compliant uncompressed Parquet directly, with DATE logical types, integer counts, nullable UTF-8 categories and 64-bit revenues. Row order and file count may differ.
+Frozen baseline: `d2dc441e6bed67a57572a7c1f12b06dad7f163cc`. The inherited v11.3
+starting point was `0edb1e785c36ae85cdf53faddcfc319b7d424d48`. Exact repairs and
+previous compact pipeline are documented in `FIRST_SUBMISSION_REPORT.md`.
+This dense Rust design is independently implemented. Only literal input links
+establish identity; label decoding selects storage indices and always has exact
+fallbacks. No seed,window,product mapping or expected result is hard-coded.
 
-The default release build contains no per-record diagnostic counters. Build with `--features diagnostics` and set `SS_PROFILE=1` for independent wall/process/thread CPU spans, partition sizes and allocation diagnostics. `SS_TIMING=1` prints cumulative barriers. CPU times sum execution across threads and must not be treated as wall time. `tools/bench.py` interleaves variants and records every start-to-exit sample, CPU, RSS, faults and IO counts.
-
-## Validation
-
-`tools/validate.py BINARY --threads 8 --fuzz-rounds 5` runs all 36 official fixtures, the downloaded official development answer, and a literal Python reference on the small generated input plus four dirty-input mutations. `tests/adversarial.py BINARY` checks long UTF-8 identifiers, dates before 1970 and transformation boundaries. `tools/check.py` compares both complete tables while ignoring permitted row/file ordering. Release unit tests exercise tokenizer equivalence, identity domains and inverses, compact copy bit layouts and overflow side tables.
-
-See the experiment report and raw results for the exact tested artifacts and sample distributions. The fresh hosted check passed at20M and60M for exact source commit `fef07368caf2e161fbf91dbf67e8176574fcfaa9`:20M935.15ms versus1550.86ms baseline,60M2857.89ms versus4816.35ms, on4 CPUs. Full evidence is in `FIRST_SUBMISSION_REPORT.md` and `submission/READY.json`. A successful GitHub check or repository push is not an official competition submission.
-
-## Dependencies and license
-
-MIT licensed. Rust dependencies: `libc` (MIT/Apache-2.0), `memmap2` (MIT/Apache-2.0), `rayon` (MIT/Apache-2.0), `xxhash-rust` (BSL-1.0). Validation uses Python, PyArrow (Apache-2.0) and Polars (MIT). The official generator and fixtures are downloaded for testing and are not shipped as competition data. Development used Claude and OpenAI Codex, as permitted by the competition.
+The goal is an official runtime below 0.4 seconds. No such result is verified.
+CI results and repository pushes do not constitute official submissions.

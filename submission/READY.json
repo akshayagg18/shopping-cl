@@ -108,5 +108,7 @@
   "submission_url": "https://www.joinbuilders.org/buildathon/tracks/shopping-sessions",
   "deadline_utc": "2026-11-22T16:00:00Z",
   "target_seconds": 0.4,
-  "target_proven": false
+  "target_proven": false,
+  "candidate_status": "Dense candidate awaiting fresh Docker and 60M validation; scorer_commit remains prior proven source.",
+  "experimental_branch": "codex/dense-candidate"
 }

@@ -225,6 +225,9 @@ pub struct Sink {
     pub ev: Stream<Ev2>,
     pub cp: Stream<CopyR>,
     pub ck: Stream<Ck>,
+    dense: Option<Stream<crate::dense_events::Record>>,
+    pub deferred_users: Vec<u64>,
+    inline: Option<Stream<crate::dense_events::InlineRecord>>,
 }
 
 // raw block pointers into this sink's own arena
@@ -233,13 +236,22 @@ unsafe impl Sync for Sink {}
 
 impl Sink {
     pub fn new() -> Self {
-        Sink { arena: Arena::new(), ev: Stream::new(p2()), cp: Stream::new(pd()), ck: Stream::new(p2()) }
+        Sink { arena: Arena::new(), ev: Stream::new(p2()), cp: Stream::new(pd()), ck: Stream::new(p2()),dense:None,deferred_users:Vec::new(),inline:None }
     }
+    pub fn enable_dense(&mut self,parts:usize,inline:bool) {if inline {self.inline=Some(Stream::new(parts));} else {self.dense=Some(Stream::new(parts));}}
+    pub fn append_inline(&mut self,part:usize,record:crate::dense_events::InlineRecord) {self.inline.as_mut().unwrap().push(&mut self.arena,part,record);}
+    pub fn inline_records(&self,part:usize)->impl Iterator<Item=&[crate::dense_events::InlineRecord]>+'_ {self.inline.iter().flat_map(move|s|s.slices(part))}
+    pub fn append_dense(&mut self,part:usize,record:crate::dense_events::Record) {self.dense.as_mut().unwrap().push(&mut self.arena,part,record);}
+    pub fn dense_total(&self)->usize {self.dense.as_ref().map_or(0,|d|d.total())+self.inline.as_ref().map_or(0,|d|d.total())}
+    pub fn dense_records(&self,part:usize)->impl Iterator<Item=&[crate::dense_events::Record]>+'_ {self.dense.iter().flat_map(move |s|s.slices(part))}
+    pub fn emit_dense(&mut self,event:Ev2) {self.ev.push(&mut self.arena,person_bucket(event.key),event);}
     /// End of the parse phase: everything staged goes to its blocks.
     pub fn finish(&mut self) {
         self.ev.finish(&mut self.arena);
         self.cp.finish(&mut self.arena);
         self.ck.finish(&mut self.arena);
+        if let Some(dense)=&mut self.dense {dense.finish(&mut self.arena);}
+        if let Some(inline)=&mut self.inline {inline.finish(&mut self.arena);}
         #[cfg(target_arch = "x86_64")]
         unsafe {
             std::arch::x86_64::_mm_sfence()
@@ -276,7 +288,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
     let mut memo = parse::Memo::new();
     let mut head = 0usize;
     let mut filled = 0usize;
-    crate::scan::scan_records::<7>(f, s, e, |p, line, fs| {
+    crate::csv_local::records(f, s, e, |p, line, fs| {
         let Some(fs) = fs else { return };
         let fld = |i: usize| fs.get(line, i);
         let eid = fld(0);
@@ -545,4 +557,72 @@ mod copy_layout_tests {
             }
         }
     }
+}
+
+/// The dense path shares all validation rules with the ordinary row handler.
+fn checked_event(line:&'static [u8],fs:&crate::scan::Flds<7>,lk:&Lookups,ws:i64,we:i64,ingest:i64,memo:&mut parse::Memo)->Option<(&'static [u8],u32,u32)> {
+    let user=fs.get(line,1);if user.is_empty() {return None;}
+    let ts=parse::ts_memo(fs.get(line,2),memo)?;
+    if ts<ws||ts>=we||ingest-ts>DAY_MS||fs.get(line,5).is_empty() {return None;}
+    let kind=fs.get(line,4);
+    let pc=if kind==b"view"||kind==b"cart" {0}
+        else if kind==b"purchase" {
+            let price=parse::price(fs.get(line,6))?;
+            let category=lk.products.get(h64(fs.get(line,5))).unwrap_or(lk.unknown_cat as u64) as u32;
+            (price<<8)|category
+        } else {return None;};
+    Some((user,(ts-ws) as u32,pc))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn events_unit_dense(f:usize,s:usize,e:usize,lk:&Lookups,persons:&Persons,tokens:&crate::event_token::Tokens,dense:&crate::dense_events::Context,ws:i64,we:i64,sink:&mut Sink,tid:u64) {
+    let users=persons.map.dense.as_ref().unwrap();let mut memo=parse::Memo::new();
+    crate::csv_local::records(f,s,e,|_,line,fields| {
+        let Some(fields)=fields else {return;};let id=fields.get(line,0);if id.is_empty() {return;}
+        let number=dense.model.event(id);
+        let predicted=if dense.defer_users {None} else {let index=users.model.user(fields.get(line,1));users.prefetch_index(index);index};
+        let ingest_ms=parse::ingest_memo(fields.get(line,3),&mut memo).unwrap_or(i64::MAX/2);
+        let ingest=ingest_ms.div_euclid(1000);
+        let valid=checked_event(line,fields,lk,ws,we,ingest_ms,&mut memo);
+        if let Some(number)=number {
+            let (code,ts,pc,payload)=if let Some((user,ts,pc))=valid {
+                let code=if dense.defer_users {
+                    if dense.inline_users {0} else {
+                    let index=sink.deferred_users.len();
+                    if index>=1usize<<dense.user_index_bits {dense.failed.store(true,Ordering::Relaxed);return;}
+                    sink.deferred_users.push(ids::payload_of(user));
+                    ((tid as u32)<<dense.user_index_bits)|index as u32}
+                } else {let Some(code)=users.code_index(predicted,user) else {dense.failed.store(true,Ordering::Relaxed);return;};code};
+                (code,ts,pc,if dense.inline_users {ids::payload_of(user)} else {0})
+            } else {(0,u32::MAX,0,0)};
+            let part=(number>>dense.width) as usize;let record=dense.record(number,ingest,code,ts,pc);
+            if dense.inline_users {sink.append_inline(part,crate::dense_events::InlineRecord{record,payload});}
+            else {sink.append_dense(part,record);}
+        } else {
+            // The same spelling always uses the same class; non-canonical and
+            // out-of-range labels are deduplicated by the existing exact path.
+            let (eid,compact,identity)=tokens.stamp(id,ingest);
+            let loc=if let Some((user,ts,pc))=valid {
+                let key=users.person_index(predicted,user);let part=person_bucket(key);
+                let i=sink.ev.push(&mut sink.arena,part,Ev2{key,ts,pc});
+                tokens.location(tid as usize,part,i as usize)
+            } else {NOLOC};
+            sink.cp.push(&mut sink.arena,eid_part(identity),CopyR::new(eid,compact,loc));
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn clicks_unit_dense(f:usize,s:usize,e:usize,lk:&Lookups,persons:&Persons,ws:i64,we:i64,sink:&mut Sink) {
+    let users=persons.map.dense.as_ref().unwrap();let mut memo=parse::Memo::new();let lo=ws-CLICK_REACH;
+    crate::scan::scan_records::<4>(f,s,e,|p,line,fields| {
+        let Some(fields)=fields else {return;};let id=fields.get(line,0);let user=fields.get(line,1);
+        if id.is_empty()||user.is_empty() {return;}
+        let predicted=users.model.user(user);users.prefetch_index(predicted);
+        let Some(ts)=parse::ts_memo(fields.get(line,3),&mut memo) else {return;};
+        if ts<lo||ts>=we {return;}
+        let Some(camp)=lk.campaigns.get(h64(fields.get(line,2))) else {return;};
+        let key=users.person_index(predicted,user);
+        sink.ck.push(&mut sink.arena,person_bucket(key),Ck{key,cref:mkref(f,p+fields.span(line,0).0,id.len()),ts:(ts-lo) as u32,camp:camp as u32});
+    });
 }

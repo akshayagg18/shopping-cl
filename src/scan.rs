@@ -79,7 +79,7 @@ fn inside_reset(q: u64, nl: u64, carry: u64) -> u64 {
 }
 
 #[inline(always)]
-fn masks64(b: &[u8]) -> (u64, u64, u64) {
+pub(crate) fn masks64(b: &[u8]) -> (u64, u64, u64) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     unsafe {
         use std::arch::x86_64::*;
