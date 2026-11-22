@@ -223,6 +223,11 @@ pub struct Sink {
     pub ev: Stream<Ev2>,
     pub cp: Stream<CopyR>,
     pub ck: Stream<Ck>,
+    /// IDs of unlinked users, copied while they are in cache: names never read
+    /// the event files' mapping (no page faults, nothing mapped to tear down at
+    /// exit). Refs into it use file number `name_file`.
+    pub names: Vec<u8>,
+    name_file: usize,
 }
 
 // raw block pointers into this sink's own arena
@@ -230,8 +235,15 @@ unsafe impl Send for Sink {}
 unsafe impl Sync for Sink {}
 
 impl Sink {
-    pub fn new() -> Self {
-        Sink { arena: Arena::new(), ev: Stream::new(p2()), cp: Stream::new(pd()), ck: Stream::new(p2()) }
+    pub fn new(name_file: usize, name_cap: usize) -> Self {
+        Sink {
+            arena: Arena::new(),
+            ev: Stream::new(p2()),
+            cp: Stream::new(pd()),
+            ck: Stream::new(p2()),
+            names: Vec::with_capacity(name_cap + 16),
+            name_file,
+        }
     }
     /// End of the parse phase: everything staged goes to its blocks.
     pub fn finish(&mut self) {
@@ -256,13 +268,32 @@ struct PendE {
     ingest: u32,
     ts: u32,
     pc: u32,
+    /// the user ID's first 16 bytes (the whole ID when its length, uref's low
+    /// 16 bits, is at most 16)
+    nm: [u8; 16],
 }
 
 #[inline(always)]
 fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
-    let key = if EXP.load(Ordering::Relaxed) { unlinked_key(pd.uh) } else { persons.map.get(pd.uh).unwrap_or_else(|| unlinked_key(pd.uh)) };
+    let (key, uref) = match if EXP.load(Ordering::Relaxed) { None } else { persons.map.get(pd.uh) } {
+        Some(k) => (k, 0),
+        None => {
+            // unlinked: the name comes from this event (any of the user's would do)
+            let n = sink.names.len();
+            let nl = (pd.uref & 0xFFFF) as usize;
+            if nl <= 16 && n + 16 <= sink.names.capacity() {
+                unsafe {
+                    std::ptr::write_unaligned(sink.names.as_mut_ptr().add(n) as *mut [u8; 16], pd.nm);
+                    sink.names.set_len(n + nl);
+                }
+                (unlinked_key(pd.uh), mkref(sink.name_file, n, nl))
+            } else {
+                (unlinked_key(pd.uh), pd.uref)
+            }
+        }
+    };
     let pb = person_bucket(key);
-    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { key, uref: pd.uref, ts: pd.ts, pc: pd.pc });
+    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { key, uref, ts: pd.ts, pc: pd.pc });
     let loc = (tid << 48) | ((pb as u64) << 32) | i as u64;
     sink.cp.push(&mut sink.arena, eid_part(pd.eid), CopyR { eid: pd.eid, chk: pd.chk, ingest: pd.ingest, loc });
 }
@@ -314,14 +345,23 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             };
             let uh = h64(user);
             if !EXP.load(Ordering::Relaxed) { persons.map.prefetch(uh); }
+            let ua = fs.span(line, 1).0;
+            let mut nm = [0u8; 16];
+            if ua + 16 <= line.len() {
+                nm = unsafe { std::ptr::read_unaligned(line.as_ptr().add(ua) as *const [u8; 16]) };
+            } else {
+                let k = user.len().min(16);
+                nm[..k].copy_from_slice(&user[..k]);
+            }
             let pd = PendE {
                 uh,
-                uref: mkref(f, p + fs.span(line, 1).0, user.len()),
+                uref: mkref(f, p + ua, user.len()),
                 eid: eid_h,
                 chk: eid_c,
                 ingest,
                 ts: (ts - ws) as u32,
                 pc,
+                nm,
             };
             if lvl == 3 { sink_acc = sink_acc.wrapping_add(pd.uh ^ pd.eid ^ pd.ts as u64 ^ pd.pc as u64 ^ pd.ingest as u64 ^ pd.uref); return; }
             if filled == AHEAD {
