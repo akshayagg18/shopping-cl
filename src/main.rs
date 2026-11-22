@@ -1148,13 +1148,15 @@ fn zeroed_u32(n: usize) -> Vec<std::sync::atomic::AtomicU32> {
 
 // ---------------------------------------------------------------- records
 
-/// A surviving event, by person id. 12 bytes.
+/// A surviving event, by person id. 16 bytes (padded: four fill one cache
+/// line, so a partition's staging row is one line, not three).
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct Ev2 {
     pid: u32,
     ts: u32,
     pc: u32,
+    _pad: u32,
 }
 
 /// An event inside a person partition, once grouped: the person is known by
