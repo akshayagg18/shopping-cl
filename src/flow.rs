@@ -6,6 +6,8 @@ use super::*;
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicU64;
 
+/// Diagnostic build constant: person lookups replaced by the hash (wrong output).
+pub const NOMAP: bool = option_env!("SS_NOMAP_BUILD").is_some();
 pub const PD_BITS: u32 = 10; // event-id partitions of the copy records (default)
 pub static PDB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(PD_BITS);
 /// Write-combining staging with non-temporal stores for the record streams.
@@ -310,7 +312,7 @@ struct PendE {
 
 #[inline(always)]
 fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
-    let pid = persons.pid(pd.uh, pd.uref, &mut sink.pids);
+    let pid = if NOMAP { (pd.uh >> 40) as u32 } else { persons.pid(pd.uh, pd.uref, &mut sink.pids) };
     let pb = (pid as usize) & (p2() - 1);
     let i = sink.ev.push(&mut sink.arena, pb, Ev2 { pid, ts: pd.ts, pc: pd.pc });
     let (part, id) = (pd.part as usize, pd.id);
@@ -402,7 +404,7 @@ struct PendC {
 
 #[inline(always)]
 fn emit_click(sink: &mut Sink, persons: &Persons, pd: &PendC) {
-    let pid = persons.pid(pd.uh, pd.uref, &mut sink.pids);
+    let pid = if NOMAP { (pd.uh >> 40) as u32 } else { persons.pid(pd.uh, pd.uref, &mut sink.pids) };
     sink.ck.push(&mut sink.arena, (pid as usize) & (p2() - 1), Ck { pid, cref: pd.cref, ts: pd.ts, camp: pd.camp });
 }
 
@@ -584,3 +586,92 @@ pub fn dedup_part(b: usize, sinks: &[Sink], wide: &[Wide], dead: &Dead) {
 }
 const _: () = assert!(Stream::<CopyR>::CAP <= 1024, "dedup names a copy by block << 10 | offset");
 const _: () = assert!(std::mem::size_of::<CopyR>() == 16);
+
+// ---------------------------------------------------------------- ablations (diagnostics only)
+
+/// SS_ABL: 0 = full pipeline; 1 = tokenizer only; 2 = tokenizer + field
+/// parsing (hashes, timestamps, lookups) without emitting; 3 = full parse with
+/// the person lookup replaced by the hash; 4 = read the bytes only. Modes 1..4
+/// stop after the parse phase (their output is not the answer).
+#[allow(dead_code)]
+pub static ABL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub static ABL_SINK: AtomicU64 = AtomicU64::new(0);
+
+#[inline(never)]
+pub fn touch_unit(f: usize, s: usize, e: usize) {
+    let d = &file_bytes(f)[s..e];
+    let mut acc = 0u64;
+    for c in d.chunks(64) {
+        acc = acc.wrapping_add(c[0] as u64).wrapping_add(c[c.len() - 1] as u64);
+    }
+    ABL_SINK.fetch_add(acc, Ordering::Relaxed);
+}
+
+#[inline(never)]
+pub fn tok_unit<const N: usize>(f: usize, s: usize, e: usize) {
+    let mut acc = 0u64;
+    crate::scan::scan_lines::<N>(f, s, e, |p, _line, fs| {
+        acc = acc.wrapping_add(fs.map_or(p as u64, |x| x.e[N - 1] as u64));
+    });
+    ABL_SINK.fetch_add(acc, Ordering::Relaxed);
+}
+
+#[inline(never)]
+pub fn fields_events_unit(f: usize, s: usize, e: usize, lk: &Lookups, ws: i64, we: i64) {
+    let mut acc = 0u64;
+    let mut memo = parse::Memo::new();
+    crate::scan::scan_lines::<7>(f, s, e, |_p, line, fs| {
+        let Some(fs) = fs else { return };
+        let fld = |i: usize| fs.get(line, i);
+        let eid = fld(0);
+        if eid.is_empty() {
+            return;
+        }
+        let (ingest_ms, ingest) = parse::ingest_pair(fld(3), &mut memo);
+        let (eid_h, eid_c) = h64_chk(eid);
+        acc = acc.wrapping_add(eid_h ^ eid_c as u64 ^ ingest as u64);
+        let user = fld(1);
+        if user.is_empty() {
+            return;
+        }
+        let Some(ts) = parse::ts_memo(fld(2), &mut memo) else { return };
+        if ts < ws || ts >= we || ingest_ms - ts > DAY_MS || fld(5).is_empty() {
+            return;
+        }
+        let ty = fld(4);
+        let pc = if ty == b"view" || ty == b"cart" {
+            0
+        } else if ty == b"purchase" {
+            let Some(pr) = parse::price(fld(6)) else { return };
+            let cat = lk.products.get(h64(fld(5))).map_or(lk.unknown_cat as u64, |c| c) as u32;
+            (pr << 8) | cat
+        } else {
+            return;
+        };
+        acc = acc.wrapping_add(h64(user) ^ ts as u64 ^ pc as u64);
+    });
+    ABL_SINK.fetch_add(acc, Ordering::Relaxed);
+}
+
+#[inline(never)]
+pub fn fields_clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, ws: i64, we: i64) {
+    let mut acc = 0u64;
+    let lo = ws - CLICK_REACH;
+    let mut memo = parse::Memo::new();
+    crate::scan::scan_lines::<4>(f, s, e, |_p, line, fs| {
+        let Some(fs) = fs else { return };
+        let fld = |i: usize| fs.get(line, i);
+        let (cid, user) = (fld(0), fld(1));
+        if cid.is_empty() || user.is_empty() {
+            return;
+        }
+        let Some(ts) = parse::ts_memo(fld(3), &mut memo) else { return };
+        if ts < lo || ts >= we {
+            return;
+        }
+        let Some(camp) = lk.campaigns.get(h64(fld(2))) else { return };
+        acc = acc.wrapping_add(h64(user) ^ ts as u64 ^ camp ^ cid.len() as u64);
+    });
+    ABL_SINK.fetch_add(acc, Ordering::Relaxed);
+}
