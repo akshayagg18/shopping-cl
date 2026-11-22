@@ -64,6 +64,16 @@ transparent huge pages.
 At 60M (scorer: 60 tagged copies of the dev set, 6.7 GB) an order-independent digest of
 both tables equals 60 times the dev digest; peak memory 10.6 GB of the 24 GB limit.
 
+## Build: profile-guided
+
+The image is built with profile-guided optimization: `pgo/ssp.profdata` is the profile
+of an instrumented build of this source run on our own generated data (2M events in
+the scorer-v5 ID format, 8 and 2 threads), merged with `llvm-profdata`. The compiler
+is pinned to rust 1.97.0, the version that made the profile. A profile only changes
+code layout and inlining, never results. On the scorer (same container, alternating
+runs) the parse phase took 1496 ms against 1576 ms without the profile at 60M, and the
+run 785 ms against 840 ms for v16b at 20M. `tools/pgo.sh` regenerates the profile.
+
 ## Correctness checks
 
 - 36/36 official edge fixtures.
