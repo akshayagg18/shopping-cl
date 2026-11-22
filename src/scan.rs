@@ -324,25 +324,27 @@ fn long_line<const N: usize>(data: &[u8], p: usize, fl: &mut Flds<N>) -> (usize,
 /// 1: no separator inside quotes, every opening quote follows a separator (or
 /// the line start), every closing quote precedes one (or the line end).
 #[inline(always)]
-unsafe fn line_fields<const N: usize>(ptr: *const u8, len: usize, fl: &mut Flds<N>) -> bool {
+unsafe fn line_fields<const N: usize, const L: usize>(ptr: *const u8, len: usize, fl: &mut Flds<N>) -> bool {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     unsafe {
         use std::arch::x86_64::*;
         let v0 = _mm256_loadu_si256(ptr as *const __m256i);
         let v1 = _mm256_loadu_si256(ptr.add(32) as *const __m256i);
         let v2 = _mm256_loadu_si256(ptr.add(64) as *const __m256i);
+        // L = 4: a fourth load covers lines of up to 127 bytes
+        let v3 = if L == 4 { _mm256_loadu_si256(ptr.add(96) as *const __m256i) } else { _mm256_setzero_si256() };
         let mm = |v: __m256i, k: __m256i| _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, k)) as u32 as u64;
         let kc = _mm256_set1_epi8(b',' as i8);
         let kq = _mm256_set1_epi8(b'"' as i8);
         // bits [0, len] of the 96 (the newline included), without branches
         let m_lo = if len >= 63 { !0u64 } else { (2u64 << len) - 1 };
-        let m_hi = if len >= 64 { (2u64 << (len - 64)) - 1 } else { 0 };
+        let m_hi = if len >= 64 { (2u64 << (len - 64)).wrapping_sub(1) } else { 0 };
         let nl_lo = if len < 64 { 1u64 << (len & 63) } else { 0 };
         let nl_hi = if len >= 64 { 1u64 << (len & 63) } else { 0 };
         let sep_lo = ((mm(v0, kc) | (mm(v1, kc) << 32)) & m_lo) | nl_lo;
-        let sep_hi = (mm(v2, kc) & m_hi) | nl_hi;
+        let sep_hi = ((mm(v2, kc) | if L == 4 { mm(v3, kc) << 32 } else { 0 }) & m_hi) | nl_hi;
         let q_lo = (mm(v0, kq) | (mm(v1, kq) << 32)) & m_lo;
-        let q_hi = mm(v2, kq) & m_hi;
+        let q_hi = (mm(v2, kq) | if L == 4 { mm(v3, kq) << 32 } else { 0 }) & m_hi;
         let in_lo = prefix_xor64(q_lo);
         let in_hi = prefix_xor64(q_hi) ^ 0u64.wrapping_sub(in_lo >> 63);
         let prev_lo = (sep_lo << 1) | 1;
@@ -412,8 +414,8 @@ pub fn scan_lines<const N: usize>(f: usize, s: usize, e: usize, mut each: impl F
                 None => return,
             }
         };
-        // a line starting before fast_end has 96 readable bytes
-        let fast_end = n.saturating_sub(96);
+        // a line starting before fast_end has 128 readable bytes
+        let fast_end = n.saturating_sub(128);
         let mut fl = Flds::<N> { e: [0; N] };
         NLBUF.with(|cell| {
             let mut nlv = cell.borrow_mut();
@@ -424,7 +426,7 @@ pub fn scan_lines<const N: usize>(f: usize, s: usize, e: usize, mut each: impl F
                 }
                 // newline bitmap of [base, base + 64 * words), within fast_end + 96
                 let base = p & !63;
-                let lim = (e.min(fast_end) + 96).min(base + WIN + 128);
+                let lim = (e.min(fast_end) + 128).min(base + WIN + 192);
                 let words = (lim - base) / 64;
                 nlv.clear();
                 nlv.reserve(words);
@@ -458,7 +460,9 @@ pub fn scan_lines<const N: usize>(f: usize, s: usize, e: usize, mut each: impl F
                         break;
                     }
                     let ok = if len < 96 {
-                        unsafe { line_fields::<N>(d.as_ptr().add(p), len, &mut fl) }
+                        unsafe { line_fields::<N, 3>(d.as_ptr().add(p), len, &mut fl) }
+                    } else if len < 128 {
+                        unsafe { line_fields::<N, 4>(d.as_ptr().add(p), len, &mut fl) }
                     } else {
                         long_line::<N>(d, p, &mut fl).1
                     };
