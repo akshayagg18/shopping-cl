@@ -55,9 +55,14 @@ adds almost nothing to the measured time.
 9. **Exit.** The process exits without freeing anything. Event files are never mapped
    into memory pages, so the kernel's single-threaded teardown has little to do.
 
-Partition counts scale with the input size, so the 60M final keeps the same per-partition
-working sets as the 20M practice set. Large buffers come from 2 MiB-aligned mappings
-advised for transparent huge pages.
+Partition counts scale with the input size up to 1024 each: on the scorer at 60M,
+4096 person and event-id partitions made parsing about 18% slower (the staging areas
+leave the 1 MiB L2) for little gain in dedup and sessions (2.88 s against 2.53 s end to
+end, same machine). Large buffers come from 2 MiB-aligned mappings advised for
+transparent huge pages.
+
+At 60M (scorer: 60 tagged copies of the dev set, 6.7 GB) an order-independent digest of
+both tables equals 60 times the dev digest; peak memory 10.6 GB of the 24 GB limit.
 
 ## Correctness checks
 
