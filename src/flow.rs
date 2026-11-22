@@ -484,7 +484,9 @@ impl Dead {
 #[derive(Default)]
 struct DedupScratch2 {
     blocks: Vec<(usize, u32, u32)>, // (records, count, owning worker)
+    /// all zero between partitions (only the slots written are cleared)
     table: Vec<u64>,
+    touched: Vec<u32>,
 }
 
 thread_local! {
@@ -528,9 +530,12 @@ pub fn dedup_part(b: usize, sinks: &[Sink], wide: &[Wide], dead: &Dead) {
         assert!(sc.blocks.len() < WIDE >> OB, "dedup partition too large");
         let cap = (n * 2).next_power_of_two().max(16);
         let mask = cap - 1;
-        sc.table.clear();
-        sc.table.resize(cap, 0);
-        let (blocks, table) = (&sc.blocks, &mut sc.table);
+        if sc.table.len() < cap {
+            sc.table.resize(cap, 0);
+        }
+        sc.touched.clear();
+        sc.touched.reserve(n);
+        let (blocks, table, touched) = (&sc.blocks, &mut sc.table, &mut sc.touched);
         // (id, ingest, event record to kill: worker, partition, index)
         let copy = |g: usize| -> (u64, u32, Option<(usize, usize, usize)>) {
             if g & WIDE != 0 {
@@ -550,6 +555,11 @@ pub fn dedup_part(b: usize, sinks: &[Sink], wide: &[Wide], dead: &Dead) {
                 let t = unsafe { *table.get_unchecked(s) };
                 if t == 0 {
                     unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
+                    unsafe {
+                        let l = touched.len();
+                        touched.as_mut_ptr().add(l).write(s as u32);
+                        touched.set_len(l + 1);
+                    }
                     return;
                 }
                 if t >> 32 == fp {
@@ -580,6 +590,9 @@ pub fn dedup_part(b: usize, sinks: &[Sink], wide: &[Wide], dead: &Dead) {
         }
         for (k, w) in wide.iter().enumerate() {
             one(WIDE | k, w.id, w.ingest);
+        }
+        for &s in sc.touched.iter() {
+            unsafe { *sc.table.get_unchecked_mut(s as usize) = 0 };
         }
     })
 }
