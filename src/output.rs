@@ -5,7 +5,7 @@ use std::path::Path;
 use rayon::prelude::*;
 
 use crate::pq::{Column, Kind, write_file};
-use crate::{Agg, Lookups, OutInfo, name_bytes, name_len};
+use crate::{Agg, Lookups, OutInfo, name_bytes};
 
 /// SS_DIGEST=1: print an order-independent digest of both tables (sums of
 /// per-row hashes; a user's name is cut at its last '!', so a dataset of K
@@ -131,8 +131,7 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
                 }
             }
             let n = hi - lo;
-            let bytes: usize = parts.iter().flat_map(|p| p.iter()).map(|r| name_len(r.name) + 4).sum();
-            let mut nb = [0u8; 16];
+            let bytes: usize = parts.iter().flat_map(|p| p.iter()).map(|r| (r.name & 0xFFFF) as usize + 4).sum();
             let mut ids = Column::new("user_id", Kind::Str, n, bytes);
             let mut day = Column::new("day", Kind::Date, n, n * 4);
             let mut s = Column::new("sessions", Kind::I32, n, n * 4);
@@ -144,14 +143,12 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
                 for (k, row) in rows.iter().enumerate() {
                     // names are scattered (link files, per-thread name buffers): fetch ahead
                     if let Some(ahead) = rows.get(k + 16) {
-                        // packed names (bit 63) are decoded, not read
                         #[cfg(target_arch = "x86_64")]
-                        if ahead.name >> 63 == 0 {
-                            unsafe { std::arch::x86_64::_mm_prefetch(crate::deref(ahead.name).as_ptr() as *const i8, std::arch::x86_64::_MM_HINT_T0) };
-                        }
+                        unsafe {
+                            std::arch::x86_64::_mm_prefetch(name_bytes(ahead.name).as_ptr() as *const i8, std::arch::x86_64::_MM_HINT_T0)
+                        };
                     }
-                    let nm = name_bytes(row.name, &mut nb);
-                    ids.str(nm);
+                    ids.str(name_bytes(row.name));
                     day.i32(row.day);
                     s.i32(row.sessions as i32);
                     e.i32(row.events as i32);
@@ -159,7 +156,7 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
                     top.opt_str(if row.top == 255 { None } else { Some(&cats[row.top as usize]) });
                     if dig {
                         let t: Option<&[u8]> = if row.top == 255 { None } else { Some(&cats[row.top as usize]) };
-                        my = my.wrapping_add(user_digest(name_bytes(row.name, &mut [0u8; 16]), row, t));
+                        my = my.wrapping_add(user_digest(name_bytes(row.name), row, t));
                     }
                 }
             }

@@ -72,12 +72,6 @@ pub static READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// (stage 1). Off: on the scorer's Cascade Lake cores stage 1 is ~110 ms faster
 /// at 20M (same-run A/B), though per line wins on newer cores.
 pub static TOK1: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// Person partitions of at least SPLIT_MIN events are split 2^P2SPLIT ways
-/// before grouping (0: never).
-pub static P2SPLIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-pub static SPLIT_MIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(40_000);
-/// Stage-1 window per block (bytes).
-pub static SUB_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(192 << 10);
 /// Map inputs with MAP_POPULATE.
 pub static POP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -116,7 +110,7 @@ fn mkref(file: usize, off: usize, len: usize) -> u64 {
 static NAMES: AtomicPtr<Vec<&'static [u8]>> = AtomicPtr::new(std::ptr::null_mut());
 
 #[inline(always)]
-pub fn deref(r: u64) -> &'static [u8] {
+fn deref(r: u64) -> &'static [u8] {
     let files = unsafe { &*FILES.load(Ordering::Relaxed) };
     let f = (r >> 52) as usize;
     let off = ((r >> 16) & ((1u64 << 36) - 1)) as usize;
@@ -861,99 +855,9 @@ impl PersonMap {
     }
 }
 
-/// Person key of an unlinked ID that packs: PACKED | its characters (see
-/// `pack_id`). Hashed keys of other unlinked IDs have both top bits clear.
-pub const PACKED: u64 = 1 << 62;
-
-/// 6-bit codes of the characters a packed ID may hold (0: not packable).
-const PACK_CODE: [u8; 256] = {
-    let mut t = [0u8; 256];
-    let mut c = 0;
-    while c < 10 {
-        t[b'0' as usize + c] = 1 + c as u8;
-        c += 1;
-    }
-    c = 0;
-    while c < 26 {
-        t[b'a' as usize + c] = 11 + c as u8;
-        t[b'A' as usize + c] = 37 + c as u8;
-        c += 1;
-    }
-    t
-};
-const PACK_CHAR: [u8; 64] = {
-    let mut t = [0u8; 64];
-    let mut c = 0;
-    while c < 256 {
-        if PACK_CODE[c] != 0 {
-            t[PACK_CODE[c] as usize] = c as u8;
-        }
-        c += 1;
-    }
-    t
-};
-pub const PACK_MAX: usize = 10;
-
-/// An ID of 1..=10 characters from [0-9a-zA-Z], losslessly as PACKED | six
-/// bits a character (first character highest, unused positions 0); 0 if it
-/// does not pack. Distinct IDs never share a packed key.
-#[inline(always)]
-pub fn pack_id(b: &[u8]) -> u64 {
-    let n = b.len();
-    if n == 0 || n > PACK_MAX {
-        return 0;
-    }
-    let mut acc = 0u64;
-    let mut ok = 1u8;
-    for i in 0..PACK_MAX {
-        let c = if i < n { PACK_CODE[b[i] as usize] } else { 0 };
-        ok &= (i >= n || c != 0) as u8;
-        acc = (acc << 6) | c as u64;
-    }
-    if ok == 0 { 0 } else { PACKED | acc }
-}
-
-/// The ID a packed key stands for, into `buf`.
-#[inline]
-pub fn unpack_id(key: u64, buf: &mut [u8; 16]) -> &[u8] {
-    let mut n = 0;
-    for i in 0..PACK_MAX {
-        let c = ((key >> (6 * (PACK_MAX - 1 - i))) & 63) as usize;
-        if c == 0 {
-            break;
-        }
-        buf[n] = PACK_CHAR[c];
-        n += 1;
-    }
-    &buf[..n]
-}
-
 #[inline(always)]
 fn unlinked_key(user_hash: u64) -> u64 {
-    user_hash & !(LINKED | PACKED)
-}
-
-/// Names of unlinked users whose IDs do not pack: hashed key -> ref, built
-/// after parsing from the sinks' lists.
-static LONGS: AtomicPtr<PersonMap> = AtomicPtr::new(std::ptr::null_mut());
-
-#[inline(always)]
-fn longs_key(k: u64) -> u64 {
-    // spread over the table's top-bit index; never 0 for a non-zero key
-    k.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-}
-
-/// A person's name (a ref, or for a packed key the key with bit 63 set).
-#[inline(always)]
-fn person_name(key: u64) -> u64 {
-    if key & LINKED != 0 {
-        key & !LINKED
-    } else if key & PACKED != 0 {
-        key | LINKED
-    } else {
-        let m = unsafe { &*LONGS.load(Ordering::Relaxed) };
-        m.get(longs_key(key)).expect("name of an unlinked user")
-    }
+    user_hash & !LINKED
 }
 
 #[inline(always)]
@@ -1048,73 +952,39 @@ fn links(inp: &Inputs) -> Persons {
     // parent is set to its root on the way (later passes need one hop)
     let best: Vec<AtomicU32> = (0..cap as u32).into_par_iter().with_min_len(1 << 14).map(AtomicU32::new).collect();
     let name_of = |i: usize| deref(map.val_at(i).load(Ordering::Relaxed));
-    if std::env::var("SS_LB").is_ok_and(|v| v == "1") {
-        // first the smallest 8-byte prefix per component (one atomic min, no
-        // name reads), then full compares only among the slots that hold it
-        let pre_of = |i: usize| {
-            let b = name_of(i);
-            let mut x = [0u8; 8];
-            let k = b.len().min(8);
-            x[..k].copy_from_slice(&b[..k]);
-            u64::from_be_bytes(x)
-        };
-        let minp: Vec<std::sync::atomic::AtomicU64> = (0..cap).into_par_iter().with_min_len(1 << 14).map(|_| std::sync::atomic::AtomicU64::new(u64::MAX)).collect();
-        (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
-            if map.key_at(i).load(Ordering::Relaxed) == 0 {
-                return;
+    (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
+        if map.key_at(i).load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let r = find(&parent, i as u32) as usize;
+        if r == i {
+            return;
+        }
+        parent[i].store(r as u32, Ordering::Relaxed);
+        let mine = name_of(i);
+        let mut cur = best[r].load(Ordering::Relaxed);
+        while mine < name_of(cur as usize) {
+            match best[r].compare_exchange_weak(cur, i as u32, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(c) => cur = c,
             }
-            let r = find(&parent, i as u32) as usize;
-            if r != i {
-                parent[i].store(r as u32, Ordering::Relaxed);
-            }
-            minp[r].fetch_min(pre_of(i), Ordering::Relaxed);
-        });
-        (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
-            if map.key_at(i).load(Ordering::Relaxed) == 0 {
-                return;
-            }
-            let r = parent[i].load(Ordering::Relaxed) as usize;
-            if r == i || pre_of(i) != minp[r].load(Ordering::Relaxed) {
-                return;
-            }
-            let mine = name_of(i);
-            let mut cur = best[r].load(Ordering::Relaxed);
-            while (cur as usize == r && pre_of(r) != minp[r].load(Ordering::Relaxed)) || mine < name_of(cur as usize) {
-                match best[r].compare_exchange_weak(cur, i as u32, Ordering::Relaxed, Ordering::Relaxed) {
-                    Ok(_) => break,
-                    Err(c) => cur = c,
-                }
-            }
-        });
-        std::mem::forget(minp);
-    } else {
-        (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
-            if map.key_at(i).load(Ordering::Relaxed) == 0 {
-                return;
-            }
-            let r = find(&parent, i as u32) as usize;
-            if r == i {
-                return;
-            }
-            parent[i].store(r as u32, Ordering::Relaxed);
-            let mine = name_of(i);
-            let mut cur = best[r].load(Ordering::Relaxed);
-            while mine < name_of(cur as usize) {
-                match best[r].compare_exchange_weak(cur, i as u32, Ordering::Relaxed, Ordering::Relaxed) {
-                    Ok(_) => break,
-                    Err(c) => cur = c,
-                }
-            }
-        });
-    }
+        }
+    });
     lt("best");
-    // every value becomes LINKED | the ref held by its component's best slot;
-    // that slot may already hold LINKED | the same ref: OR-ing is idempotent
+    // a root's value becomes its component's name ref (it reads only its own
+    // component's non-root slots), then every value becomes LINKED | that ref
+    (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
+        if map.key_at(i).load(Ordering::Relaxed) != 0 && parent[i].load(Ordering::Relaxed) == i as u32 {
+            let b = best[i].load(Ordering::Relaxed) as usize;
+            if b != i {
+                map.val_at(i).store(map.val_at(b).load(Ordering::Relaxed), Ordering::Relaxed);
+            }
+        }
+    });
     (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
         if map.key_at(i).load(Ordering::Relaxed) != 0 {
             let r = parent[i].load(Ordering::Relaxed) as usize;
-            let b = best[r].load(Ordering::Relaxed) as usize;
-            map.val_at(i).store(LINKED | map.val_at(b).load(Ordering::Relaxed), Ordering::Relaxed);
+            map.val_at(i).store(LINKED | map.val_at(r).load(Ordering::Relaxed), Ordering::Relaxed);
         }
     });
     lt("named");
@@ -1125,13 +995,14 @@ fn links(inp: &Inputs) -> Persons {
 
 // ---------------------------------------------------------------- records
 
-/// A surviving event, keyed by person. 16 bytes.
+/// A surviving event, keyed by person. 24 bytes.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
-pub struct Ev2 {
-    pub key: u64,
-    pub ts: u32,
-    pub pc: u32,
+struct Ev2 {
+    key: u64,
+    uref: u64,
+    ts: u32,
+    pc: u32,
 }
 
 /// An event inside a person partition, once grouped: the person is known by
@@ -1208,14 +1079,13 @@ struct Scratch {
     cks_sorted: Vec<Ck1>,
     // per grouped person: key and the ref of one of its events' user IDs
     pkey: Vec<u64>,
+    puref: Vec<u64>,
     ev_pos: Vec<u32>,
     ck_pos: Vec<u32>,
     // per person: occupied half-hour bins (bitmap), their aggregates, the
     // purchases by bin, and the runs in bin order
     bm: Vec<u64>,
     bins: Vec<BinAcc>,
-    sub_ev: Vec<Vec<Ev2>>,
-    sub_ck: Vec<Vec<Ck>>,
     purch: Vec<(u32, u32)>,
     runs: Vec<Run>,
 }
@@ -1245,12 +1115,11 @@ impl Scratch {
             evs_sorted: Vec::new(),
             cks_sorted: Vec::new(),
             pkey: Vec::new(),
+            puref: Vec::new(),
             ev_pos: Vec::new(),
             ck_pos: Vec::new(),
             bm: Vec::new(),
             bins: Vec::new(),
-            sub_ev: Vec::new(),
-            sub_ck: Vec::new(),
             purch: Vec::new(),
             runs: Vec::new(),
         }
@@ -1310,54 +1179,6 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     if n == 0 {
         return;
     }
-    let split = P2SPLIT.load(Ordering::Relaxed);
-    if split > 0 && n >= SPLIT_MIN.load(Ordering::Relaxed) {
-        // a big partition: live records into 2^split sub-partitions first (by
-        // the next bits of the person bucket hash), each processed in cache
-        let nsub = 1usize << split;
-        let sh = 64 - p2_bits() - split;
-        let fine = |k: u64| ((k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> sh) as usize) & (nsub - 1);
-        let mut se = std::mem::take(&mut sc.sub_ev);
-        let mut sk = std::mem::take(&mut sc.sub_ck);
-        se.resize_with(nsub, Vec::new);
-        sk.resize_with(nsub, Vec::new);
-        for v in se.iter_mut() {
-            v.clear();
-        }
-        for v in sk.iter_mut() {
-            v.clear();
-        }
-        for (t, s) in sinks.iter().enumerate() {
-            let mut i = 0usize;
-            let mut dw = 0u64;
-            for sl in s.ev.slices(b) {
-                for e in sl {
-                    if i % 64 == 0 {
-                        dw = dead.word(t, b, i / 64);
-                    }
-                    if (dw >> (i % 64)) & 1 == 0 {
-                        unsafe { se.get_unchecked_mut(fine(e.key)) }.push(*e);
-                    }
-                    i += 1;
-                }
-            }
-        }
-        for s in sinks {
-            for sl in s.ck.slices(b) {
-                for c in sl {
-                    unsafe { sk.get_unchecked_mut(fine(c.key)) }.push(*c);
-                }
-            }
-        }
-        for f in 0..nsub {
-            if !se[f].is_empty() {
-                process_list(ctx, agg, sc, &se[f], &sk[f], evb, ckb);
-            }
-        }
-        sc.sub_ev = se;
-        sc.sub_ck = sk;
-        return;
-    }
     // persons are ~30x fewer than events: the table starts small (cache
     // resident) and doubles when half full
     let mut cap = (n / 8).next_power_of_two().max(256);
@@ -1367,6 +1188,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     sc.used.clear();
     sc.ev_cnt.clear();
     sc.pkey.clear();
+    sc.puref.clear();
     sc.ev_local.clear();
     sc.ev_local.reserve(n);
     let nb = ctx.nbins;
@@ -1396,6 +1218,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                     let id = group_id(sc, e.key, &mut cap);
                     if id as usize == sc.pkey.len() {
                         sc.pkey.push(e.key);
+                        sc.puref.push(e.uref);
                     }
                     unsafe {
                         *sc.ev_cnt.get_unchecked_mut(id as usize) += 1;
@@ -1501,145 +1324,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
         if ck.len() > 1 {
             ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
         }
-        person_sessions(ctx, sc.pkey[pid], ev, ck, agg, sc);
-    }
-    sc.evs_sorted = evs;
-    sc.cks_sorted = cks;
-}
-
-/// process_bucket for live events and clicks already gathered in slices.
-fn process_list(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evs_in: &[Ev2], cks_in: &[Ck], evb: &mut Vec<Ev1>, ckb: &mut Vec<Ck1>) {
-    let n: usize = evs_in.len();
-    if n == 0 {
-        return;
-    }
-    // persons are ~30x fewer than events: the table starts small (cache
-    // resident) and doubles when half full
-    let mut cap = (n / 8).next_power_of_two().max(256);
-    if sc.table.len() < cap {
-        sc.table.resize(cap, (0, u32::MAX));
-    }
-    sc.used.clear();
-    sc.ev_cnt.clear();
-    sc.pkey.clear();
-    sc.ev_local.clear();
-    sc.ev_local.reserve(n);
-    let nb = ctx.nbins;
-    if sc.bins.len() < nb {
-        sc.bins.resize(nb, BinAcc::default());
-        sc.bm.resize(nb.div_ceil(64), 0);
-    }
-    evb.clear();
-    evb.reserve(n);
-    for e in evs_in {
-        {
-            let id = group_id(sc, e.key, &mut cap);
-            if id as usize == sc.pkey.len() {
-                sc.pkey.push(e.key);
-                            }
-            unsafe {
-                *sc.ev_cnt.get_unchecked_mut(id as usize) += 1;
-                let len = evb.len();
-                evb.as_mut_ptr().add(len).write(Ev1 { ts: e.ts, pc: e.pc });
-                evb.set_len(len + 1);
-                let len = sc.ev_local.len();
-                sc.ev_local.as_mut_ptr().add(len).write(id);
-                sc.ev_local.set_len(len + 1);
-            }
-        }
-
-    }
-    let n = evb.len();
-    if n == 0 {
-        return;
-    }
-    let mask = cap - 1;
-    let slot_of = |k: u64, mask: usize| (k.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 32) as usize & mask;
-    let evin: &[Ev1] = evb;
-    let np = sc.ev_cnt.len();
-    sc.ck_cnt.clear();
-    sc.ck_cnt.resize(np, 0);
-    sc.ck_local.clear();
-    ckb.clear();
-    {
-        {
-            for c in cks_in {
-                let mut s = slot_of(c.key, mask);
-                let id = loop {
-                    let t = unsafe { sc.table.get_unchecked(s) };
-                    if t.1 == u32::MAX {
-                        break u32::MAX;
-                    }
-                    if t.0 == c.key {
-                        break t.1;
-                    }
-                    s = (s + 1) & mask;
-                };
-                // clicks of persons without events never matter
-                if id != u32::MAX {
-                    sc.ck_cnt[id as usize] += 1;
-                    ckb.push(Ck1 { cref: c.cref, ts: c.ts, camp: c.camp });
-                    sc.ck_local.push(id);
-                }
-            }
-        }
-    }
-    let ckin: &[Ck1] = ckb;
-    for &s in &sc.used {
-        sc.table[s as usize] = (0, u32::MAX);
-    }
-    // prefix sums -> start offsets (ev_cnt / ck_cnt become running positions)
-    let mut acc = 0u32;
-    for c in sc.ev_cnt.iter_mut() {
-        let v = *c;
-        *c = acc;
-        acc += v;
-    }
-    let mut cacc = 0u32;
-    for c in sc.ck_cnt.iter_mut() {
-        let v = *c;
-        *c = cacc;
-        cacc += v;
-    }
-    sc.evs_sorted.clear();
-    sc.evs_sorted.reserve(n);
-    sc.cks_sorted.clear();
-    sc.cks_sorted.reserve(cacc as usize);
-    unsafe {
-        sc.evs_sorted.set_len(n);
-        sc.cks_sorted.set_len(cacc as usize);
-    }
-    // events by person (one counting pass); inside a person, events are binned
-    // by half hour in person_sessions
-    sc.ev_pos.clear();
-    sc.ev_pos.extend_from_slice(&sc.ev_cnt);
-    unsafe {
-        for (e, &id) in evin.iter().zip(&sc.ev_local) {
-            let at = sc.ev_pos.get_unchecked_mut(id as usize);
-            *sc.evs_sorted.get_unchecked_mut(*at as usize) = *e;
-            *at += 1;
-        }
-    }
-    sc.ck_pos.clear();
-    sc.ck_pos.extend_from_slice(&sc.ck_cnt);
-    for (c, &id) in ckin.iter().zip(&sc.ck_local) {
-        let at = &mut sc.ck_pos[id as usize];
-        sc.cks_sorted[*at as usize] = *c;
-        *at += 1;
-    }
-    let evs = std::mem::take(&mut sc.evs_sorted);
-    let cks = std::mem::take(&mut sc.cks_sorted);
-    let mut evs = evs;
-    let mut cks = cks;
-    for pid in 0..np {
-        let (es, ee) = (sc.ev_cnt[pid] as usize, sc.ev_pos[pid] as usize);
-        let (cs, ce) = (sc.ck_cnt[pid] as usize, sc.ck_pos[pid] as usize);
-        let ev = &mut evs[es..ee];
-        let ck = &mut cks[cs..ce];
-        if ck.len() > 1 {
-            ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
-        }
-        person_sessions(ctx, sc.pkey[pid], ev, ck, agg, sc);
+        person_sessions(ctx, sc.pkey[pid], sc.puref[pid], ev, ck, agg, sc);
     }
     sc.evs_sorted = evs;
     sc.cks_sorted = cks;
@@ -1705,8 +1390,8 @@ fn bin_runs(evs: &[Ev1], sc: &mut Scratch) {
 }
 
 /// `evs`: one person's events, any order. `cks`: the person's clicks by (ts, click_id).
-fn person_sessions(ctx: &Ctx, key: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg, sc: &mut Scratch) {
-    let name = person_name(key);
+fn person_sessions(ctx: &Ctx, key: u64, uref: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg, sc: &mut Scratch) {
+    let name = if key & LINKED != 0 { key & !LINKED } else { uref };
     let (mut lo, mut hi) = (0usize, 0usize);
     let mut cur_day: i64 = i64::MIN;
     let (mut d_sess, mut d_evs, mut d_rev) = (0u32, 0u32, 0i64);
@@ -1840,7 +1525,28 @@ fn main() {
     let data = PathBuf::from(env("DATA_DIR", "/data"));
     let out = PathBuf::from(env("OUTPUT_DIR", "/output"));
     let threads: usize = env("NCPU", "8").parse().unwrap_or(8);
-    rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().unwrap();
+    // SS_PIN=1: worker i stays on the i-th allowed CPU (staging areas stay in its caches)
+    let pin: Option<Vec<usize>> = if std::env::var("SS_PIN").is_ok_and(|v| v == "1") {
+        unsafe {
+            let mut set: libc::cpu_set_t = std::mem::zeroed();
+            if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) == 0 {
+                Some((0..libc::CPU_SETSIZE as usize).filter(|&c| libc::CPU_ISSET(c, &set)).collect())
+            } else {
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut b = rayon::ThreadPoolBuilder::new().num_threads(threads);
+    if let Some(cpus) = pin.filter(|c| !c.is_empty()) {
+        b = b.start_handler(move |i| unsafe {
+            let mut set: libc::cpu_set_t = std::mem::zeroed();
+            libc::CPU_SET(cpus[i % cpus.len()], &mut set);
+            libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
+        });
+    }
+    b.build_global().unwrap();
     if let Ok(mode) = std::env::var("SS_MICRO") {
         // deterministic micro-benchmarks (run under cachegrind)
         let inp = open_all(&data);
@@ -1957,26 +1663,14 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     READ.store(std::env::var("SS_READ").is_ok_and(|v| v == "1"), Ordering::Relaxed);
     TOK1.store(std::env::var("SS_TOK").is_ok_and(|v| v == "2"), Ordering::Relaxed);
     POP.store(std::env::var("SS_POP").is_ok_and(|v| v == "1"), Ordering::Relaxed);
-    if let Some(kb) = std::env::var("SS_SUB").ok().and_then(|v| v.parse::<usize>().ok()) {
-        SUB_BYTES.store(kb.clamp(16, 4096) << 10, Ordering::Relaxed);
-    }
-    if let Some(a) = std::env::var("SS_AHEAD").ok().and_then(|v| v.parse::<usize>().ok()) {
-        flow::AHEAD_N.store(a.clamp(1, flow::RING), Ordering::Relaxed);
-    }
-    flow::STAGE_HUGE.store(std::env::var("SS_STH").is_ok_and(|v| v == "1"), Ordering::Relaxed);
-    if let Some(v) = std::env::var("SS_SPLITMIN").ok().and_then(|v| v.parse().ok()) {
-        SPLIT_MIN.store(v, Ordering::Relaxed);
-    }
-    P2SPLIT.store(std::env::var("SS_P2SPLIT").ok().and_then(|v| v.parse().ok()).unwrap_or(0u32).min(6), Ordering::Relaxed);
-    flow::NT_DIRECT.store(std::env::var("SS_NTD").is_ok_and(|v| v == "1"), Ordering::Relaxed);
+    scan::set_a512(std::env::var("SS_A512").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
     output::DIGEST.store(std::env::var("SS_DIGEST").is_ok_and(|v| v == "1"), Ordering::Relaxed);
     let inp = open_all(data);
     // partition counts follow the input size, so a partition's working set
     // stays about the same from the 20M practice set to the 60M final
     let ev_bytes: usize = inp.events.iter().map(|&f| file_bytes(f).len()).sum();
     let est_events = (ev_bytes / 75).max(1);
-    // at most 1024 partitions: at 60M, 4096 made the parse ~18% slower on the
-    // scorer (staging areas out of L2) for little gain in dedup and sessions
+    // at most 1024 partitions: 4096 made the 60M parse ~18% slower on the scorer
     let auto = |per: usize| (usize::BITS - 1 - (est_events / per).max(1).leading_zeros()).clamp(9, 10);
     let envbits = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(d).clamp(6, 14);
     // a copy record holds the person partition in 12 bits
@@ -2008,8 +1702,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     lap("links");
     let nthreads = rayon::current_num_threads();
     let nfiles = unsafe { &*FILES.load(Ordering::Relaxed) }.len();
-    // unlinked IDs pack into their keys or are named from the input: no copies
-    let name_cap = 0;
+    // room for every event's user ID, at twice a thread's share (spare virtual memory)
+    let name_cap = est_events / nthreads * 32 + (1 << 20);
     let sinks: Vec<std::sync::Mutex<flow::Sink>> =
         (0..nthreads).map(|t| std::sync::Mutex::new(flow::Sink::new(nfiles + t, name_cap))).collect();
     // every worker takes the next unit in list order (the order read ahead)
@@ -2031,17 +1725,6 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     sinks.par_iter_mut().for_each(|s| s.finish());
     let names: Vec<&'static [u8]> = sinks.iter_mut().map(|s| &*std::mem::take(&mut s.names).leak()).collect();
     NAMES.store(Box::into_raw(Box::new(names)), Ordering::Release);
-    // names of unlinked users whose IDs do not pack (a few percent of events)
-    let nlong: usize = sinks.iter().map(|s| s.longs.len()).sum();
-    let longs = PersonMap::with_room(nlong);
-    sinks.par_iter().for_each(|s| {
-        s.longs.par_chunks(1 << 12).for_each(|c| {
-            for &(k, r) in c {
-                longs.insert(longs_key(k), r);
-            }
-        })
-    });
-    LONGS.store(Box::into_raw(Box::new(longs)), Ordering::Release);
     lap("parsed");
     let dead = flow::Dead::new(&sinks);
     let wide = flow::wide_sorted(&mut sinks);
@@ -2113,16 +1796,8 @@ fn ctx_info(ctx: &Ctx, _lk: &Lookups) -> OutInfo {
     OutInfo { ndays: ctx.ndays, ncamp: ctx.ncamp, ws_day: ctx.ws_day }
 }
 
-/// A person's name bytes (`person_name`): a ref, or a packed ID decoded into `buf`.
-#[inline(always)]
-pub fn name_bytes<'a>(r: u64, buf: &'a mut [u8; 16]) -> &'a [u8] {
-    if r & LINKED != 0 { unpack_id(r, buf) } else { deref(r) }
-}
-
-/// Bytes of a name, at most (for sizing columns).
-#[inline(always)]
-pub fn name_len(r: u64) -> usize {
-    if r & LINKED != 0 { PACK_MAX } else { (r & 0xFFFF) as usize }
+pub fn name_bytes(r: u64) -> &'static [u8] {
+    deref(r)
 }
 
 #[cfg(test)]
@@ -2269,34 +1944,4 @@ pub(crate) mod tests_support {
         out
     }
 
-}
-
-#[cfg(test)]
-mod pack_tests {
-    use super::*;
-    #[test]
-    fn pack_roundtrip_and_distinct() {
-        let mut seen = std::collections::HashMap::new();
-        let alpha = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        let mut x: u64 = 12345;
-        for _ in 0..200_000 {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            let n = 1 + (x % 10) as usize;
-            let id: Vec<u8> = (0..n).map(|i| alpha[((x >> (i * 6)) as usize) % 62]).collect();
-            let k = pack_id(&id);
-            assert!(k & PACKED != 0 && k & LINKED == 0);
-            let mut b = [0u8; 16];
-            assert_eq!(unpack_id(k, &mut b), &id[..]);
-            if let Some(prev) = seen.insert(k, id.clone()) {
-                assert_eq!(prev, id);
-            }
-        }
-        for bad in [&b""[..], b"u1 ", b"u_1", b"abcdefghijk", b"u!0", b"\"u1", b"\xff"] {
-            assert_eq!(pack_id(bad), 0, "{:?}", bad);
-        }
-        assert_ne!(pack_id(b"u1"), pack_id(b"u10"));
-        assert_ne!(pack_id(b"0"), pack_id(b"00"));
-    }
 }

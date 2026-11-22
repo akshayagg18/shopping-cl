@@ -503,7 +503,7 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let dev_gb = dir_gb(data);
-    eprintln!("D23 (v17 against v16b, same machine) {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
+    eprintln!("D24 (v16b + toggles: a1 = AVX-512 masks on ymm, a2 = on zmm, pin = workers pinned) {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
     eprintln!("cols: wall/int ms: open links parse dedup sess write | user sys rss faults | digests");
     let dg = |k: u64, line: &str, base: Option<(u64, u64)>| -> String {
         match (digests(line), base) {
@@ -539,41 +539,32 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
         let _ = std::fs::remove_dir_all(&big);
         true
     };
-    eprintln!("{}", child("alt-dev", data, &ob, threads, &[]));
-    run_k(2, &[("x2", &[])]);
-    let v60: [(&str, &[(&str, &str)]); 10] = [
-        ("warm", &[]),
-        ("alt", &[]),
-        ("v17", &[]),
-        ("alt", &[]),
-        ("v17", &[]),
-        ("alt", &[]),
-        ("v17", &[]),
-        ("v17-p11d11", &[("SS_P2B", "11"), ("SS_PDB", "11")]),
-        ("alt-p11d11", &[("SS_P2B", "11"), ("SS_PDB", "11")]),
-        ("v17-p10d10s2", &[("SS_P2SPLIT", "2"), ("SS_SPLITMIN", "20000")]),
+    run_k(2, &[("x2", &[]), ("x2-a2pin", &[("SS_A512", "2"), ("SS_PIN", "1")])]);
+    let round: [(&str, &[(&str, &str)]); 5] = [
+        ("base", &[]),
+        ("a1", &[("SS_A512", "1")]),
+        ("a2", &[("SS_A512", "2")]),
+        ("pin", &[("SS_PIN", "1")]),
+        ("a1pin", &[("SS_A512", "1"), ("SS_PIN", "1")]),
     ];
+    let checks: [(&str, &[(&str, &str)]); 2] = [("a2-chk", &[("SS_A512", "2")]), ("a1pin-chk", &[("SS_A512", "1"), ("SS_PIN", "1")])];
+    let plan = |rounds: usize| {
+        let mut v: Vec<(&str, &[(&str, &str)])> = vec![("warm", &[])];
+        for r in 0..rounds {
+            // rotate the order each round
+            for i in 0..round.len() {
+                v.push(round[(i + r) % round.len()]);
+            }
+        }
+        v.extend_from_slice(&checks);
+        v
+    };
     let kb: usize = std::env::var("SS_DIAG_BIG").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
     let km: usize = std::env::var("SS_DIAG_MID").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
-    if !run_k(kb, &v60) {
-        run_k(kb * 2 / 3, &v60);
+    if !run_k(kb, &plan(2)) {
+        run_k(kb * 2 / 3, &plan(2));
     }
-    let v20: [(&str, &[(&str, &str)]); 13] = [
-        ("warm", &[]),
-        ("alt", &[]),
-        ("v17", &[]),
-        ("alt", &[]),
-        ("v17", &[]),
-        ("alt", &[]),
-        ("v17", &[]),
-        ("alt", &[]),
-        ("v17", &[]),
-        ("alt", &[]),
-        ("v17", &[]),
-        ("v17-p9d9s1", &[("SS_P2B", "9"), ("SS_PDB", "9"), ("SS_P2SPLIT", "1"), ("SS_SPLITMIN", "20000")]),
-        ("v17-p9d10", &[("SS_P2B", "9")]),
-    ];
-    run_k(km, &v20);
+    run_k(km, &plan(3));
     let _ = std::fs::remove_dir_all(&ob);
     eprintln!("done {:.1}s", t0.elapsed().as_secs_f64());
 }

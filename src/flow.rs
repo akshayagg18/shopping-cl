@@ -5,20 +5,12 @@
 use super::*;
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicU64;
-/// Ring capacity; lookups are prefetched AHEAD_N records ahead (<= RING).
-pub const RING: usize = 32;
-pub static AHEAD_N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(16);
-/// Staging areas in 2 MiB pages.
-pub static STAGE_HUGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub const PD_BITS: u32 = 10; // event-id partitions of the copy records (default)
 pub static PDB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(PD_BITS);
 /// Write-combining staging with non-temporal stores for the record streams.
 pub const WC_DEFAULT: bool = true;
 pub static WC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(WC_DEFAULT);
-/// Records written straight to their blocks with 8-byte non-temporal stores
-/// (no staging): an alternative to write-combining staging.
-pub static NT_DIRECT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[inline(always)]
 pub fn pd_bits() -> u32 {
@@ -128,7 +120,6 @@ pub struct Stream<T> {
     /// K records per partition, cache-line aligned (a row is whole lines)
     stage: Vec<Line>,
     wc: bool,
-    nt: bool,
     _t: PhantomData<T>,
 }
 
@@ -145,19 +136,9 @@ impl<T: Copy + Default> Stream<T> {
     pub const CAP: usize = BLOCK_BYTES / std::mem::size_of::<T>() / Self::K * Self::K;
 
     fn new(parts: usize) -> Self {
-        let nt = NT_DIRECT.load(Ordering::Relaxed) && std::mem::size_of::<T>() % 8 == 0;
-        let wc = WC.load(Ordering::Relaxed) && Self::K > 1 && !nt;
-        let stage = if wc {
-            let n = parts * Self::ROW_LINES;
-            // a 2 MiB request comes from the huge-page allocator
-            let cap = if STAGE_HUGE.load(Ordering::Relaxed) { n.max((2 << 20) / 64) } else { n };
-            let mut v = Vec::with_capacity(cap);
-            v.resize(n, Line([0; 64]));
-            v
-        } else {
-            Vec::new()
-        };
-        Stream { tails: vec![Tail::default(); parts], blocks: (0..parts).map(|_| Vec::new()).collect(), stage, wc, nt, _t: PhantomData }
+        let wc = WC.load(Ordering::Relaxed) && Self::K > 1;
+        let stage = if wc { vec![Line([0; 64]); parts * Self::ROW_LINES] } else { Vec::new() };
+        Stream { tails: vec![Tail::default(); parts], blocks: (0..parts).map(|_| Vec::new()).collect(), stage, wc, _t: PhantomData }
     }
 
     #[cold]
@@ -175,25 +156,6 @@ impl<T: Copy + Default> Stream<T> {
     fn push(&mut self, arena: &mut Arena, p: usize, v: T) -> u32 {
         if self.wc {
             return self.push_wc(arena, p, v);
-        }
-        if self.nt {
-            if unsafe { self.tails.get_unchecked(p) }.left == 0 {
-                self.grow(arena, p);
-            }
-            let t = unsafe { self.tails.get_unchecked_mut(p) };
-            #[cfg(target_arch = "x86_64")]
-            unsafe {
-                let src = &v as *const T as *const i64;
-                let dst = t.cur as *mut i64;
-                for w in 0..std::mem::size_of::<T>() / 8 {
-                    std::arch::x86_64::_mm_stream_si64(dst.add(w), *src.add(w));
-                }
-            }
-            t.cur += std::mem::size_of::<T>();
-            t.left -= 1;
-            let i = t.n;
-            t.n += 1;
-            return i;
         }
         if unsafe { self.tails.get_unchecked(p) }.left == 0 {
             self.grow(arena, p);
@@ -295,10 +257,7 @@ pub struct Sink {
     /// the event files' mapping (no page faults, nothing mapped to tear down at
     /// exit). Refs into it use file number `name_file`.
     pub names: Vec<u8>,
-    #[allow(dead_code)]
     name_file: usize,
-    /// (hashed key, name ref) of events of unlinked users whose IDs do not pack
-    pub longs: Vec<(u64, u64)>,
     pub wide: Vec<Wide>,
 }
 
@@ -315,7 +274,6 @@ impl Sink {
             ck: Stream::new(p2()),
             names: Vec::with_capacity(name_cap + 16),
             name_file,
-            longs: Vec::new(),
             wide: Vec::new(),
         }
     }
@@ -350,24 +308,25 @@ struct PendE {
 
 #[inline(always)]
 fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
-    let key = match persons.map.get(pd.uh) {
-        Some(k) => k,
+    let (key, uref) = match persons.map.get(pd.uh) {
+        Some(k) => (k, 0),
         None => {
-            // unlinked: a short ID is its own key (and name); any other is
-            // named from this event (any of the user's would do)
+            // unlinked: the name comes from this event (any of the user's would do)
+            let n = sink.names.len();
             let nl = (pd.uref & 0xFFFF) as usize;
-            let pk = crate::pack_id(&pd.nm[..nl.min(16)]);
-            if pk != 0 {
-                pk
+            if nl <= 16 && n + 16 <= sink.names.capacity() {
+                unsafe {
+                    std::ptr::write_unaligned(sink.names.as_mut_ptr().add(n) as *mut [u8; 16], pd.nm);
+                    sink.names.set_len(n + nl);
+                }
+                (unlinked_key(pd.uh), mkref(sink.name_file, n, nl))
             } else {
-                let k = unlinked_key(pd.uh);
-                sink.longs.push((k, pd.uref));
-                k
+                (unlinked_key(pd.uh), pd.uref)
             }
         }
     };
     let pb = person_bucket(key);
-    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { key, ts: pd.ts, pc: pd.pc });
+    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { key, uref, ts: pd.ts, pc: pd.pc });
     let (part, id) = (pd.part as usize, pd.id);
     if i < (1 << LOC_I) - 1 && pb < 1 << (32 - LOC_I) {
         sink.cp.push(&mut sink.arena, part, CopyR { id, ingest: pd.ingest, loc: ((pb as u32) << LOC_I) | i });
@@ -379,8 +338,8 @@ fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
 /// Parse one unit of event lines into `sink`.
 #[allow(clippy::too_many_arguments)]
 pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons, ws: i64, we: i64, sink: &mut Sink, tid: u64) {
-    let ahead = AHEAD_N.load(Ordering::Relaxed);
-    let mut ring = [PendE::default(); RING];
+    const AHEAD: usize = 16;
+    let mut ring = [PendE::default(); AHEAD];
     let mut memo = parse::Memo::new();
     let mut head = 0usize;
     let mut filled = 0usize;
@@ -418,7 +377,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             };
             let uh = h64(user);
             persons.map.prefetch(uh);
-            if filled == ahead {
+            if filled == AHEAD {
                 emit_event(sink, persons, tid, &ring[head]);
             } else {
                 filled += 1;
@@ -440,18 +399,15 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             pd.ingest = ingest;
             pd.ts = (ts - ws) as u32;
             pd.pc = pc;
-            head += 1;
-            if head == ahead {
-                head = 0;
-            }
+            head = (head + 1) % AHEAD;
             return;
         }
         // an invalid copy still takes part in dedup
         sink.cp.push(&mut sink.arena, eid_part(eid_h), CopyR { id: copy_id(eid_h, eid_c), ingest, loc: NOLOC });
     });
-    let start = if filled == ahead { head } else { 0 };
+    let start = if filled == AHEAD { head } else { 0 };
     for k in 0..filled {
-        let pd = ring[(start + k) % ahead];
+        let pd = ring[(start + k) % AHEAD];
         emit_event(sink, persons, tid, &pd);
     }
 }
@@ -459,8 +415,6 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
 #[derive(Clone, Copy, Default)]
 struct PendC {
     uh: u64,
-    /// the user's packed key (0: the ID does not pack)
-    upk: u64,
     cref: u64,
     ts: u32,
     camp: u32,
@@ -468,16 +422,16 @@ struct PendC {
 
 #[inline(always)]
 fn emit_click(sink: &mut Sink, persons: &Persons, pd: &PendC) {
-    let key = persons.map.get(pd.uh).unwrap_or_else(|| if pd.upk != 0 { pd.upk } else { unlinked_key(pd.uh) });
+    let key = persons.map.get(pd.uh).unwrap_or_else(|| unlinked_key(pd.uh));
     sink.ck.push(&mut sink.arena, person_bucket(key), Ck { key, cref: pd.cref, ts: pd.ts, camp: pd.camp });
 }
 
 /// Parse one unit of click lines into `sink`.
 #[allow(clippy::too_many_arguments)]
 pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons, ws: i64, we: i64, sink: &mut Sink) {
-    let ahead = AHEAD_N.load(Ordering::Relaxed);
+    const AHEAD: usize = 16;
     let lo = ws - CLICK_REACH;
-    let mut ring = [PendC::default(); RING];
+    let mut ring = [PendC::default(); AHEAD];
     let mut memo = parse::Memo::new();
     let mut head = 0usize;
     let mut filled = 0usize;
@@ -496,21 +450,18 @@ pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
         let Some(camp) = lk.campaigns.get(h64(fld(2))) else { return };
         let uh = h64(user);
         persons.map.prefetch(uh);
-        let pd = PendC { uh, upk: crate::pack_id(user), cref: mkref(f, p + fs.span(line, 0).0, cid.len()), ts: (ts - lo) as u32, camp: camp as u32 };
-        if filled == ahead {
+        let pd = PendC { uh, cref: mkref(f, p + fs.span(line, 0).0, cid.len()), ts: (ts - lo) as u32, camp: camp as u32 };
+        if filled == AHEAD {
             emit_click(sink, persons, &ring[head]);
         } else {
             filled += 1;
         }
         ring[head] = pd;
-        head += 1;
-            if head == ahead {
-                head = 0;
-            }
+        head = (head + 1) % AHEAD;
     });
-    let start = if filled == ahead { head } else { 0 };
+    let start = if filled == AHEAD { head } else { 0 };
     for k in 0..filled {
-        let pd = ring[(start + k) % ahead];
+        let pd = ring[(start + k) % AHEAD];
         emit_click(sink, persons, &pd);
     }
 }
