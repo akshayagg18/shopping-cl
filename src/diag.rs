@@ -74,7 +74,7 @@ fn tag_line(line: &[u8], cols: &[usize], k: usize, out: &mut Vec<u8>) {
 }
 
 /// K renamed copies of a dataset: same window and dirt, K times the people and rows.
-fn upscale(src: &Path, dst: &Path, k: usize) {
+pub fn upscale(src: &Path, dst: &Path, k: usize) {
     let _ = std::fs::remove_dir_all(dst);
     for d in ["events", "clicks", "links"] {
         std::fs::create_dir_all(dst.join(d)).unwrap();
@@ -303,6 +303,7 @@ fn bw_bench() -> (f64, f64) {
     (rd * 1.073_741_824, wr * 1.073_741_824)
 }
 
+#[allow(dead_code)]
 fn caches() -> String {
     let mut v = Vec::new();
     for i in 0..5 {
@@ -316,45 +317,148 @@ fn caches() -> String {
     v.join(",")
 }
 
+/// All regular files under `dir`.
+fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut v = Vec::new();
+    let mut st = vec![dir.to_path_buf()];
+    while let Some(d) = st.pop() {
+        if let Ok(rd) = std::fs::read_dir(&d) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    st.push(p);
+                } else {
+                    v.push(p);
+                }
+            }
+        }
+    }
+    v
+}
+
+/// (resident pages, total pages) of the files under `dir`, by mincore.
+fn residency(dir: &Path) -> (usize, usize) {
+    let (mut yes, mut all) = (0usize, 0usize);
+    for p in files_under(dir) {
+        let Ok(f) = std::fs::File::open(&p) else { continue };
+        let len = f.metadata().map(|m| m.len() as usize).unwrap_or(0);
+        if len == 0 {
+            continue;
+        }
+        let Ok(m) = (unsafe { memmap2::MmapOptions::new().map(&f) }) else { continue };
+        let pages = len.div_ceil(4096);
+        let mut v = vec![0u8; pages];
+        if unsafe { libc::mincore(m.as_ptr() as *mut libc::c_void, len, v.as_mut_ptr()) } == 0 {
+            yes += v.iter().filter(|&&b| b & 1 != 0).count();
+        }
+        all += pages;
+    }
+    (yes, all)
+}
+
+/// Evict the files under `dir` from the page cache (clean pages only).
+fn evict(dir: &Path) {
+    use std::os::unix::io::AsRawFd;
+    for p in files_under(dir) {
+        if let Ok(f) = std::fs::File::open(&p) {
+            unsafe {
+                libc::fdatasync(f.as_raw_fd());
+                libc::posix_fadvise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+            }
+        }
+    }
+}
+
+/// Touch one byte per page of every file under `dir` with all threads: ms.
+fn touch_all(dir: &Path) -> f64 {
+    let files = files_under(dir);
+    let t = Instant::now();
+    let s: u64 = files
+        .par_iter()
+        .map(|p| {
+            let Ok(f) = std::fs::File::open(p) else { return 0 };
+            let Ok(m) = (unsafe { memmap2::MmapOptions::new().map(&f) }) else { return 0 };
+            let mut a = 0u64;
+            let mut i = 0;
+            while i < m.len() {
+                a = a.wrapping_add(m[i] as u64);
+                i += 4096;
+            }
+            a
+        })
+        .sum();
+    std::hint::black_box(s);
+    t.elapsed().as_secs_f64() * 1e3
+}
+
+fn mounts_for(paths: &[&str]) -> String {
+    let mi = cat("/proc/self/mountinfo");
+    let mut out = Vec::new();
+    for want in paths {
+        // the longest mount point that prefixes the path
+        let mut best: Option<(usize, String)> = None;
+        for l in mi.lines() {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            if f.len() < 10 {
+                continue;
+            }
+            let mp = f[4];
+            let sep = f.iter().position(|&x| x == "-").unwrap_or(0);
+            let (fstype, src) = (f.get(sep + 1).copied().unwrap_or("?"), f.get(sep + 2).copied().unwrap_or("?"));
+            if want.starts_with(mp) && best.as_ref().map_or(true, |b| mp.len() >= b.0) {
+                best = Some((mp.len(), format!("{want}:{fstype}({})", &src[..src.len().min(24)])));
+            }
+        }
+        out.push(best.map(|b| b.1).unwrap_or_else(|| format!("{want}:?")));
+    }
+    out.join(" ")
+}
+
 pub fn main(data: &Path, out: &Path, threads: usize) {
     let t0 = Instant::now();
+    // first thing: is the real input in the page cache?
+    let (ry, ra) = residency(data);
+    let cold_ms = if ry * 2 < ra { touch_all(data) } else { -1.0 };
+    let bytes: usize = files_under(data).iter().map(|p| std::fs::metadata(p).map(|m| m.len() as usize).unwrap_or(0)).sum();
     let scratch = std::path::PathBuf::from(std::env::var("SCRATCH_DIR").unwrap_or_else(|_| "/scratch".into()));
-    // the real dev output first, so the run is otherwise a normal one
+    eprintln!(
+        "D16 data cached {ry}/{ra} pages; first touch {cold_ms:.0} ms for {:.0} MB | {}",
+        bytes as f64 / 1e6,
+        mounts_for(&[&data.to_string_lossy(), &out.to_string_lossy(), &scratch.to_string_lossy(), "/tmp"])
+    );
+    let t = Instant::now();
     let _ = crate::run(data, out, false);
-    let cpu = cat("/proc/cpuinfo");
-    let model = cpu.lines().find(|l| l.starts_with("model name")).unwrap_or("?").replace("model name\t: ", "");
-    let nproc_info = cpu.lines().filter(|l| l.starts_with("processor")).count();
-    let cores = cpu.lines().find(|l| l.starts_with("cpu cores")).unwrap_or("?").replace("cpu cores\t: ", "");
-    let sibs = cpu.lines().find(|l| l.starts_with("siblings")).unwrap_or("?").replace("siblings\t: ", "");
-    let aff = unsafe {
-        let mut set: libc::cpu_set_t = std::mem::zeroed();
-        libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set);
-        libc::CPU_COUNT(&set)
-    };
-    eprintln!("D15 {model} | cpus {nproc_info} cores {cores} sib {sibs} aff {aff} | cpu.max {}", cat("/sys/fs/cgroup/cpu.max").trim());
+    eprintln!("dev first run {:.0} ms", t.elapsed().as_secs_f64() * 1e3);
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let k: usize = std::env::var("SS_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let t = Instant::now();
     upscale(data, &big, k);
-    eprintln!("x{k} up={:.1}s; wall/int ms: open links parse dedup sess write | user sys", t.elapsed().as_secs_f64());
-    let vars: [(&str, usize, &[(&str, &str)]); 13] = [
-        ("base", threads, &[]),
-        ("lt", threads, &[("SS_LT", "1")]),
-        ("wc0", threads, &[("SS_WC", "0")]),
-        ("p8d8", threads, &[("SS_P2B", "8"), ("SS_PDB", "8")]),
-        ("p9d9", threads, &[("SS_P2B", "9"), ("SS_PDB", "9")]),
-        ("d8", threads, &[("SS_PDB", "8")]),
-        ("base", threads, &[]),
-        ("t12", 12, &[]),
-        ("t16", 16, &[]),
-        ("pread", threads, &[("SS_READ", "1")]),
-        ("nolk", threads, &[("SS_EXP", "1")]),
-        ("noemit", threads, &[("SS_EXPL", "3")]),
-        ("base", threads, &[]),
+    let up = t.elapsed().as_secs_f64();
+    evict(&big);
+    let (y, a) = residency(&big);
+    let tc = touch_all(&big);
+    eprintln!("x{k} up={up:.1}s; after evict cached {y}/{a}; cold touch {tc:.0} ms; wall/int ms: open links parse dedup sess write | user sys");
+    // c* = evicted before the run
+    let vars: [(&str, bool, &[(&str, &str)]); 10] = [
+        ("base", false, &[]),
+        ("c-ra", true, &[]),
+        ("c-nora", true, &[("SS_RA", "0")]),
+        ("base", false, &[]),
+        ("c-ra", true, &[]),
+        ("c-pread", true, &[("SS_READ", "1")]),
+        ("lt", false, &[("SS_LT", "1")]),
+        ("c-nora", true, &[("SS_RA", "0")]),
+        ("base", false, &[]),
+        ("c-ra", true, &[]),
     ];
-    for (tag, th, env) in vars.iter() {
-        eprintln!("{}", child(tag, &big, &ob, *th, env));
+    for (tag, cold, env) in vars.iter() {
+        if *cold {
+            evict(&big);
+        } else {
+            touch_all(&big);
+        }
+        eprintln!("{}", child(tag, &big, &ob, threads, env));
     }
     eprintln!("{}", child("dev", data, &ob, threads, &[]));
     let _ = std::fs::remove_dir_all(&big);

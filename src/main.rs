@@ -273,6 +273,26 @@ fn csvs(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
+/// Whether the inputs sit in the page cache: a few pages per file, by mincore.
+fn mostly_cached(inp: &Inputs) -> bool {
+    let (mut yes, mut all) = (0usize, 0usize);
+    let mut vec = [0u8; 1];
+    for &f in inp.events.iter().chain(&inp.clicks) {
+        let d = file_bytes(f);
+        let pages = d.len().div_ceil(4096);
+        for k in 0..4 {
+            let pg = pages * k / 4;
+            if pg >= pages {
+                continue;
+            }
+            let r = unsafe { libc::mincore(d.as_ptr().add(pg * 4096) as *mut libc::c_void, 1, vec.as_mut_ptr()) };
+            all += 1;
+            yes += (r == 0 && vec[0] & 1 != 0) as usize;
+        }
+    }
+    yes * 10 >= all * 9
+}
+
 fn open_all(data: &Path) -> Inputs {
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut push = |p: PathBuf| {
@@ -284,26 +304,24 @@ fn open_all(data: &Path) -> Inputs {
     let links: Vec<usize> = csvs(&data.join("links")).into_iter().map(&mut push).collect();
     let products = push(data.join("products.csv"));
     let campaigns = push(data.join("campaigns.csv"));
-    let maps: Vec<Mmap> = paths
+    let opened: Vec<(Mmap, usize)> = paths
         .par_iter()
         .map(|p| {
             let f = File::open(p).unwrap_or_else(|e| panic!("open {}: {e}", p.display()));
-            let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-            if len == 0 {
-                // mmap of an empty file fails on some systems: map an anonymous empty region.
+            let len = f.metadata().map(|m| m.len()).unwrap_or(0) as usize;
+            let m = if len == 0 {
+                // mmap of an empty file fails on some systems: map an anonymous empty
+                // region (its length 1 is not the file's: lengths are kept apart)
                 memmap2::MmapOptions::new().len(1).map_anon().unwrap().make_read_only().unwrap()
             } else {
                 // no MAP_POPULATE: page-table work is spread over the workers
                 unsafe { memmap2::MmapOptions::new().map(&f) }.unwrap()
-            }
+            };
+            (m, len)
         })
         .collect();
     PATHS.store(Box::into_raw(Box::new(paths.clone())), Ordering::Release);
-    // Note: anon placeholder has len 1 with a zero byte; record real lengths below.
-    let lens: Vec<usize> = paths
-        .iter()
-        .map(|p| std::fs::metadata(p).map(|m| m.len() as usize).unwrap_or(0))
-        .collect();
+    let (maps, lens): (Vec<Mmap>, Vec<usize>) = opened.into_iter().unzip();
     FILES.store(Box::into_raw(Box::new(maps)), Ordering::Release);
     LENS.store(Box::into_raw(Box::new(lens)), Ordering::Release);
 
@@ -1016,8 +1034,10 @@ pub struct UserRow {
 
 pub struct Agg {
     pub rows: Vec<UserRow>,
-    /// [day * (ncamp + 1) + camp] -> (sessions | purchasing sessions << 32, revenue), credited
-    pub credit: Vec<(u64, i64)>,
+    /// [day * (ncamp + 1) + camp] -> sessions | purchasing sessions << 32, credited
+    pub credit: Vec<u64>,
+    /// [day * (ncamp + 1) + camp] -> revenue credited (touched by purchasing sessions only)
+    pub credit_rev: Vec<i64>,
     /// [day * (ncamp + 1) + camp] -> assisted sessions
     pub assist: Vec<u32>,
 }
@@ -1048,9 +1068,23 @@ struct Scratch {
     // per grouped person: key and the ref of one of its events' user IDs
     pkey: Vec<u64>,
     puref: Vec<u64>,
-    bin_cnt: Vec<u32>,
-    tmp_ev: Vec<Ev1>,
-    tmp_id: Vec<u32>,
+    ev_pos: Vec<u32>,
+    ck_pos: Vec<u32>,
+    // per person: occupied half-hour bins (bitmap), their aggregates, the
+    // purchases by bin, and the runs in bin order
+    bm: Vec<u64>,
+    bins: Vec<BinAcc>,
+    purch: Vec<(u32, u32)>,
+    runs: Vec<Run>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct BinAcc {
+    min: u32,
+    max: u32,
+    n: u32,
+    purch: u32,
+    rev: i64,
 }
 
 impl Scratch {
@@ -1070,9 +1104,12 @@ impl Scratch {
             cks_sorted: Vec::new(),
             pkey: Vec::new(),
             puref: Vec::new(),
-            bin_cnt: Vec::new(),
-            tmp_ev: Vec::new(),
-            tmp_id: Vec::new(),
+            ev_pos: Vec::new(),
+            ck_pos: Vec::new(),
+            bm: Vec::new(),
+            bins: Vec::new(),
+            purch: Vec::new(),
+            runs: Vec::new(),
         }
     }
 }
@@ -1143,8 +1180,10 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     sc.ev_local.clear();
     sc.ev_local.reserve(n);
     let nb = ctx.nbins;
-    sc.bin_cnt.clear();
-    sc.bin_cnt.resize(nb + 1, 0);
+    if sc.bins.len() < nb {
+        sc.bins.resize(nb, BinAcc::default());
+        sc.bm.resize(nb.div_ceil(64), 0);
+    }
     evb.clear();
     evb.reserve(n);
     for (t, s) in sinks.iter().enumerate() {
@@ -1167,7 +1206,6 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                     }
                     unsafe {
                         *sc.ev_cnt.get_unchecked_mut(id as usize) += 1;
-                        *sc.bin_cnt.get_unchecked_mut(bin_of(e.ts) + 1) += 1;
                         let len = evb.len();
                         evb.as_mut_ptr().add(len).write(Ev1 { ts: e.ts, pc: e.pc });
                         evb.set_len(len + 1);
@@ -1240,37 +1278,21 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
         sc.evs_sorted.set_len(n);
         sc.cks_sorted.set_len(cacc as usize);
     }
-    // events by person, and inside a person by half-hour bin (two stable
-    // counting passes, no comparison sort): within one bin no two events can
-    // be more than 30 minutes apart, so a session never splits inside a bin
-    for b in 0..nb {
-        sc.bin_cnt[b + 1] += sc.bin_cnt[b];
-    }
-    sc.tmp_ev.clear();
-    sc.tmp_ev.reserve(n);
-    sc.tmp_id.clear();
-    sc.tmp_id.reserve(n);
+    // events by person (one counting pass); inside a person, events are binned
+    // by half hour in person_sessions
+    sc.ev_pos.clear();
+    sc.ev_pos.extend_from_slice(&sc.ev_cnt);
     unsafe {
-        sc.tmp_ev.set_len(n);
-        sc.tmp_id.set_len(n);
         for (e, &id) in evin.iter().zip(&sc.ev_local) {
-            let at = sc.bin_cnt.get_unchecked_mut(bin_of(e.ts));
-            *sc.tmp_ev.get_unchecked_mut(*at as usize) = *e;
-            *sc.tmp_id.get_unchecked_mut(*at as usize) = id;
-            *at += 1;
-        }
-    }
-    let mut ev_pos = sc.ev_cnt.clone();
-    unsafe {
-        for (e, &id) in sc.tmp_ev.iter().zip(&sc.tmp_id) {
-            let at = ev_pos.get_unchecked_mut(id as usize);
+            let at = sc.ev_pos.get_unchecked_mut(id as usize);
             *sc.evs_sorted.get_unchecked_mut(*at as usize) = *e;
             *at += 1;
         }
     }
-    let mut ck_pos = sc.ck_cnt.clone();
+    sc.ck_pos.clear();
+    sc.ck_pos.extend_from_slice(&sc.ck_cnt);
     for (c, &id) in ckin.iter().zip(&sc.ck_local) {
-        let at = &mut ck_pos[id as usize];
+        let at = &mut sc.ck_pos[id as usize];
         sc.cks_sorted[*at as usize] = *c;
         *at += 1;
     }
@@ -1279,8 +1301,8 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     let mut evs = evs;
     let mut cks = cks;
     for pid in 0..np {
-        let (es, ee) = (sc.ev_cnt[pid] as usize, ev_pos[pid] as usize);
-        let (cs, ce) = (sc.ck_cnt[pid] as usize, ck_pos[pid] as usize);
+        let (es, ee) = (sc.ev_cnt[pid] as usize, sc.ev_pos[pid] as usize);
+        let (cs, ce) = (sc.ck_cnt[pid] as usize, sc.ck_pos[pid] as usize);
         let ev = &mut evs[es..ee];
         let ck = &mut cks[cs..ce];
         if ck.len() > 1 {
@@ -1299,8 +1321,9 @@ fn bin_of(ts: u32) -> usize {
 }
 
 /// One run of a person's events that share a half-hour bin.
+#[derive(Clone, Copy, Default)]
 struct Run {
-    end: usize,
+    bin: u32,
     min: u32,
     max: u32,
     n: u32,
@@ -1308,35 +1331,61 @@ struct Run {
     purch: bool,
 }
 
-#[inline(always)]
-fn run_at(evs: &[Ev1], k: usize) -> Run {
-    let b = bin_of(evs[k].ts);
-    let mut r = Run { end: k, min: u32::MAX, max: 0, n: 0, rev: 0, purch: false };
-    while r.end < evs.len() && bin_of(evs[r.end].ts) == b {
-        let e = &evs[r.end];
-        r.min = r.min.min(e.ts);
-        r.max = r.max.max(e.ts);
-        r.n += 1;
-        if e.pc >= 256 {
-            r.rev += (e.pc >> 8) as i64;
-            r.purch = true;
+/// Bin a person's events (any order) and list the occupied bins' runs in bin
+/// order into `sc.runs`; purchases (bin, pc) sorted by bin into `sc.purch`.
+#[inline]
+fn bin_runs(evs: &[Ev1], sc: &mut Scratch) {
+    sc.runs.clear();
+    sc.purch.clear();
+    let (mut wlo, mut whi) = (usize::MAX, 0usize);
+    for e in evs {
+        let b = bin_of(e.ts);
+        let (w, bit) = (b >> 6, 1u64 << (b & 63));
+        let seen = unsafe { *sc.bm.get_unchecked(w) } & bit != 0;
+        let a = unsafe { sc.bins.get_unchecked_mut(b) };
+        if !seen {
+            *a = BinAcc { min: e.ts, max: e.ts, n: 0, purch: 0, rev: 0 };
+            unsafe { *sc.bm.get_unchecked_mut(w) |= bit };
+            wlo = wlo.min(w);
+            whi = whi.max(w);
         }
-        r.end += 1;
+        a.min = a.min.min(e.ts);
+        a.max = a.max.max(e.ts);
+        a.n += 1;
+        if e.pc >= 256 {
+            a.rev += (e.pc >> 8) as i64;
+            a.purch = 1;
+            sc.purch.push((b as u32, e.pc));
+        }
     }
-    r
+    for w in wlo..=whi {
+        let mut m = sc.bm[w];
+        sc.bm[w] = 0;
+        while m != 0 {
+            let b = w * 64 + m.trailing_zeros() as usize;
+            m &= m - 1;
+            let a = sc.bins[b];
+            sc.runs.push(Run { bin: b as u32, min: a.min, max: a.max, n: a.n, rev: a.rev, purch: a.purch != 0 });
+        }
+    }
+    if sc.purch.len() > 1 {
+        sc.purch.sort_unstable_by_key(|p| p.0);
+    }
 }
 
-/// `evs`: one person's events grouped by half-hour bin, bins ascending (order
-/// inside a bin is arbitrary). `cks`: the person's clicks by (ts, click_id).
+/// `evs`: one person's events, any order. `cks`: the person's clicks by (ts, click_id).
 fn person_sessions(ctx: &Ctx, key: u64, uref: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg, sc: &mut Scratch) {
     let name = if key & LINKED != 0 { key & !LINKED } else { uref };
     let (mut lo, mut hi) = (0usize, 0usize);
     let mut cur_day: i64 = i64::MIN;
     let (mut d_sess, mut d_evs, mut d_rev) = (0u32, 0u32, 0i64);
     let mut d_purch = false;
+    bin_runs(evs, sc);
+    let runs = std::mem::take(&mut sc.runs);
+    let mut pi = 0usize; // next purchase (by bin)
     let mut k = 0usize;
-    let mut r = run_at(evs, 0);
-    while k < evs.len() {
+    let mut r = runs[0];
+    while k < runs.len() {
         let start = r.min as i64;
         let day = (ctx.ws + start).div_euclid(DAY_MS) - ctx.ws_day;
         if day != cur_day {
@@ -1358,18 +1407,21 @@ fn person_sessions(ctx: &Ctx, key: u64, uref: u64, evs: &[Ev1], cks: &[Ck1], agg
             rev += r.rev;
             if r.purch {
                 purch = true;
-                for e in &evs[k..r.end] {
-                    if e.pc >= 256 {
-                        sc.cat[(e.pc & 0xFF) as usize] += (e.pc >> 8) as i64;
-                    }
+                while pi < sc.purch.len() && sc.purch[pi].0 < r.bin {
+                    pi += 1;
+                }
+                while pi < sc.purch.len() && sc.purch[pi].0 == r.bin {
+                    let pc = sc.purch[pi].1;
+                    sc.cat[(pc & 0xFF) as usize] += (pc >> 8) as i64;
+                    pi += 1;
                 }
             }
             let last = r.max as i64;
-            k = r.end;
-            if k == evs.len() {
+            k += 1;
+            if k == runs.len() {
                 break;
             }
-            r = run_at(evs, k);
+            r = runs[k];
             if r.min as i64 - last > SESSION_GAP {
                 break;
             }
@@ -1409,9 +1461,10 @@ fn person_sessions(ctx: &Ctx, key: u64, uref: u64, evs: &[Ev1], cks: &[Ck1], agg
             ctx.ncamp
         };
         let row = du * (ctx.ncamp + 1);
-        let slot = &mut agg.credit[row + credit];
-        slot.0 += 1 | ((purch as u64) << 32);
-        slot.1 += rev;
+        agg.credit[row + credit] += 1 | ((purch as u64) << 32);
+        if rev != 0 {
+            agg.credit_rev[row + credit] += rev;
+        }
         let arow = &mut agg.assist[row..row + ctx.ncamp + 1];
         for &c in &sc.active {
             arow[c as usize] += 1;
@@ -1422,6 +1475,7 @@ fn person_sessions(ctx: &Ctx, key: u64, uref: u64, evs: &[Ev1], cks: &[Ck1], agg
         d_purch |= purch;
     }
     flush_day(ctx, agg, sc, name, cur_day, d_sess, d_evs, d_rev, d_purch);
+    sc.runs = runs;
     while lo < hi {
         sc.count[cks[lo].camp as usize] = 0;
         lo += 1;
@@ -1534,6 +1588,12 @@ fn main() {
         eprintln!("micro {mode}: lines {lines} acc {acc} scalar {}", SCALAR.load(Ordering::Relaxed));
         return;
     }
+    if let Ok(v) = std::env::var("SS_UPSCALE") {
+        // local tool: SS_UPSCALE=<dst>:<k> copies DATA_DIR k times over (renamed IDs)
+        let (dst, k) = v.split_once(':').unwrap();
+        diag::upscale(&data, Path::new(dst), k.parse().unwrap());
+        return;
+    }
     if std::env::var("SS_DIAG").is_ok() {
         diag::main(&data, &out, threads);
         std::process::exit(1);
@@ -1564,8 +1624,6 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
 
     flow::WC.store(std::env::var("SS_WC").map_or(flow::WC_DEFAULT, |v| v == "1"), Ordering::Relaxed);
     READ.store(std::env::var("SS_READ").is_ok_and(|v| v == "1"), Ordering::Relaxed);
-    flow::EXP.store(std::env::var("SS_EXP").is_ok(), Ordering::Relaxed);
-    flow::EXPL.store(std::env::var("SS_EXPL").ok().and_then(|v| v.parse().ok()).unwrap_or(0), Ordering::Relaxed);
     let inp = open_all(data);
     // partition counts follow the input size, so a partition's working set
     // stays about the same from the 20M practice set to the 60M final
@@ -1580,6 +1638,23 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let (ws, we) = (inp.window_start, inp.window_end);
     let ev_units = chunks(&inp.events);
     let ck_units = chunks(&inp.clicks);
+    let units: Vec<(bool, usize, usize, usize)> =
+        ev_units.iter().map(|&(f, s, e)| (true, f, s, e)).chain(ck_units.iter().map(|&(f, s, e)| (false, f, s, e))).collect();
+    // input not yet in the page cache: read it ahead, in the order the workers
+    // will take it, while links are resolved
+    if !READ.load(Ordering::Relaxed) && std::env::var("SS_RA").map_or(true, |v| v != "0") && !mostly_cached(&inp) {
+        let mut order: Vec<(usize, usize, usize)> = inp.links.iter().chain([inp.products, inp.campaigns].iter()).map(|&f| (f, 0, file_bytes(f).len())).collect();
+        order.extend(units.iter().map(|&(_, f, s, e)| (f, s, e)));
+        std::thread::spawn(move || {
+            for (f, s, e) in order {
+                let d = file_bytes(f);
+                let a = s & !4095;
+                if e > a {
+                    unsafe { libc::madvise(d.as_ptr().add(a) as *mut libc::c_void, e - a, libc::MADV_WILLNEED) };
+                }
+            }
+        });
+    }
     // links first: every record below is routed straight to its person
     let (persons, lk) = rayon::join(|| links(&inp), || lookups(&inp));
     lap("links");
@@ -1589,15 +1664,19 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let name_cap = est_events / nthreads * 32 + (1 << 20);
     let sinks: Vec<std::sync::Mutex<flow::Sink>> =
         (0..nthreads).map(|t| std::sync::Mutex::new(flow::Sink::new(nfiles + t, name_cap))).collect();
-    let units: Vec<(bool, usize, usize, usize)> =
-        ev_units.iter().map(|&(f, s, e)| (true, f, s, e)).chain(ck_units.iter().map(|&(f, s, e)| (false, f, s, e))).collect();
-    units.par_iter().for_each(|&(is_ev, f, s, e)| {
-        let t = rayon::current_thread_index().unwrap_or(0) % nthreads;
+    // every worker takes the next unit in list order (the order read ahead)
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    rayon::broadcast(|ctx| {
+        let t = ctx.index() % nthreads;
         let mut sink = sinks[t].lock().unwrap();
-        if is_ev {
-            flow::events_unit(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64);
-        } else {
-            flow::clicks_unit(f, s, e, &lk, &persons, ws, we, &mut sink);
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            let Some(&(is_ev, f, s, e)) = units.get(i) else { break };
+            if is_ev {
+                flow::events_unit(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64);
+            } else {
+                flow::clicks_unit(f, s, e, &lk, &persons, ws, we, &mut sink);
+            }
         }
     });
     let mut sinks: Vec<flow::Sink> = sinks.into_iter().map(|m| m.into_inner().unwrap()).collect();
@@ -1621,7 +1700,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let states: Vec<std::sync::Mutex<(Agg, Scratch, Vec<Ev1>, Vec<Ck1>)>> = (0..nthreads)
         .map(|_| {
             std::sync::Mutex::new((
-                Agg { rows: Vec::new(), credit: vec![(0u64, 0i64); (ncamp + 1) * ndays], assist: vec![0u32; (ncamp + 1) * ndays] },
+                Agg { rows: Vec::with_capacity(est_events / nthreads / 2 + 1024), credit: vec![0u64; (ncamp + 1) * ndays], credit_rev: vec![0i64; (ncamp + 1) * ndays], assist: vec![0u32; (ncamp + 1) * ndays] },
                 Scratch::new(ncamp),
                 Vec::new(),
                 Vec::new(),
