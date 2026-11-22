@@ -90,8 +90,8 @@ try:
    stage_runs=[]
    for row in [x for x in rows if x['variant']==variant]:
     last=0;stages={}
-    for ms,name in re.findall(r'^\s*([0-9.]+) ms\s+(\S+)\s*$',(r/row['log']).read_text(),re.M):
-     current=float(ms);stages[name]=current-last;last=current
+    for ms,stage_name in re.findall(r'^\s*([0-9.]+) ms\s+(\S+)\s*$',(r/row['log']).read_text(),re.M):
+     current=float(ms);stages[stage_name]=current-last;last=current
     stage_runs.append(stages)
    measurements[variant]['stage_median_ms']={name:statistics.median(stages[name] for stages in stage_runs if name in stages) for name in {k for stages in stage_runs for k in stages}}
    measurements[variant]['binary_sha256']=hashlib.sha256((e/'bin'/variant).read_bytes()).hexdigest()
@@ -101,6 +101,7 @@ try:
   run(['python','tools/check.py',sandbox,'--other',e/'bench-out/hosted-baseline'])
   measurements['candidate_sandbox_comparison']='passed';report['measurements'][name]=measurements;save()
   shutil.rmtree(data);shutil.rmtree(sandbox)
+ assert set(report['measurements'])=={'20m','60m','60m-fresh'}, 'Dataset summaries must survive stage parsing'
  report['success']=True
 except Exception as error:
  report['error']=str(error)[:1500];raise
