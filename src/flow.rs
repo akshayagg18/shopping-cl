@@ -101,7 +101,7 @@ impl<T: Copy + Default> Stream<T> {
     /// Records per staging flush: a whole number of cache lines.
     const K: usize = if std::mem::size_of::<T>() == 24 { 8 } else if std::mem::size_of::<T>() == 32 { 4 } else { 1 };
     /// Records per block, a multiple of K.
-    const CAP: usize = BLOCK_BYTES / std::mem::size_of::<T>() / Self::K * Self::K;
+    pub const CAP: usize = BLOCK_BYTES / std::mem::size_of::<T>() / Self::K * Self::K;
 
     fn new(parts: usize) -> Self {
         let wc = WC.load(Ordering::Relaxed) && Self::K > 1;
@@ -221,6 +221,11 @@ pub struct Sink {
     pub ev: Stream<Ev2>,
     pub cp: Stream<CopyR>,
     pub ck: Stream<Ck>,
+    /// IDs of unlinked users, copied while they are in cache: names never read
+    /// the event files' mapping (no page faults, nothing mapped to tear down at
+    /// exit). Refs into it use file number `name_file`.
+    pub names: Vec<u8>,
+    name_file: usize,
 }
 
 // raw block pointers into this sink's own arena
@@ -228,8 +233,15 @@ unsafe impl Send for Sink {}
 unsafe impl Sync for Sink {}
 
 impl Sink {
-    pub fn new() -> Self {
-        Sink { arena: Arena::new(), ev: Stream::new(p2()), cp: Stream::new(pd()), ck: Stream::new(p2()) }
+    pub fn new(name_file: usize, name_cap: usize) -> Self {
+        Sink {
+            arena: Arena::new(),
+            ev: Stream::new(p2()),
+            cp: Stream::new(pd()),
+            ck: Stream::new(p2()),
+            names: Vec::with_capacity(name_cap + 16),
+            name_file,
+        }
     }
     /// End of the parse phase: everything staged goes to its blocks.
     pub fn finish(&mut self) {
@@ -254,13 +266,32 @@ struct PendE {
     ingest: u32,
     ts: u32,
     pc: u32,
+    /// the user ID's first 16 bytes (the whole ID when its length, uref's low
+    /// 16 bits, is at most 16)
+    nm: [u8; 16],
 }
 
 #[inline(always)]
 fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
-    let key = persons.map.get(pd.uh).unwrap_or_else(|| unlinked_key(pd.uh));
+    let (key, uref) = match persons.map.get(pd.uh) {
+        Some(k) => (k, 0),
+        None => {
+            // unlinked: the name comes from this event (any of the user's would do)
+            let n = sink.names.len();
+            let nl = (pd.uref & 0xFFFF) as usize;
+            if nl <= 16 && n + 16 <= sink.names.capacity() {
+                unsafe {
+                    std::ptr::write_unaligned(sink.names.as_mut_ptr().add(n) as *mut [u8; 16], pd.nm);
+                    sink.names.set_len(n + nl);
+                }
+                (unlinked_key(pd.uh), mkref(sink.name_file, n, nl))
+            } else {
+                (unlinked_key(pd.uh), pd.uref)
+            }
+        }
+    };
     let pb = person_bucket(key);
-    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { key, uref: pd.uref, ts: pd.ts, pc: pd.pc });
+    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { key, uref, ts: pd.ts, pc: pd.pc });
     let loc = (tid << 48) | ((pb as u64) << 32) | i as u64;
     sink.cp.push(&mut sink.arena, eid_part(pd.eid), CopyR { eid: pd.eid, chk: pd.chk, ingest: pd.ingest, loc });
 }
@@ -307,14 +338,23 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             };
             let uh = h64(user);
             persons.map.prefetch(uh);
+            let ua = fs.span(line, 1).0;
+            let mut nm = [0u8; 16];
+            if ua + 16 <= line.len() {
+                nm = unsafe { std::ptr::read_unaligned(line.as_ptr().add(ua) as *const [u8; 16]) };
+            } else {
+                let k = user.len().min(16);
+                nm[..k].copy_from_slice(&user[..k]);
+            }
             let pd = PendE {
                 uh,
-                uref: mkref(f, p + fs.span(line, 1).0, user.len()),
+                uref: mkref(f, p + ua, user.len()),
                 eid: eid_h,
                 chk: eid_c,
                 ingest,
                 ts: (ts - ws) as u32,
                 pc,
+                nm,
             };
             if filled == AHEAD {
                 emit_event(sink, persons, tid, &ring[head]);
@@ -428,7 +468,7 @@ impl Dead {
 
 #[derive(Default)]
 struct DedupScratch2 {
-    buf: Vec<CopyR>,
+    blocks: Vec<(usize, usize)>,
     table: Vec<u64>,
 }
 
@@ -442,46 +482,59 @@ pub fn dedup_part(b: usize, sinks: &[Sink], dead: &Dead) {
     DEDUP2.with(|cell| {
         let mut guard = cell.borrow_mut();
         let sc = &mut *guard;
-        sc.buf.clear();
+        // the copy records stay in their blocks: a table entry names a copy by
+        // block << 9 | offset (a block holds fewer than 512)
+        const OB: u32 = 9;
+
+        sc.blocks.clear();
+        let mut n = 0usize;
         for s in sinks {
             for sl in s.cp.slices(b) {
-                sc.buf.extend_from_slice(sl);
+                n += sl.len();
+                sc.blocks.push((sl.as_ptr() as usize, sl.len()));
             }
         }
-        let n = sc.buf.len();
         let cap = (n * 2).next_power_of_two().max(16);
         let mask = cap - 1;
         sc.table.clear();
         sc.table.resize(cap, 0);
-        let (buf, table) = (&sc.buf, &mut sc.table);
-        for g in 0..n {
-            let e = unsafe { buf.get_unchecked(g) };
-            let fp = e.eid >> 32;
-            let mut s = (e.eid as usize) & mask;
-            loop {
-                let t = unsafe { *table.get_unchecked(s) };
-                if t == 0 {
-                    unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
-                    break;
-                }
-                if t >> 32 == fp {
-                    let j = (t & 0xFFFF_FFFF) as usize - 1;
-                    let old = unsafe { buf.get_unchecked(j) };
-                    if old.eid == e.eid && old.chk == e.chk {
-                        // equal ingest_ts means identical copies (rules.md): keep the first
-                        if e.ingest < old.ingest {
-                            unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
-                            if old.loc != NOLOC {
-                                dead.kill(old.loc);
-                            }
-                        } else if e.loc != NOLOC {
-                            dead.kill(e.loc);
-                        }
+        let (blocks, table) = (&sc.blocks, &mut sc.table);
+        let rec = |g: usize| -> &CopyR {
+            let (p, _) = unsafe { *blocks.get_unchecked(g >> OB) };
+            unsafe { &*(p as *const CopyR).add(g & ((1 << OB) - 1)) }
+        };
+        for (bi, &(p, len)) in blocks.iter().enumerate() {
+            let blk = unsafe { std::slice::from_raw_parts(p as *const CopyR, len) };
+            for (o, e) in blk.iter().enumerate() {
+                let g = (bi << OB) | o;
+                let fp = e.eid >> 32;
+                let mut s = (e.eid as usize) & mask;
+                loop {
+                    let t = unsafe { *table.get_unchecked(s) };
+                    if t == 0 {
+                        unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
                         break;
                     }
+                    if t >> 32 == fp {
+                        let j = (t & 0xFFFF_FFFF) as usize - 1;
+                        let old = rec(j);
+                        if old.eid == e.eid && old.chk == e.chk {
+                            // equal ingest_ts means identical copies (rules.md): keep the first
+                            if e.ingest < old.ingest {
+                                unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
+                                if old.loc != NOLOC {
+                                    dead.kill(old.loc);
+                                }
+                            } else if e.loc != NOLOC {
+                                dead.kill(e.loc);
+                            }
+                            break;
+                        }
+                    }
+                    s = (s + 1) & mask;
                 }
-                s = (s + 1) & mask;
             }
         }
     })
 }
+const _: () = assert!(Stream::<CopyR>::CAP < 512, "dedup names a copy by block << 9 | offset");

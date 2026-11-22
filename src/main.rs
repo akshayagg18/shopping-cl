@@ -74,13 +74,17 @@ pub fn open_input(f: usize) -> File {
     File::open(&paths[f]).unwrap_or_else(|e| panic!("open {}: {e}", paths[f].display()))
 }
 
-/// Read bytes [lo, hi) of `file` into `buf`.
+/// Read bytes [lo, hi) of `file` into `buf[..hi - lo]`. The buffer only ever
+/// grows (zeroed once), so a refill costs no memset.
 pub fn read_range(file: &File, lo: usize, hi: usize, buf: &mut Vec<u8>) {
     use std::os::unix::fs::FileExt;
-    buf.clear();
-    buf.resize(hi - lo, 0);
+    let n = hi - lo;
+    if buf.len() < n {
+        buf.resize(n, 0);
+    }
+    let buf = &mut buf[..n];
     let mut got = 0;
-    while got < buf.len() {
+    while got < n {
         match file.read_at(&mut buf[got..], (lo + got) as u64) {
             Ok(0) => panic!("short read"),
             Ok(k) => got += k,
@@ -96,13 +100,21 @@ fn mkref(file: usize, off: usize, len: usize) -> u64 {
     ((file as u64) << 52) | ((off as u64) << 16) | (len.min(0xFFFF) as u64)
 }
 
+/// Per-thread name buffers of the current run, as files numbered after the inputs.
+static NAMES: AtomicPtr<Vec<&'static [u8]>> = AtomicPtr::new(std::ptr::null_mut());
+
 #[inline(always)]
 fn deref(r: u64) -> &'static [u8] {
     let files = unsafe { &*FILES.load(Ordering::Relaxed) };
     let f = (r >> 52) as usize;
     let off = ((r >> 16) & ((1u64 << 36) - 1)) as usize;
     let len = (r & 0xFFFF) as usize;
-    &files[f][off..off + len]
+    if f < files.len() {
+        &files[f][off..off + len]
+    } else {
+        let names = unsafe { &*NAMES.load(Ordering::Relaxed) };
+        &names[f - files.len()][off..off + len]
+    }
 }
 
 #[allow(dead_code)]
@@ -1074,6 +1086,24 @@ struct Ev2 {
     pc: u32,
 }
 
+/// An event inside a person partition, once grouped: the person is known by
+/// position, so only time and purchase remain. 8 bytes.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct Ev1 {
+    ts: u32,
+    pc: u32,
+}
+
+/// A click inside a person partition, once grouped. 16 bytes.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct Ck1 {
+    cref: u64,
+    ts: u32,
+    camp: u32,
+}
+
 /// A valid click, keyed by person.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
@@ -1125,10 +1155,13 @@ struct Scratch {
     ck_cnt: Vec<u32>,
     ev_local: Vec<u32>,
     ck_local: Vec<u32>,
-    evs_sorted: Vec<Ev2>,
-    cks_sorted: Vec<Ck>,
+    evs_sorted: Vec<Ev1>,
+    cks_sorted: Vec<Ck1>,
+    // per grouped person: key and the ref of one of its events' user IDs
+    pkey: Vec<u64>,
+    puref: Vec<u64>,
     bin_cnt: Vec<u32>,
-    tmp_ev: Vec<Ev2>,
+    tmp_ev: Vec<Ev1>,
     tmp_id: Vec<u32>,
 }
 
@@ -1147,6 +1180,8 @@ impl Scratch {
             ck_local: Vec::new(),
             evs_sorted: Vec::new(),
             cks_sorted: Vec::new(),
+            pkey: Vec::new(),
+            puref: Vec::new(),
             bin_cnt: Vec::new(),
             tmp_ev: Vec::new(),
             tmp_id: Vec::new(),
@@ -1202,7 +1237,7 @@ fn group_id(sc: &mut Scratch, key: u64, cap: &mut usize) -> u32 {
 /// sessionize. Gathering the records from every worker's stream, numbering
 /// persons and counting half-hour bins happen in one pass.
 #[allow(clippy::too_many_arguments)]
-fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &[flow::Sink], dead: &flow::Dead, evb: &mut Vec<Ev2>, ckb: &mut Vec<Ck>) {
+fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &[flow::Sink], dead: &flow::Dead, evb: &mut Vec<Ev1>, ckb: &mut Vec<Ck1>) {
     let n: usize = sinks.iter().map(|s| s.ev.len(b)).sum();
     if n == 0 {
         return;
@@ -1215,6 +1250,8 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     }
     sc.used.clear();
     sc.ev_cnt.clear();
+    sc.pkey.clear();
+    sc.puref.clear();
     sc.ev_local.clear();
     sc.ev_local.reserve(n);
     let nb = ctx.nbins;
@@ -1236,11 +1273,15 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                 }
                 if (dead.word(t, b, i / 64) >> (i % 64)) & 1 == 0 {
                     let id = group_id(sc, e.key, &mut cap);
+                    if id as usize == sc.pkey.len() {
+                        sc.pkey.push(e.key);
+                        sc.puref.push(e.uref);
+                    }
                     unsafe {
                         *sc.ev_cnt.get_unchecked_mut(id as usize) += 1;
                         *sc.bin_cnt.get_unchecked_mut(bin_of(e.ts) + 1) += 1;
                         let len = evb.len();
-                        evb.as_mut_ptr().add(len).write(*e);
+                        evb.as_mut_ptr().add(len).write(Ev1 { ts: e.ts, pc: e.pc });
                         evb.set_len(len + 1);
                         let len = sc.ev_local.len();
                         sc.ev_local.as_mut_ptr().add(len).write(id);
@@ -1257,7 +1298,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     }
     let mask = cap - 1;
     let slot_of = |k: u64, mask: usize| (k.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 32) as usize & mask;
-    let evin: &[Ev2] = evb;
+    let evin: &[Ev1] = evb;
     let np = sc.ev_cnt.len();
     sc.ck_cnt.clear();
     sc.ck_cnt.resize(np, 0);
@@ -1280,13 +1321,13 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                 // clicks of persons without events never matter
                 if id != u32::MAX {
                     sc.ck_cnt[id as usize] += 1;
-                    ckb.push(*c);
+                    ckb.push(Ck1 { cref: c.cref, ts: c.ts, camp: c.camp });
                     sc.ck_local.push(id);
                 }
             }
         }
     }
-    let ckin: &[Ck] = ckb;
+    let ckin: &[Ck1] = ckb;
     for &s in &sc.used {
         sc.table[s as usize] = (0, u32::MAX);
     }
@@ -1357,7 +1398,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
         if ck.len() > 1 {
             ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
         }
-        person_sessions(ctx, ev, ck, agg, sc);
+        person_sessions(ctx, sc.pkey[pid], sc.puref[pid], ev, ck, agg, sc);
     }
     sc.evs_sorted = evs;
     sc.cks_sorted = cks;
@@ -1380,7 +1421,7 @@ struct Run {
 }
 
 #[inline(always)]
-fn run_at(evs: &[Ev2], k: usize) -> Run {
+fn run_at(evs: &[Ev1], k: usize) -> Run {
     let b = bin_of(evs[k].ts);
     let mut r = Run { end: k, min: u32::MAX, max: 0, n: 0, rev: 0, purch: false };
     while r.end < evs.len() && bin_of(evs[r.end].ts) == b {
@@ -1399,9 +1440,8 @@ fn run_at(evs: &[Ev2], k: usize) -> Run {
 
 /// `evs`: one person's events grouped by half-hour bin, bins ascending (order
 /// inside a bin is arbitrary). `cks`: the person's clicks by (ts, click_id).
-fn person_sessions(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut Scratch) {
-    let key = evs[0].key;
-    let name = if key & LINKED != 0 { ctx.persons.names[(key & !LINKED) as usize] } else { evs[0].uref };
+fn person_sessions(ctx: &Ctx, key: u64, uref: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg, sc: &mut Scratch) {
+    let name = if key & LINKED != 0 { ctx.persons.names[(key & !LINKED) as usize] } else { uref };
     let (mut lo, mut hi) = (0usize, 0usize);
     let mut cur_day: i64 = i64::MIN;
     let (mut d_sess, mut d_evs, mut d_rev) = (0u32, 0u32, 0i64);
@@ -1624,7 +1664,15 @@ fn main() {
 pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let t0 = std::time::Instant::now();
     let mut laps: Vec<(&'static str, f64)> = Vec::new();
-    let mut lap = |what: &'static str| laps.push((what, t0.elapsed().as_secs_f64() * 1e3));
+    let rss = std::env::var("SS_RSS").is_ok();
+    let mut lap = |what: &'static str| {
+        laps.push((what, t0.elapsed().as_secs_f64() * 1e3));
+        if rss {
+            let st = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+            let g = |k: &str| st.lines().find(|l| l.starts_with(k)).map(|l| l[k.len()..].trim().to_string()).unwrap_or_default();
+            eprintln!("rss {what}: anon {} file {} shmem {}", g("RssAnon:"), g("RssFile:"), g("RssShmem:"));
+        }
+    };
 
     flow::WC.store(std::env::var("SS_WC").map_or(flow::WC_DEFAULT, |v| v == "1"), Ordering::Relaxed);
     READ.store(std::env::var("SS_READ").map_or(true, |v| v != "0"), Ordering::Relaxed);
@@ -1645,7 +1693,11 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let (persons, lk) = rayon::join(|| links(&inp), || lookups(&inp));
     lap("links");
     let nthreads = rayon::current_num_threads();
-    let sinks: Vec<std::sync::Mutex<flow::Sink>> = (0..nthreads).map(|_| std::sync::Mutex::new(flow::Sink::new())).collect();
+    let nfiles = unsafe { &*FILES.load(Ordering::Relaxed) }.len();
+    // room for every event's user ID, at twice a thread's share (spare virtual memory)
+    let name_cap = est_events / nthreads * 32 + (1 << 20);
+    let sinks: Vec<std::sync::Mutex<flow::Sink>> =
+        (0..nthreads).map(|t| std::sync::Mutex::new(flow::Sink::new(nfiles + t, name_cap))).collect();
     let units: Vec<(bool, usize, usize, usize)> =
         ev_units.iter().map(|&(f, s, e)| (true, f, s, e)).chain(ck_units.iter().map(|&(f, s, e)| (false, f, s, e))).collect();
     units.par_iter().for_each(|&(is_ev, f, s, e)| {
@@ -1659,6 +1711,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     });
     let mut sinks: Vec<flow::Sink> = sinks.into_iter().map(|m| m.into_inner().unwrap()).collect();
     sinks.par_iter_mut().for_each(|s| s.finish());
+    let names: Vec<&'static [u8]> = sinks.iter_mut().map(|s| &*std::mem::take(&mut s.names).leak()).collect();
+    NAMES.store(Box::into_raw(Box::new(names)), Ordering::Release);
     lap("parsed");
     let dead = flow::Dead::new(&sinks);
     (0..flow::pd()).into_par_iter().for_each(|b| flow::dedup_part(b, &sinks, &dead));
@@ -1672,7 +1726,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let ctx = Ctx { ndays, nbins, ncamp, ncat: lk.categories.len(), ws, ws_day, persons: &persons };
     // exactly one accumulator per worker thread (rayon's fold would create one
     // per split: hundreds of 0.8 MB counter arrays and output files at 8 threads)
-    let states: Vec<std::sync::Mutex<(Agg, Scratch, Vec<Ev2>, Vec<Ck>)>> = (0..nthreads)
+    let states: Vec<std::sync::Mutex<(Agg, Scratch, Vec<Ev1>, Vec<Ck1>)>> = (0..nthreads)
         .map(|_| {
             std::sync::Mutex::new((
                 Agg { rows: Vec::new(), credit: vec![(0u64, 0i64); (ncamp + 1) * ndays], assist: vec![0u32; (ncamp + 1) * ndays] },

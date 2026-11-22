@@ -9,9 +9,10 @@ adds almost nothing to the measured time.
 
 ## How it works
 
-1. **Input.** Every CSV is memory-mapped lazily. Work is split into ~4 MiB line-aligned
-   units (a line belongs to the unit holding its first byte), processed in 192 KiB
-   sub-blocks so the second pass hits L2.
+1. **Input.** Work is split into ~4 MiB line-aligned units (a line belongs to the unit
+   holding its first byte). Each unit is read with `pread` in 192 KiB windows into a
+   per-thread buffer that stays in cache; files are opened per unit (a large fd table
+   would grow, and each growth waits for an RCU grace period).
 2. **Links first, in parallel.** Link endpoints are hashed and scattered into 256
    partitions, numbered per partition, joined with a lock-free union-find (a root only
    links to a smaller root), and every component is named by its byte-wise smallest ID
@@ -31,21 +32,23 @@ adds almost nothing to the measured time.
    straight to its person partition (24-byte record), and every event copy, valid or
    not, leaves a 24-byte copy record in its `event_id` partition. Records leave through
    per-partition write-combining staging areas with non-temporal stores. Person lookups
-   are prefetched 16 lines ahead.
+   are prefetched 16 lines ahead. An unlinked user's ID is copied into a per-thread name
+   buffer while the line is in cache, so output never reads the event files again.
 6. **Dedup.** Per `event_id` partition, a fingerprint table keeps the earliest-ingested
    copy (dedup before validation: an invalid winner kills its valid copies) and marks
    every losing copy's event record dead in a bitmap. Click copies are identical
    (`rules.md`), so they need no dedup.
 7. **Sessions without sorting.** Inside each person partition (largest first), events
-   are grouped per person and ordered by half-hour bin with two counting passes. Two
+   are grouped per person (8-byte events and 16-byte clicks from then on, so a partition
+   stays in L2) and ordered by half-hour bin with two counting passes. Two
    events in one bin are never more than 30 minutes apart, so sessions are cut between
    bins only (by each bin's min and max). A sliding 7-day click window gives the
    credited click (latest `ts`, then smallest `click_id`) and the distinct assisting
    campaigns.
 8. **Output.** A small hand-written Parquet writer (PLAIN, uncompressed, one page per
    column, `DATE` days) writes one `user_daily` file per worker in parallel.
-9. **Exit.** Buffers and input mappings are released from all threads at once, so the
-   kernel's single-threaded teardown has little left.
+9. **Exit.** The process exits without freeing anything. Event files are never mapped
+   into memory pages, so the kernel's single-threaded teardown has little to do.
 
 Partition counts scale with the input size, so the 60M final keeps the same per-partition
 working sets as the 20M practice set. Large buffers come from 2 MiB-aligned mappings

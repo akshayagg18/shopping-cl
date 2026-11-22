@@ -238,33 +238,104 @@ fn read_bench(data: &Path) -> f64 {
     t.elapsed().as_secs_f64() * 1e3
 }
 
+/// Random 8-byte reads from a `mb` MiB table by all threads, each read
+/// prefetched 16 ahead (like the person lookups). Returns M lookups/s.
+fn lookup_bench(mb: usize, per_thread: usize) -> f64 {
+    let n = (mb << 20) / 8;
+    let t: Vec<u64> = (0..n as u64).into_par_iter().map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15)).collect();
+    let mask = n.next_power_of_two() / 2 - 1; // keep inside the table
+    let nt = rayon::current_num_threads();
+    let st = Instant::now();
+    let s: u64 = (0..nt)
+        .into_par_iter()
+        .map(|th| {
+            let mut acc = 0u64;
+            let h = |i: usize| ((i as u64 ^ ((th as u64) << 40)).wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 20) as usize & mask;
+            for i in 0..per_thread {
+                #[cfg(target_arch = "x86_64")]
+                unsafe {
+                    std::arch::x86_64::_mm_prefetch(t.as_ptr().add(h(i + 16)) as *const i8, std::arch::x86_64::_MM_HINT_T0)
+                };
+                acc = acc.wrapping_add(unsafe { *t.get_unchecked(h(i)) });
+            }
+            acc
+        })
+        .sum();
+    std::hint::black_box(s);
+    (nt * per_thread) as f64 / st.elapsed().as_secs_f64() / 1e6
+}
+
+/// All threads: sum a 1 GiB array (read GB/s), then stream-store over it (GB/s).
+fn bw_bench() -> (f64, f64) {
+    let n = (1usize << 30) / 8;
+    let mut v: Vec<u64> = (0..n as u64).into_par_iter().collect();
+    let t = Instant::now();
+    let s: u64 = v.par_chunks(1 << 16).map(|c| c.iter().fold(0u64, |a, &x| a.wrapping_add(x))).sum();
+    std::hint::black_box(s);
+    let rd = 1.0 / t.elapsed().as_secs_f64();
+    let t = Instant::now();
+    v.par_chunks_mut(1 << 16).for_each(|c| {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use std::arch::x86_64::*;
+            let z = _mm256_set1_epi64x(7);
+            let p = c.as_mut_ptr() as *mut __m256i;
+            for k in 0..c.len() / 4 {
+                _mm256_stream_si256(p.add(k), z);
+            }
+            _mm_sfence();
+        }
+    });
+    let wr = 1.0 / t.elapsed().as_secs_f64();
+    (rd * 1.073_741_824, wr * 1.073_741_824)
+}
+
+fn caches() -> String {
+    let mut v = Vec::new();
+    for i in 0..5 {
+        let b = format!("/sys/devices/system/cpu/cpu0/cache/index{i}");
+        let l = cat(&format!("{b}/level"));
+        if l.starts_with('<') {
+            break;
+        }
+        v.push(format!("L{}{}={}", l.trim(), &cat(&format!("{b}/type")).trim()[..1], cat(&format!("{b}/size")).trim()));
+    }
+    v.join(",")
+}
+
 pub fn main(data: &Path, out: &Path, threads: usize) {
     let t0 = Instant::now();
     let scratch = std::path::PathBuf::from(std::env::var("SCRATCH_DIR").unwrap_or_else(|_| "/scratch".into()));
     // the real dev output first, so the run is otherwise a normal one
     let _ = crate::run(data, out, false);
+    let cpu = cat("/proc/cpuinfo");
+    let model = cpu.lines().find(|l| l.starts_with("model name")).unwrap_or("?").replace("model name\t: ", "");
+    eprintln!("D13 {model} | {} | {}", caches(), cat("/proc/sys/kernel/osrelease").trim());
+    let (rd, wr) = bw_bench();
+    let lk: Vec<String> = [1usize, 4, 8, 16, 32, 64, 128].iter().map(|&mb| format!("{mb}M={:.0}", lookup_bench(mb, 4 << 20))).collect();
+    eprintln!("BW rd={rd:.1} ntwr={wr:.1} GB/s | lookups M/s {}", lk.join(" "));
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let k: usize = std::env::var("SS_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let t = Instant::now();
     upscale(data, &big, k);
-    eprintln!("D12 x{k} up={:.1}s; wall/int ms: open links parse dedup sess write free | user sys", t.elapsed().as_secs_f64());
-    let vars: [(&str, &[(&str, &str)]); 8] = [
+    eprintln!("x{k} up={:.1}s; wall/int ms: open links parse dedup sess write | user sys", t.elapsed().as_secs_f64());
+    let vars: [(&str, &[(&str, &str)]); 11] = [
+        ("base", &[]),
+        ("nolk", &[("SS_EXP", "1")]),
+        ("noemit", &[("SS_EXPL", "3")]),
+        ("scan", &[("SS_EXPL", "2")]),
+        ("scan-ck", &[("SS_EXPL", "4")]),
+        ("none", &[("SS_EXPL", "5")]),
         ("base", &[]),
         ("mmap", &[("SS_READ", "0")]),
-        ("wc0", &[("SS_WC", "0")]),
-        ("pf1", &[("SS_PFREE", "1")]),
         ("p9", &[("SS_P2B", "9")]),
         ("p11", &[("SS_P2B", "11")]),
         ("d11", &[("SS_PDB", "11")]),
-        ("p9d9", &[("SS_P2B", "9"), ("SS_PDB", "9")]),
     ];
-    for round in 0..2 {
-        for (tag, env) in vars.iter() {
-            eprintln!("{}", child(&format!("{tag}.{round}"), &big, &ob, threads, env));
-        }
+    for (tag, env) in vars.iter() {
+        eprintln!("{}", child(tag, &big, &ob, threads, env));
     }
-    eprintln!("{}", child("t4", &big, &ob, 4, &[]));
     eprintln!("{}", child("dev", data, &ob, threads, &[]));
     let _ = std::fs::remove_dir_all(&big);
     let _ = std::fs::remove_dir_all(&ob);
