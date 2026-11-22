@@ -336,9 +336,8 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
         if eid.is_empty() {
             return;
         }
-        let ingest_ms = parse::ingest_memo(fld(3), &mut memo).unwrap_or(i64::MAX / 2);
+        let (ingest_ms, ingest) = parse::ingest_pair(fld(3), &mut memo);
         let (eid_h, eid_c) = h64_chk(eid);
-        let ingest = (ingest_ms.max(0) / 1000).min(u32::MAX as i64) as u32;
         'valid: {
             let user = fld(1);
             if user.is_empty() {

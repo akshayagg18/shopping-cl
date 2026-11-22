@@ -467,6 +467,33 @@ pub fn ingest_memo(b: &[u8], m: &mut Memo) -> Option<i64> {
     ingest(b)
 }
 
+/// `ingest_memo` as (ms, seconds clamped to u32): the fast F1 shape yields
+/// whole seconds, so the division is skipped; anything else divides as before.
+#[inline(always)]
+pub fn ingest_pair(b: &[u8], m: &mut Memo) -> (i64, u32) {
+    if b.len() == 20 && b[19] == b'Z' {
+        let w0 = le64(b, 0);
+        let w1 = le64(b, 8);
+        let w2 = unsafe { std::ptr::read_unaligned(b.as_ptr().add(16) as *const u32) }.to_le() as u64;
+        let sep_bad = ((w0 & 0xFF00_00FF_0000_0000) ^ 0x2D00_002D_0000_0000)
+            | ((w1 & 0x0000_FF00_00FF_0000) ^ 0x0000_3A00_0054_0000)
+            | ((w2 & 0xFF) ^ 0x3A);
+        if sep_bad == 0 {
+            if let Some(d) = memo_days(b, m).filter(|&d| (D1900..D2300).contains(&d)) {
+                let p1 = pairs((w1 ^ 0x3030_3030_3030_3030) & 0xFFFF_00FF_FF00_FFFF);
+                let p2 = pairs((w2 ^ 0x3030_3030) & 0x00FF_FF00);
+                let h = ((p1 >> 24) & 0xFF) as i64;
+                let mi = ((p1 >> 48) & 0xFF) as i64;
+                let sec = ((p2 >> 8) & 0xFF) as i64;
+                let s = d * 86_400 + h * 3_600 + mi * 60 + sec;
+                return (s * 1_000, s.clamp(0, u32::MAX as i64) as u32);
+            }
+        }
+    }
+    let ms = ingest(b).unwrap_or(i64::MAX / 2);
+    (ms, (ms.max(0) / 1000).min(u32::MAX as i64) as u32)
+}
+
 /// `timestamp` with the three shapes the data mostly holds inlined: F1
 /// (20 bytes), 13-digit epoch ms and F2 (25 bytes). Anything else goes to the
 /// general parser, so the result is always identical to `timestamp`.
