@@ -1,7 +1,6 @@
-# DIAGNOSTIC image (D25's schedule), all profile-guided on rust 1.97.0:
-#   /ssp      "pgo" = v19b (lines up to 191 bytes per line, person map from zeroed memory)
-#   /ssp_alt  "alt" = v18 exactly as submitted (0.8226 s)
-#   /ssp_np   "np"  = v19 (lines up to 127 bytes per line)
+# DIAGNOSTIC image, both profile-guided on rust 1.97.0:
+#   /ssp      v18b (v18 + person map from zeroed memory), run with partition variants
+#   /ssp_alt  "alt" = v18 exactly as submitted
 FROM --platform=linux/amd64 rust:1.97.0-slim AS b1
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
@@ -20,19 +19,9 @@ ENV CARGO_NET_RETRY=10 CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
     RUSTFLAGS="-C target-cpu=x86-64-v3 -C target-feature=+crt-static,+pclmulqdq,+aes -Cprofile-use=/src/pgo/ssp.profdata"
 RUN cargo build --release --locked --target x86_64-unknown-linux-gnu && cp target/x86_64-unknown-linux-gnu/release/ssp /ssp_alt
 
-FROM --platform=linux/amd64 rust:1.97.0-slim AS b3
-WORKDIR /src
-COPY alt2/Cargo.toml alt2/Cargo.lock ./
-COPY alt2/src ./src
-COPY alt2/pgo ./pgo
-ENV CARGO_NET_RETRY=10 CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
-    RUSTFLAGS="-C target-cpu=x86-64-v3 -C target-feature=+crt-static,+pclmulqdq,+aes -Cprofile-use=/src/pgo/ssp.profdata"
-RUN cargo build --release --locked --target x86_64-unknown-linux-gnu && cp target/x86_64-unknown-linux-gnu/release/ssp /ssp_np
-
 FROM scratch
 COPY --from=b1 /ssp /ssp
 COPY --from=b2 /ssp_alt /ssp_alt
-COPY --from=b3 /ssp_np /ssp_np
 ENV SS_DIAG=1
 USER 1000:1000
 ENTRYPOINT ["/ssp"]

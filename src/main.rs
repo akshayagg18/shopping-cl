@@ -1673,9 +1673,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
 
     flow::WC.store(std::env::var("SS_WC").map_or(flow::WC_DEFAULT, |v| v == "1"), Ordering::Relaxed);
     READ.store(std::env::var("SS_READ").is_ok_and(|v| v == "1"), Ordering::Relaxed);
-    // per-line tokenizer by default (lines of up to 127 bytes in four loads: scorer-v5
-    // IDs made a fifth of the lines too long for three); SS_TOK=1: stage-1 bitmaps
-    TOK1.store(!std::env::var("SS_TOK").is_ok_and(|v| v == "1"), Ordering::Relaxed);
+    TOK1.store(std::env::var("SS_TOK").is_ok_and(|v| v == "2"), Ordering::Relaxed);
     POP.store(std::env::var("SS_POP").is_ok_and(|v| v == "1"), Ordering::Relaxed);
     scan::set_a512(std::env::var("SS_A512").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
     output::DIGEST.store(std::env::var("SS_DIGEST").is_ok_and(|v| v == "1"), Ordering::Relaxed);
