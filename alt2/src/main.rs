@@ -1148,13 +1148,15 @@ fn zeroed_u32(n: usize) -> Vec<std::sync::atomic::AtomicU32> {
 
 // ---------------------------------------------------------------- records
 
-/// A surviving event, by person id. 12 bytes.
+/// A surviving event, by person id. 16 bytes (padded: four fill one cache
+/// line, so a partition's staging row is one line, not three).
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct Ev2 {
     pid: u32,
     ts: u32,
     pc: u32,
+    _pad: u32,
 }
 
 /// An event inside a person partition, once grouped: the person is known by
@@ -1223,7 +1225,7 @@ struct Scratch {
     // per-bucket grouping
     ev_cnt: Vec<u32>,
     ck_cnt: Vec<u32>,
-
+    ev_local: Vec<u32>,
     ck_local: Vec<u32>,
     evs_sorted: Vec<Ev1>,
     cks_sorted: Vec<Ck1>,
@@ -1255,7 +1257,7 @@ impl Scratch {
             cat: vec![0; 256],
             ev_cnt: Vec::new(),
             ck_cnt: Vec::new(),
-
+            ev_local: Vec::new(),
             ck_local: Vec::new(),
             evs_sorted: Vec::new(),
             cks_sorted: Vec::new(),
@@ -1288,15 +1290,16 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
         sc.ev_cnt.resize(nloc, 0);
         sc.ck_cnt.resize(nloc, 0);
     }
+    sc.ev_local.clear();
+    sc.ev_local.reserve(n);
     let nb = ctx.nbins;
     if sc.bins.len() < nb {
         sc.bins.resize(nb, BinAcc::default());
         sc.bm.resize(nb.div_ceil(64), 0);
     }
-    let _ = &evb;
-    // pass 1: live events per local person
+    evb.clear();
+    evb.reserve(n);
     let (mut lo, mut hi) = (usize::MAX, 0usize);
-    let mut n = 0usize;
     for (t, s) in sinks.iter().enumerate() {
         let mut i = 0usize;
         let mut dw = 0u64;
@@ -1315,15 +1318,23 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                 }
                 if (dw >> (i % 64)) & 1 == 0 {
                     let li = (e.pid >> pbits) as usize;
-                    unsafe { *sc.ev_cnt.get_unchecked_mut(li) += 1 };
+                    unsafe {
+                        *sc.ev_cnt.get_unchecked_mut(li) += 1;
+                        let len = evb.len();
+                        evb.as_mut_ptr().add(len).write(Ev1 { ts: e.ts, pc: e.pc });
+                        evb.set_len(len + 1);
+                        let len = sc.ev_local.len();
+                        sc.ev_local.as_mut_ptr().add(len).write(li as u32);
+                        sc.ev_local.set_len(len + 1);
+                    }
                     lo = lo.min(li);
                     hi = hi.max(li);
-                    n += 1;
                 }
                 i += 1;
             }
         }
     }
+    let n = evb.len();
     if n == 0 {
         return;
     }
@@ -1343,6 +1354,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
         }
     }
     let ckin: &[Ck1] = ckb;
+    let evin: &[Ev1] = evb;
     // start offsets of the local persons lo..=hi (ev_pos / ck_pos become ends)
     let span = hi - lo + 1;
     sc.ev_pos.clear();
@@ -1363,26 +1375,10 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     unsafe {
         sc.evs_sorted.set_len(n);
         sc.cks_sorted.set_len(cacc as usize);
-    }
-    // pass 2: the live events straight into person order (the records are in cache now)
-    for (t, s) in sinks.iter().enumerate() {
-        let mut i = 0usize;
-        let mut dw = 0u64;
-        for sl in s.ev.slices(b) {
-            for e in sl {
-                if i % 64 == 0 {
-                    dw = dead.word(t, b, i / 64);
-                }
-                if (dw >> (i % 64)) & 1 == 0 {
-                    let li = (e.pid >> pbits) as usize;
-                    unsafe {
-                        let at = sc.ev_pos.get_unchecked_mut(li - lo);
-                        *sc.evs_sorted.get_unchecked_mut(*at as usize) = Ev1 { ts: e.ts, pc: e.pc };
-                        *at += 1;
-                    }
-                }
-                i += 1;
-            }
+        for (e, &li) in evin.iter().zip(&sc.ev_local) {
+            let at = sc.ev_pos.get_unchecked_mut(li as usize - lo);
+            *sc.evs_sorted.get_unchecked_mut(*at as usize) = *e;
+            *at += 1;
         }
     }
     for (c, &li) in ckin.iter().zip(&sc.ck_local) {

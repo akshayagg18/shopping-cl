@@ -1,7 +1,7 @@
 # DIAGNOSTIC image, all profile-guided on rust 1.97.0:
-#   /ssp      "new" = v22 (both timestamps in one register)
+#   /ssp      "new" = v24 (linked names searched during the parse, dictionary Parquet)
 #   /ssp_alt  "alt" = v20 exactly as submitted (0.8001 s)
-#   /ssp_np   "np"  = v21b (v20 + two-pass session placement)
+#   /ssp_np   "np"  = v20s (v20 + 16-byte event records)
 FROM --platform=linux/amd64 rust:1.97.0-slim AS b1
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./

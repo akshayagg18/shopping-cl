@@ -312,7 +312,7 @@ struct PendE {
 fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
     let pid = persons.pid(pd.uh, pd.uref, &mut sink.pids);
     let pb = (pid as usize) & (p2() - 1);
-    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { pid, ts: pd.ts, pc: pd.pc });
+    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { pid, ts: pd.ts, pc: pd.pc, _pad: 0 });
     let (part, id) = (pd.part as usize, pd.id);
     if i < (1 << LOC_I) - 1 && pb < 1 << (32 - LOC_I) {
         sink.cp.push(&mut sink.arena, part, CopyR { id, ingest: pd.ingest, loc: ((pb as u32) << LOC_I) | i });

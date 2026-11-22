@@ -508,7 +508,7 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let dev_gb = dir_gb(data);
-    eprintln!("D32 alt=v20 np=v21b(two-pass sessions) new=v22(timestamp pairs) {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
+    eprintln!("D33 alt=v20 np=v20s(16B records) new=v24(names off critical path + dict parquet) lb0=v24 names before parse d0=v24 plain parquet {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
     eprintln!("wall/int: open links parse dedup sess write | user sys GB");
     let dg = |k: u64, line: &str, base: Option<(u64, u64)>| -> String {
         match (digests(line), base) {
@@ -548,25 +548,37 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     eprintln!("{}", child("alt-dev", data, &ob, threads, &[]));
     let kb: usize = std::env::var("SS_DIAG_BIG").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
     let km: usize = std::env::var("SS_DIAG_MID").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
-    let v60: [(&str, &[(&str, &str)]); 8] = [("warm", &[]), ("alt", &[]), ("new", &[]), ("np", &[]), ("alt", &[]), ("new", &[]), ("np", &[]), ("new-chk", &[])];
-    if !run_k(kb, &v60) {
-        run_k(kb * 2 / 3, &v60);
-    }
-    let v20: [(&str, &[(&str, &str)]); 12] = [
+    let v20: [(&str, &[(&str, &str)]); 24] = [
         ("warm", &[]),
         ("alt", &[]),
         ("new", &[]),
+        ("lb0", &[("SS_LB", "0")]),
+        ("d0", &[("SS_DICT", "0")]),
         ("np", &[]),
         ("alt", &[]),
         ("new", &[]),
+        ("lb0", &[("SS_LB", "0")]),
+        ("d0", &[("SS_DICT", "0")]),
         ("np", &[]),
         ("alt", &[]),
         ("new", &[]),
+        ("lb0", &[("SS_LB", "0")]),
+        ("d0", &[("SS_DICT", "0")]),
         ("np", &[]),
-        ("p9d10", &[("SS_P2B", "9")]),
+        ("alt", &[]),
+        ("new", &[]),
+        ("lb0", &[("SS_LB", "0")]),
+        ("d0", &[("SS_DICT", "0")]),
+        ("np", &[]),
         ("new-chk", &[]),
+        ("np-chk", &[]),
+        ("lb0-chk", &[("SS_LB", "0")]),
     ];
     run_k(km, &v20);
+    let v60: [(&str, &[(&str, &str)]); 5] = [("warm", &[]), ("alt", &[]), ("new", &[]), ("alt", &[]), ("new-chk", &[])];
+    if !run_k(kb, &v60) {
+        run_k(kb * 2 / 3, &v60);
+    }
     let _ = std::fs::remove_dir_all(&ob);
     eprintln!("done {:.1}s", t0.elapsed().as_secs_f64());
 }

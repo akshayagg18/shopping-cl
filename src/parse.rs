@@ -438,69 +438,6 @@ pub fn ts_memo(b: &[u8], m: &mut Memo) -> Option<i64> {
     ts_fast(b)
 }
 
-/// `(ts_memo(t), ingest_memo(g).unwrap_or(i64::MAX / 2))`, identical results:
-/// when both are F1 (the usual line), both are checked and split in one AVX2
-/// register (digits, separators and the time-of-day pairs of both at once) and
-/// share their date lookup when the dates are equal; anything else, or anything
-/// the fast check does not fully accept, goes to the two parsers.
-#[inline(always)]
-pub fn ts_pair(t: &[u8], g: &[u8], m: &mut Memo) -> (Option<i64>, i64) {
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-    if t.len() == 20 && g.len() == 20 && t[19] == b'Z' && g[19] == b'Z' {
-        if let Some(r) = unsafe { f1_pair(t, g, m) } {
-            return r;
-        }
-    }
-    (ts_memo(t, m), ingest_memo(g, m).unwrap_or(i64::MAX / 2))
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-#[inline(always)]
-unsafe fn f1_pair(t: &[u8], g: &[u8], m: &mut Memo) -> Option<(Option<i64>, i64)> {
-    use std::arch::x86_64::*;
-    // '0' where a digit belongs (digit ^ '0' <= 9), the separator elsewhere (^ = 0)
-    static TPL: [u8; 32] = *b"0000-00-00T00:000000-00-00T00:00";
-    static LIM: [u8; 32] = [9, 9, 9, 9, 0, 9, 9, 0, 9, 9, 0, 9, 9, 0, 9, 9, 9, 9, 9, 9, 0, 9, 9, 0, 9, 9, 0, 9, 9, 0, 9, 9];
-    static SHUF: [i8; 32] = [11, 12, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 11, 12, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1];
-    static W: [i8; 32] = [10, 1, 10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 1, 10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    unsafe {
-        let a = _mm_loadu_si128(t.as_ptr() as *const __m128i);
-        let b = _mm_loadu_si128(g.as_ptr() as *const __m128i);
-        let v = _mm256_inserti128_si256::<1>(_mm256_castsi128_si256(a), b);
-        let x = _mm256_xor_si256(v, _mm256_loadu_si256(TPL.as_ptr() as *const __m256i));
-        let lim = _mm256_loadu_si256(LIM.as_ptr() as *const __m256i);
-        let ok = _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_max_epu8(x, lim), lim)) == -1;
-        // bytes 16..20: ':' S S 'Z'
-        let tt = std::ptr::read_unaligned(t.as_ptr().add(16) as *const u32) ^ 0x5A30_303A;
-        let gt = std::ptr::read_unaligned(g.as_ptr().add(16) as *const u32) ^ 0x5A30_303A;
-        let tail_bad = |x: u32| (x & 0xFF00_00FF) != 0 || ((x >> 8) & 0xFF) > 9 || ((x >> 16) & 0xFF) > 9;
-        if !ok || tail_bad(tt) || tail_bad(gt) {
-            return None;
-        }
-        // hours and minutes of both: u16 lanes 0, 1 (t) and 8, 9 (g)
-        let p = _mm256_maddubs_epi16(_mm256_shuffle_epi8(x, _mm256_loadu_si256(SHUF.as_ptr() as *const __m256i)), _mm256_loadu_si256(W.as_ptr() as *const __m256i));
-        let th = _mm256_extract_epi32::<0>(p) as u32;
-        let gh = _mm256_extract_epi32::<4>(p) as u32;
-        let (t_h, t_mi, t_s) = ((th & 0xFFFF) as i64, (th >> 16) as i64, (((tt >> 8) & 0xFF) * 10 + ((tt >> 16) & 0xFF)) as i64);
-        let (g_h, g_mi, g_s) = ((gh & 0xFFFF) as i64, (gh >> 16) as i64, (((gt >> 8) & 0xFF) * 10 + ((gt >> 16) & 0xFF)) as i64);
-        // ts: F1 with a bad time of day or date is not a timestamp (as in ts_memo)
-        let dt = memo_days(t, m);
-        let ts = if t_h > 23 || t_mi > 59 || t_s > 59 {
-            None
-        } else {
-            dt.map(|d| (d * 86_400 + t_h * 3_600 + t_mi * 60 + t_s) * 1_000)
-        };
-        // ingest: as ingest_memo (no time range checks; dates 1900..2300 this way)
-        let same = le64(t, 0) == le64(g, 0) && le16(t, 8) == le16(g, 8);
-        let dg = if same { dt } else { memo_days(g, m) };
-        let ing = match dg.filter(|&d| (D1900..D2300).contains(&d)) {
-            Some(d) => (d * 86_400 + g_h * 3_600 + g_mi * 60 + g_s) * 1_000,
-            None => ingest_memo(g, m).unwrap_or(i64::MAX / 2),
-        };
-        Some((ts, ing))
-    }
-}
-
 const D1900: i64 = days_from_civil(Y0, 1, 1);
 const D2300: i64 = days_from_civil(Y0 + YN as i64, 1, 1);
 
@@ -582,59 +519,6 @@ pub fn price(b: &[u8]) -> Option<u32> {
         }
     }
     if v == 0 { None } else { Some(v as u32) }
-}
-
-#[cfg(test)]
-mod pair_tests {
-    use super::*;
-    #[test]
-    fn ts_pair_matches_the_two_parsers() {
-        let mut x: u64 = 0x1234_5678_9ABC_DEF1;
-        let mut rnd = || {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            x
-        };
-        let alphabet = b"0123456789-:TZtz+ x\"/.";
-        let (mut m1, mut m2) = (Memo::new(), Memo::new());
-        for k in 0..3_000_000u64 {
-            let mut mk = |r: &mut dyn FnMut() -> u64| -> Vec<u8> {
-                let y = 1899 + (r() % 403) as u32;
-                let mo = (r() % 14) as u32;
-                let d = (r() % 33) as u32;
-                let h = (r() % 26) as u32;
-                let mi = (r() % 62) as u32;
-                let s = (r() % 62) as u32;
-                let mut v = format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z").into_bytes();
-                // mutations: none mostly, else one or two random bytes
-                for _ in 0..(r() % 4).saturating_sub(1) {
-                    let at = (r() % 20) as usize;
-                    v[at] = alphabet[(r() % alphabet.len() as u64) as usize];
-                }
-                v
-            };
-            let t = mk(&mut rnd);
-            let g = if k % 3 == 0 { let mut g = t.clone(); g[15] = b'0' + (rnd() % 10) as u8; g } else { mk(&mut rnd) };
-            let want = (ts_memo(&t, &mut m1), ingest_memo(&g, &mut m1).unwrap_or(i64::MAX / 2));
-            let got = ts_pair(&t, &g, &mut m2);
-            assert_eq!(got, want, "{:?} {:?}", String::from_utf8_lossy(&t), String::from_utf8_lossy(&g));
-        }
-    }
-    #[test]
-    fn ts_pair_fast_path_taken() {
-        let mut m = Memo::new();
-        let t = b"2027-12-19T18:13:05Z";
-        let g = b"2027-12-19T18:14:52Z";
-        let r = unsafe { f1_pair(t, g, &mut m) };
-        assert!(r.is_some());
-        assert_eq!(r.unwrap(), (ts_memo(t, &mut Memo::new()), ingest_memo(g, &mut Memo::new()).unwrap()));
-        let g2 = b"2027-12-20T00:00:01Z";
-        assert_eq!(unsafe { f1_pair(t, g2, &mut m) }.unwrap(), (ts_memo(t, &mut Memo::new()), ingest_memo(g2, &mut Memo::new()).unwrap()));
-        // hour 24: ts rejected by the fast path itself, ingest still read
-        let t3 = b"2027-12-19T24:13:05Z";
-        assert_eq!(unsafe { f1_pair(t3, g, &mut m) }.unwrap(), (None, ingest_memo(g, &mut Memo::new()).unwrap()));
-    }
 }
 
 #[cfg(test)]
