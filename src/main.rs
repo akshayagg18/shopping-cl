@@ -1892,7 +1892,31 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     // links first: every record below is routed straight to its person
     // room in the person table for the IDs met while parsing (generated data
     // has about one user ID per 15 events; this allows one per 8)
-    let ((persons, rest), lk) = rayon::join(|| links(&inp, est_events / 8 + 4096), || lookups(&inp));
+    // the workers' record memory is faulted in while links are resolved (the
+    // kernel zeroes it then, not in the middle of the parse)
+    let nthreads = rayon::current_num_threads();
+    let nfiles = unsafe { &*FILES.load(Ordering::Relaxed) }.len();
+    // room for every event's user ID, at twice a thread's share (spare virtual memory)
+    let name_cap = est_events / nthreads * 32 + (1 << 20);
+    let sinks: Vec<std::sync::Mutex<flow::Sink>> =
+        (0..nthreads).map(|t| std::sync::Mutex::new(flow::Sink::new(nfiles + t, name_cap))).collect();
+    let ck_bytes: usize = inp.clicks.iter().map(|&f| file_bytes(f).len()).sum();
+    // events: 12 + 16 bytes of records each; clicks (about 55 bytes a line): 24
+    let per_sink = (est_events * 28 + ck_bytes / 55 * 24) / nthreads * 9 / 10;
+    let ((persons, rest), lk) = rayon::join(
+        || links(&inp, est_events / 8 + 4096),
+        || {
+            rayon::join(
+                || lookups(&inp),
+                || {
+                    if std::env::var("SS_PF").map_or(true, |v| v != "0") {
+                        sinks.par_iter().for_each(|m| m.lock().unwrap().prefault(per_sink));
+                    }
+                },
+            )
+            .0
+        },
+    );
     lap("links");
     // the linked components' smallest names are searched while the files are
     // parsed: one search item after every few parse units (SS_LB=0: before the parse)
@@ -1920,12 +1944,6 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         v.extend(bu.map(|&(t, a, b)| (2, t, a, b)));
         v
     };
-    let nthreads = rayon::current_num_threads();
-    let nfiles = unsafe { &*FILES.load(Ordering::Relaxed) }.len();
-    // room for every event's user ID, at twice a thread's share (spare virtual memory)
-    let name_cap = est_events / nthreads * 32 + (1 << 20);
-    let sinks: Vec<std::sync::Mutex<flow::Sink>> =
-        (0..nthreads).map(|t| std::sync::Mutex::new(flow::Sink::new(nfiles + t, name_cap))).collect();
     // every worker takes the next unit in list order (the order read ahead)
     let next = std::sync::atomic::AtomicUsize::new(0);
     rayon::broadcast(|ctx| {

@@ -72,15 +72,36 @@ pub struct Arena {
     ptr: usize,
     end: usize,
     chunks: Vec<Vec<u8>>,
+    /// chunks mapped (and their pages faulted in) ahead of the parse
+    spare: Vec<Vec<u8>>,
 }
 
 impl Arena {
     fn new() -> Self {
-        Arena { ptr: 0, end: 0, chunks: Vec::new() }
+        Arena { ptr: 0, end: 0, chunks: Vec::new(), spare: Vec::new() }
+    }
+    /// Map about `bytes` of chunks now and touch every page (one write per
+    /// 4 KiB: a huge page faults in whole), so the parse takes no page faults.
+    fn prefault(&mut self, bytes: usize) {
+        for _ in 0..bytes.div_ceil(ARENA_CHUNK) {
+            let mut v: Vec<u8> = Vec::with_capacity(ARENA_CHUNK);
+            let p = v.as_mut_ptr();
+            for o in (0..ARENA_CHUNK).step_by(4096) {
+                unsafe { std::ptr::write_volatile(p.add(o), 0) };
+            }
+            self.spare.push(v);
+        }
+        self.spare.reverse();
     }
     #[cold]
     #[inline(never)]
     fn refill(&mut self) {
+        if let Some(mut v) = self.spare.pop() {
+            self.ptr = v.as_mut_ptr() as usize;
+            self.end = self.ptr + v.capacity();
+            self.chunks.push(v);
+            return;
+        }
         let mut v: Vec<u8> = Vec::with_capacity(ARENA_CHUNK);
         self.ptr = v.as_mut_ptr() as usize;
         self.end = self.ptr + v.capacity();
@@ -281,6 +302,10 @@ impl Sink {
             wide: Vec::new(),
             pids: (0, 0),
         }
+    }
+    /// Fault in about `bytes` of record memory ahead of the parse.
+    pub fn prefault(&mut self, bytes: usize) {
+        self.arena.prefault(bytes);
     }
     /// End of the parse phase: everything staged goes to its blocks.
     pub fn finish(&mut self) {
