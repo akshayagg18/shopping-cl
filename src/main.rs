@@ -1717,7 +1717,7 @@ fn main() {
     let out = PathBuf::from(env("OUTPUT_DIR", "/output"));
     let threads: usize = env("NCPU", "8").parse().unwrap_or(8);
     // SS_PIN=1: worker i stays on the i-th allowed CPU (staging areas stay in its caches)
-    let pin: Option<Vec<usize>> = if std::env::var("SS_PIN").is_ok_and(|v| v == "1") {
+    let pin: Option<Vec<usize>> = if std::env::var("SS_PIN").map_or(true, |v| v != "0") {
         unsafe {
             let mut set: libc::cpu_set_t = std::mem::zeroed();
             if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) == 0 {
