@@ -973,7 +973,7 @@ impl PersonMap {
 
 
 /// `users`: room for that many more IDs, met while parsing.
-fn links(inp: &Inputs, users: usize) -> Persons {
+fn links(inp: &Inputs, users: usize) -> (Persons, LinkRest) {
     use std::sync::atomic::AtomicU32;
     let t0 = std::time::Instant::now();
     let tl = std::env::var_os("SS_LT").is_some();
@@ -1029,7 +1029,6 @@ fn links(inp: &Inputs, users: usize) -> Persons {
             (e, taken)
         })
         .collect();
-    drop(parts);
     let (edges, taken): (Vec<Vec<(u32, u32)>>, Vec<Vec<u32>>) = res.into_iter().unzip();
     lt("inserted");
     // lock-free union-find over zeroed memory: parent[x] = p + 1, 0 for a root;
@@ -1066,74 +1065,120 @@ fn links(inp: &Inputs, users: usize) -> Persons {
             }
         }
     });
-    drop(edges);
     lt("uf");
-    // byte-wise smallest ID per component: best[root] = slot + 1 (0: the root
-    // itself); every parent is set to its root on the way (one hop after)
-    let best = zeroed_u32(cap);
-    let name_of = |i: usize| deref(map.val_at(i).load(Ordering::Relaxed));
+    // a dense person id per component (its root), from blocks: names come
+    // later (smallest_names, overlapped with the parse), so only roots matter
+    // ids: every taken slot at most once, plus a partly used block per task and per worker
+    let names = zeroed_atomics(cap + (taken.len() + rayon::current_num_threads() + 2) * PID_BLOCK as usize);
+    let next = std::sync::atomic::AtomicU32::new(0);
+    let roots: Vec<Vec<(u32, u32)>> = taken
+        .par_iter()
+        .map(|ts| {
+            let mut blk = (0u32, 0u32);
+            let mut mine = Vec::new();
+            for &i in ts {
+                let i = i as usize;
+                if parent[i].load(Ordering::Relaxed) != 0 {
+                    continue;
+                }
+                if blk.0 == blk.1 {
+                    let b = next.fetch_add(PID_BLOCK, Ordering::Relaxed);
+                    blk = (b, b + PID_BLOCK);
+                }
+                let p = blk.0;
+                blk.0 += 1;
+                mine.push((p, i as u32));
+                map.val_at(i).store(VALID | p as u64, Ordering::Relaxed);
+            }
+            mine
+        })
+        .collect();
+    // every other ID takes its root's id; its parent becomes the root
     taken.par_iter().for_each(|ts| {
         for &i in ts {
             let i = i as usize;
-            let r = find(&parent, i as u32) as usize;
-            if r == i {
+            if parent[i].load(Ordering::Relaxed) == 0 {
                 continue;
             }
+            let r = find(&parent, i as u32) as usize;
             parent[i].store(r as u32 + 1, Ordering::Relaxed);
-            let mine = name_of(i);
-            let mut cur = best[r].load(Ordering::Relaxed);
+            map.val_at(i).store(map.val_at(r).load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+    });
+    lt("named");
+    let n = next.load(Ordering::Relaxed);
+    let best = zeroed_atomics(cap);
+    (Persons { map, names, next: std::sync::atomic::AtomicU32::new(n) }, LinkRest { parts, edges, parent, best, roots })
+}
+
+/// What naming the linked persons still needs after `links`: the byte-wise
+/// smallest ID of every component, found while the event files are parsed
+/// (`best_unit` work items), then stored as its person's name (`name_roots`).
+pub struct LinkRest {
+    /// link endpoints (hash, ref) per task: edge k is endpoints 2k and 2k + 1
+    parts: Vec<Vec<(u64, u64)>>,
+    /// the same edges as table slots
+    edges: Vec<Vec<(u32, u32)>>,
+    /// union-find parents (slot + 1; 0 for a root), non-roots pointing at their root
+    parent: Vec<std::sync::atomic::AtomicU32>,
+    /// per root slot: ref of the smallest ID seen (0: none yet)
+    best: Vec<std::sync::atomic::AtomicU64>,
+    /// (person id, root slot) of every component
+    roots: Vec<Vec<(u32, u32)>>,
+}
+
+/// Edges per best_unit work item.
+pub const BEST_UNIT: usize = 8192;
+
+impl LinkRest {
+    /// Work items of the smallest-name search: (task, first edge, end edge).
+    pub fn units(&self) -> Vec<(usize, usize, usize)> {
+        let mut u = Vec::new();
+        for (t, es) in self.edges.iter().enumerate() {
+            let mut a = 0;
+            while a < es.len() {
+                let b = (a + BEST_UNIT).min(es.len());
+                u.push((t, a, b));
+                a = b;
+            }
+        }
+        u
+    }
+    /// The smaller name of both endpoints of edges [a, b) of task t, into
+    /// their component's best.
+    pub fn best_unit(&self, t: usize, a: usize, b: usize) {
+        let (es, ps) = (&self.edges[t], &self.parts[t]);
+        let parent = &self.parent;
+        for k in a..b {
+            let (sa, _) = es[k];
+            // after links every non-root points straight at its root
+            let px = parent[sa as usize].load(Ordering::Relaxed);
+            let r = if px == 0 { sa as usize } else { px as usize - 1 };
+            let (ra, rb) = (ps[2 * k].1, ps[2 * k + 1].1);
+            let cand = if deref(rb) < deref(ra) { rb } else { ra };
+            let slot = &self.best[r];
+            let mut cur = slot.load(Ordering::Relaxed);
             loop {
-                let c = if cur == 0 { r } else { cur as usize - 1 };
-                if !(mine < name_of(c)) {
+                if cur != 0 && !(deref(cand) < deref(cur)) {
                     break;
                 }
-                match best[r].compare_exchange_weak(cur, i as u32 + 1, Ordering::Relaxed, Ordering::Relaxed) {
+                match slot.compare_exchange_weak(cur, cand, Ordering::Relaxed, Ordering::Relaxed) {
                     Ok(_) => break,
                     Err(c) => cur = c,
                 }
             }
         }
-    });
-    lt("best");
-    // a dense person id per component (its root), from blocks; the name first
-    // (the component's best slot may be the root, whose value changes here)
-    // ids: every taken slot at most once, plus a partly used block per task and per worker
-    let names = zeroed_atomics(cap + (taken.len() + rayon::current_num_threads() + 2) * PID_BLOCK as usize);
-    let next = std::sync::atomic::AtomicU32::new(0);
-    taken.par_iter().for_each(|ts| {
-        let mut blk = (0u32, 0u32);
-        for &i in ts {
-            let i = i as usize;
-            if parent[i].load(Ordering::Relaxed) != 0 {
-                continue;
+    }
+    /// Every component's name, once all best_units ran.
+    pub fn name_roots(&self, persons: &Persons) {
+        self.roots.par_iter().for_each(|v| {
+            for &(p, s) in v {
+                let b = self.best[s as usize].load(Ordering::Relaxed);
+                debug_assert!(b != 0);
+                persons.names[p as usize].store(b, Ordering::Relaxed);
             }
-            if blk.0 == blk.1 {
-                let b = next.fetch_add(PID_BLOCK, Ordering::Relaxed);
-                blk = (b, b + PID_BLOCK);
-            }
-            let p = blk.0;
-            blk.0 += 1;
-            let bs = best[i].load(Ordering::Relaxed);
-            let b = if bs == 0 { i } else { bs as usize - 1 };
-            names[p as usize].store(map.val_at(b).load(Ordering::Relaxed), Ordering::Relaxed);
-            map.val_at(i).store(VALID | p as u64, Ordering::Relaxed);
-        }
-    });
-    // every other ID takes its root's id (parents point at roots after the best pass)
-    taken.par_iter().for_each(|ts| {
-        for &i in ts {
-            let i = i as usize;
-            let pr = parent[i].load(Ordering::Relaxed);
-            if pr != 0 {
-                map.val_at(i).store(map.val_at(pr as usize - 1).load(Ordering::Relaxed), Ordering::Relaxed);
-            }
-        }
-    });
-    lt("named");
-    std::mem::forget(parent);
-    std::mem::forget(best);
-    let n = next.load(Ordering::Relaxed);
-    Persons { map, names, next: std::sync::atomic::AtomicU32::new(n) }
+        });
+    }
 }
 
 /// `n` zeroed atomics from fresh memory (no fill).
@@ -1740,6 +1785,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     TOK1.store(std::env::var("SS_TOK").is_ok_and(|v| v == "2"), Ordering::Relaxed);
     POP.store(std::env::var("SS_POP").is_ok_and(|v| v == "1"), Ordering::Relaxed);
     scan::set_a512(std::env::var("SS_A512").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
+    pq::DICT.store(std::env::var("SS_DICT").map_or(true, |v| v != "0"), Ordering::Relaxed);
     output::DIGEST.store(std::env::var("SS_DIGEST").is_ok_and(|v| v == "1"), Ordering::Relaxed);
     let inp = open_all(data);
     // partition counts follow the input size, so a partition's working set
@@ -1756,8 +1802,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let (ws, we) = (inp.window_start, inp.window_end);
     let ev_units = chunks(&inp.events);
     let ck_units = chunks(&inp.clicks);
-    let units: Vec<(bool, usize, usize, usize)> =
-        ev_units.iter().map(|&(f, s, e)| (true, f, s, e)).chain(ck_units.iter().map(|&(f, s, e)| (false, f, s, e))).collect();
+    let units: Vec<(u8, usize, usize, usize)> =
+        ev_units.iter().map(|&(f, s, e)| (0, f, s, e)).chain(ck_units.iter().map(|&(f, s, e)| (1, f, s, e))).collect();
     // input not yet in the page cache: read it ahead, in the order the workers
     // will take it, while links are resolved
     if !READ.load(Ordering::Relaxed) && std::env::var("SS_RA").map_or(true, |v| v != "0") && !mostly_cached(&inp) {
@@ -1776,8 +1822,34 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     // links first: every record below is routed straight to its person
     // room in the person table for the IDs met while parsing (generated data
     // has about one user ID per 15 events; this allows one per 8)
-    let (persons, lk) = rayon::join(|| links(&inp, est_events / 8 + 4096), || lookups(&inp));
+    let ((persons, rest), lk) = rayon::join(|| links(&inp, est_events / 8 + 4096), || lookups(&inp));
     lap("links");
+    // the linked components' smallest names are searched while the files are
+    // parsed: one search item after every few parse units (SS_LB=0: before the parse)
+    let best_units = rest.units();
+    let lb = std::env::var("SS_LB").map_or(true, |v| v != "0");
+    let units: Vec<(u8, usize, usize, usize)> = if !lb || best_units.is_empty() {
+        if !lb {
+            best_units.par_iter().for_each(|&(t, a, b)| rest.best_unit(t, a, b));
+        }
+        units
+    } else {
+        let nev = ev_units.len().max(1);
+        // spread over the first half of the event units
+        let every = (nev / 2 / best_units.len()).max(1);
+        let mut v = Vec::with_capacity(units.len() + best_units.len());
+        let mut bu = best_units.iter();
+        for (k, u) in units.into_iter().enumerate() {
+            v.push(u);
+            if k % every == every - 1 {
+                if let Some(&(t, a, b)) = bu.next() {
+                    v.push((2, t, a, b));
+                }
+            }
+        }
+        v.extend(bu.map(|&(t, a, b)| (2, t, a, b)));
+        v
+    };
     let nthreads = rayon::current_num_threads();
     let nfiles = unsafe { &*FILES.load(Ordering::Relaxed) }.len();
     // room for every event's user ID, at twice a thread's share (spare virtual memory)
@@ -1791,16 +1863,16 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         let mut sink = sinks[t].lock().unwrap();
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
-            let Some(&(is_ev, f, s, e)) = units.get(i) else { break };
-            if is_ev {
-                flow::events_unit(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64);
-            } else {
-                flow::clicks_unit(f, s, e, &lk, &persons, ws, we, &mut sink);
+            let Some(&(kind, f, s, e)) = units.get(i) else { break };
+            match kind {
+                0 => flow::events_unit(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64),
+                1 => flow::clicks_unit(f, s, e, &lk, &persons, ws, we, &mut sink),
+                _ => rest.best_unit(f, s, e),
             }
         }
     });
     let mut sinks: Vec<flow::Sink> = sinks.into_iter().map(|m| m.into_inner().unwrap()).collect();
-    sinks.par_iter_mut().for_each(|s| s.finish());
+    rayon::join(|| sinks.par_iter_mut().for_each(|s| s.finish()), || rest.name_roots(&persons));
     let names: Vec<&'static [u8]> = sinks.iter_mut().map(|s| &*std::mem::take(&mut s.names).leak()).collect();
     NAMES.store(Box::into_raw(Box::new(names)), Ordering::Release);
     lap("parsed");

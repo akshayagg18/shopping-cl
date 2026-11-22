@@ -132,7 +132,7 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
             }
             let n = hi - lo;
             let bytes: usize = parts.iter().flat_map(|p| p.iter()).map(|r| (r.name & 0xFFFF) as usize + 4).sum();
-            let mut ids = Column::new("user_id", Kind::Str, n, bytes);
+            let mut ids = Column::new_dict("user_id", n, bytes);
             let mut day = Column::new("day", Kind::Date, n, n * 4);
             let mut s = Column::new("sessions", Kind::I32, n, n * 4);
             let mut e = Column::new("events", Kind::I32, n, n * 4);
@@ -148,7 +148,8 @@ pub fn write(out: &Path, aggs: Vec<Agg>, lk: &Lookups, info: &OutInfo) {
                             std::arch::x86_64::_mm_prefetch(name_bytes(ahead.name).as_ptr() as *const i8, std::arch::x86_64::_MM_HINT_T0)
                         };
                     }
-                    ids.str(name_bytes(row.name));
+                    // a person's rows are adjacent and share its name ref
+                    ids.str_run(row.name, || name_bytes(row.name));
                     day.i32(row.day);
                     s.i32(row.sessions as i32);
                     e.i32(row.events as i32);
