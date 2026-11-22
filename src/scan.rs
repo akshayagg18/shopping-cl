@@ -585,7 +585,9 @@ fn scan_window<const N: usize>(f: usize, d: &[u8], off: usize, n: usize, s: usiz
                 each(p, &file_bytes(f)[p..end], if ok { Some(&fl) } else { None });
                 break;
             };
-            let line = &data[p - off..end.min(n) - off];
+            // p <= end and the line lies inside the window
+            debug_assert!(p - off <= end.min(n) - off && end.min(n) - off <= data.len());
+            let line = unsafe { data.get_unchecked(p - off..end.min(n) - off) };
             each(p, line, if ok { Some(&fl) } else { None });
             p = end + 1;
             if p >= e || w >= words {

@@ -1393,6 +1393,10 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     // every local index of the partition (a few hundred per partition: cheaper
     // than tracking the range in use per record)
     let (lo, hi) = (0usize, nloc - 1);
+    sc.ev_local.reserve(n);
+    // output cursors held in registers (set_len once at the end)
+    let (evp, lip, cntp) = (evb.as_mut_ptr(), sc.ev_local.as_mut_ptr(), sc.ev_cnt.as_mut_ptr());
+    let mut m = 0usize;
     for (t, s) in sinks.iter().enumerate() {
         let mut i = 0usize;
         let mut dw = 0u64;
@@ -1412,18 +1416,20 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                 if (dw >> (i % 64)) & 1 == 0 {
                     let li = (e.pid >> pbits) as usize;
                     unsafe {
-                        *sc.ev_cnt.get_unchecked_mut(li) += 1;
-                        let len = evb.len();
-                        evb.as_mut_ptr().add(len).write(Ev1 { ts: e.ts, pc: e.pc });
-                        evb.set_len(len + 1);
-                        let len = sc.ev_local.len();
-                        sc.ev_local.as_mut_ptr().add(len).write(li as u32);
-                        sc.ev_local.set_len(len + 1);
+                        *cntp.add(li) += 1;
+                        evp.add(m).write(Ev1 { ts: e.ts, pc: e.pc });
+                        lip.add(m).write(li as u32);
                     }
+                    m += 1;
                 }
                 i += 1;
             }
         }
+    }
+    debug_assert!(m <= n);
+    unsafe {
+        evb.set_len(m);
+        sc.ev_local.set_len(m);
     }
     let n = evb.len();
     if n == 0 {
@@ -1561,7 +1567,7 @@ fn bin_runs(evs: &[Ev1], sc: &mut Scratch) {
         while m != 0 {
             let b = w * 64 + m.trailing_zeros() as usize;
             m &= m - 1;
-            let a = sc.bins[b];
+            let a = unsafe { *sc.bins.get_unchecked(b) };
             unsafe {
                 let l = sc.runs.len();
                 sc.runs.as_mut_ptr().add(l).write(Run { bin: b as u32, min: a.min, max: a.max, n: a.n, rev: a.rev, purch: a.purch != 0 });
@@ -1621,15 +1627,15 @@ fn person_sessions(ctx: &Ctx, name: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg
             if k == runs.len() {
                 break;
             }
-            r = runs[k];
+            r = unsafe { *runs.get_unchecked(k) };
             if r.min as i64 - last > SESSION_GAP {
                 break;
             }
         }
         // attribution window [start - 7d, start]
         // click times are shifted by +CLICK_REACH: ts <= start and ts >= start - 7d
-        while hi < cks.len() && (cks[hi].ts as i64) <= start + CLICK_REACH {
-            let c = cks[hi].camp as usize;
+        while hi < cks.len() && (unsafe { cks.get_unchecked(hi) }.ts as i64) <= start + CLICK_REACH {
+            let c = unsafe { cks.get_unchecked(hi) }.camp as usize;
             if sc.count[c] == 0 {
                 sc.pos[c] = sc.active.len() as u32;
                 sc.active.push(c as u32);
@@ -1637,8 +1643,8 @@ fn person_sessions(ctx: &Ctx, name: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg
             sc.count[c] += 1;
             hi += 1;
         }
-        while lo < hi && (cks[lo].ts as i64) < start {
-            let c = cks[lo].camp as usize;
+        while lo < hi && (unsafe { cks.get_unchecked(lo) }.ts as i64) < start {
+            let c = unsafe { cks.get_unchecked(lo) }.camp as usize;
             sc.count[c] -= 1;
             if sc.count[c] == 0 {
                 let p = sc.pos[c] as usize;
@@ -1665,9 +1671,10 @@ fn person_sessions(ctx: &Ctx, name: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg
         if rev != 0 {
             agg.credit_rev[row + credit] += rev;
         }
+        // every active campaign is < ncamp: row + c stays in the day's row
         let arow = &mut agg.assist[row..row + ctx.ncamp + 1];
         for &c in &sc.active {
-            arow[c as usize] += 1;
+            unsafe { *arow.get_unchecked_mut(c as usize) += 1 };
         }
         d_sess += 1;
         d_evs += n;
@@ -1878,6 +1885,20 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
                 let a = s & !4095;
                 if e > a {
                     unsafe { libc::madvise(d.as_ptr().add(a) as *mut libc::c_void, e - a, libc::MADV_WILLNEED) };
+                }
+            }
+        });
+    }
+    // SS_PR=1: one helper thread maps the input's pages ahead of the workers
+    // (MADV_POPULATE_READ, in unit order), so the parse takes no page faults
+    if std::env::var("SS_PR").is_ok_and(|v| v == "1") {
+        let order: Vec<(usize, usize, usize)> = units.iter().map(|&(_, f, s, e)| (f, s, e)).collect();
+        std::thread::spawn(move || {
+            for (f, s, e) in order {
+                let d = file_bytes(f);
+                let a = s & !4095;
+                if e > a {
+                    unsafe { libc::madvise(d.as_ptr().add(a) as *mut libc::c_void, e - a, 22 /* MADV_POPULATE_READ */) };
                 }
             }
         });

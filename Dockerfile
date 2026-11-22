@@ -1,5 +1,5 @@
 # DIAGNOSTIC image, all profile-guided on rust 1.97.0:
-#   /ssp      "new" = v25 (v24 + AES rounds for long IDs, leaner sessions loop, INT32 where values fit)
+#   /ssp      "new" = v26 (v25 + SS_PR toggle), run with page-mapping variants
 #   /ssp_alt  "alt" = v20 exactly as submitted (0.8001 s)
 #   /ssp_np   "np"  = v24 (linked names during the parse, dictionary Parquet)
 FROM --platform=linux/amd64 rust:1.97.0-slim AS b1
