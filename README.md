@@ -14,12 +14,14 @@ adds almost nothing to the measured time.
    from a shared counter. If the input is not in the page cache (a few pages per file
    checked with `mincore`), a helper thread reads it ahead with `MADV_WILLNEED` in that
    same order while links are being resolved.
-2. **Links first, in one concurrent table.** Every link endpoint is inserted into one
-   open-addressing table with compare-and-swap; a slot's index is the ID's node number.
-   A lock-free union-find (a root only links to a smaller root) joins the nodes, each
-   component is named by its byte-wise smallest ID with a compare-and-swap minimum, and
-   the same table, its values rewritten to `LINKED | name ref`, is the person map. No
-   sorting, scattering or serial pass.
+2. **Links first, then dense person ids.** Every link endpoint is inserted into one
+   open-addressing table with compare-and-swap (the slots taken are listed, so the
+   passes below visit only those). A lock-free union-find (a root only links to a
+   smaller root) joins them, each component is named by its byte-wise smallest ID with a
+   compare-and-swap minimum, and each component gets a dense person id. The table has
+   room for every user ID: an event or click whose ID is new inserts it with a new id
+   (from a per-worker block), named by that ID. Generated data has about one user ID per
+   15 events, so the table stays small.
 3. **Tokenizing.** One fused AVX2 pass per 64 bytes builds the newline bitmap, a bitmap
    of quoting violations (prefix-XOR quote parity: no separator inside quotes, opening
    quotes after a separator, closing quotes before one) and a flat list of separator
@@ -31,20 +33,21 @@ adds almost nothing to the measured time.
    of validated `YYYY-MM-DD` dates; anything unusual falls back to the strict general
    parser (impossible dates, hour 24, second 60, bad offsets are rejected). Short IDs
    are hashed with two AES rounds (a bijection of the zero-padded 16-byte ID).
-5. **One scatter per record.** With persons known up front, each valid event goes
-   straight to its person partition (24-byte record), and every event copy, valid or
-   not, leaves a 16-byte copy record in its `event_id` partition (the hash bits that
-   pick the partition are reused for check bits). Records leave through
-   per-partition write-combining staging areas with non-temporal stores. Person lookups
-   are prefetched 16 lines ahead. An unlinked user's ID is copied into a per-thread name
-   buffer while the line is in cache, so output never reads the event files again.
-6. **Dedup.** Per `event_id` partition, a fingerprint table keeps the earliest-ingested
+5. **One scatter per record.** Each valid event goes straight to its person's
+   partition (person id modulo the partition count) as a 12-byte record (person, time,
+   purchase), and every event copy, valid or not, leaves a 16-byte copy record in its
+   `event_id` partition (the hash bits that pick the partition are reused for check
+   bits). Records leave through per-partition write-combining staging areas with
+   non-temporal stores. Person lookups are prefetched 16 lines ahead.
+6. **Dedup.** Per `event_id` partition, a fingerprint table (cleared by the slots it
+   wrote, not refilled) keeps the earliest-ingested
    copy (dedup before validation: an invalid winner kills its valid copies) and marks
    every losing copy's event record dead in a bitmap. Click copies are identical
    (`rules.md`), so they need no dedup.
-7. **Sessions without sorting.** Inside each person partition (largest first), events
-   are grouped per person with one counting pass (8-byte events and 16-byte clicks from
-   then on, so a partition stays in L2); each person's events are binned by half hour
+7. **Sessions without sorting.** Inside each person partition (largest first), a
+   person's local index is its id divided by the partition count, so events are grouped
+   per person with one counting pass and no hashing (8-byte events and 16-byte clicks
+   from then on, so a partition stays in L2); each person's events are binned by half hour
    into a bitmap of occupied bins. Two events in one bin are never more than 30 minutes
    apart, so sessions are cut between bins only (by each bin's min and max). A sliding 7-day click window gives the
    credited click (latest `ts`, then smallest `click_id`) and the distinct assisting
