@@ -253,12 +253,11 @@ fn child_bin(exe: &Path, tag: &str, data: &Path, out: &Path, threads: usize, ext
     let dg = if dg.is_empty() { String::new() } else { format!(" D[{}]", dg.join(" ")) };
     let ok = if st != 0 { format!(" EXIT={st} {}", err.lines().rev().take(3).collect::<Vec<_>>().join(" / ")) } else { String::new() };
     format!(
-        "{tag} {wall:.0}/{total:.0}: {} u{:.2} s{:.2} rss{}M flt{}k{sub}{dg}{ok}",
+        "{tag} {wall:.0}/{total:.0}: {} u{:.1} s{:.1} {}G{sub}{dg}{ok}",
         d.join(" "),
         tv(ru.ru_utime),
         tv(ru.ru_stime),
-        ru.ru_maxrss / 1024,
-        ru.ru_minflt / 1000
+        ru.ru_maxrss / (1 << 20)
     )
 }
 
@@ -509,13 +508,14 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let dev_gb = dir_gb(data);
-    eprintln!("D29 (alt = v18 as submitted; others v18b = v18 + zeroed person map, partition variants) {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
-    eprintln!("cols: wall/int ms: open links parse dedup sess write | user sys rss faults | digests");
+    eprintln!("D31 alt=v18 np=v20(D30) new=v20e {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
+    eprintln!("wall/int: open links parse dedup sess write | user sys GB");
     let dg = |k: u64, line: &str, base: Option<(u64, u64)>| -> String {
         match (digests(line), base) {
             (Some((u, c)), Some((bu, bc))) => {
                 let ok = u == bu.wrapping_mul(k) && c == bc.wrapping_mul(k);
-                format!("{line} => {}", if ok { format!("EXACT x{k}") } else { format!("MISMATCH x{k}") })
+                let l = line.split(" D[").next().unwrap_or(line);
+                format!("{l} {}", if ok { format!("EXACT x{k}") } else { format!("MISMATCH x{k} [{line}]") })
             }
             _ => line.to_string(),
         }
@@ -546,31 +546,27 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
         true
     };
     eprintln!("{}", child("alt-dev", data, &ob, threads, &[]));
-    run_k(2, &[("x2", &[])]);
-    let round: [(&str, &[(&str, &str)]); 5] = [
-        ("alt", &[]),
-        ("base", &[]),
-        ("p9d10", &[("SS_P2B", "9")]),
-        ("p10d9", &[("SS_PDB", "9")]),
-        ("p9d9", &[("SS_P2B", "9"), ("SS_PDB", "9")]),
-    ];
-    let checks: [(&str, &[(&str, &str)]); 1] = [("p9d9-chk", &[("SS_P2B", "9"), ("SS_PDB", "9")])];
-    let plan = |rounds: usize| {
-        let mut v: Vec<(&str, &[(&str, &str)])> = vec![("warm", &[])];
-        for r in 0..rounds {
-            for i in 0..round.len() {
-                v.push(round[(i + r) % round.len()]);
-            }
-        }
-        v.extend_from_slice(&checks);
-        v
-    };
     let kb: usize = std::env::var("SS_DIAG_BIG").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
     let km: usize = std::env::var("SS_DIAG_MID").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
-    run_k(km, &plan(3));
-    if !run_k(kb, &plan(1)) {
-        run_k(kb * 2 / 3, &plan(1));
+    let v60: [(&str, &[(&str, &str)]); 8] = [("warm", &[]), ("alt", &[]), ("new", &[]), ("np", &[]), ("alt", &[]), ("new", &[]), ("np", &[]), ("new-chk", &[])];
+    if !run_k(kb, &v60) {
+        run_k(kb * 2 / 3, &v60);
     }
+    let v20: [(&str, &[(&str, &str)]); 12] = [
+        ("warm", &[]),
+        ("alt", &[]),
+        ("new", &[]),
+        ("np", &[]),
+        ("alt", &[]),
+        ("new", &[]),
+        ("np", &[]),
+        ("alt", &[]),
+        ("new", &[]),
+        ("np", &[]),
+        ("p9d10", &[("SS_P2B", "9")]),
+        ("new-chk", &[]),
+    ];
+    run_k(km, &v20);
     let _ = std::fs::remove_dir_all(&ob);
     eprintln!("done {:.1}s", t0.elapsed().as_secs_f64());
 }
