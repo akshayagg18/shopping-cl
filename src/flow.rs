@@ -439,6 +439,8 @@ thread_local! {
 /// Keep the earliest-ingested copy of every event id in partition `b`; mark
 /// the event records of all other copies dead.
 pub fn dedup_part(b: usize, sinks: &[Sink], dead: &Dead, tokens: &crate::event_token::Tokens) {
+    static AHEAD:std::sync::LazyLock<usize>=std::sync::LazyLock::new(||std::env::var("SS_PREFETCH_ID").ok().and_then(|s|s.parse::<usize>().ok()).unwrap_or(16).min(128));
+    let ahead=*AHEAD;
     let span=profile::Span::new("dedup_bucket",b);
     DEDUP2.with(|cell| {
         let mut guard = cell.borrow_mut();
@@ -456,6 +458,7 @@ pub fn dedup_part(b: usize, sinks: &[Sink], dead: &Dead, tokens: &crate::event_t
         sc.table.resize(cap, 0);
         let (buf, table) = (&sc.buf, &mut sc.table);
         for g in 0..n {
+            if ahead!=0 && g+ahead<n {tokens.prefetch(unsafe {buf.get_unchecked(g+ahead)}.eid());}
             let e = unsafe { buf.get_unchecked(g) };
             let identity=tokens.identity(e.eid());
             let hash=eid_hash(identity);

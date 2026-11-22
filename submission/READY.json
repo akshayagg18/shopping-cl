@@ -1,8 +1,6 @@
 {
-  "status": "pending_current_generator_large_and_docker_validation",
+  "status": "pending_combined_validation",
   "official_submitted": false,
-  "official_runtime_seconds": null,
   "sub_0_4_proven": false,
-  "generator_zip_sha256": "78f973f75d14b48e792628284f19c75de71fa597d20952e16a9ced93c78bee4a",
-  "note": "Previous935ms evidence used an older generator. Do not infer official performance from it."
+  "previous_validated_source": "ae0cf75dfbcc7eead8c68e20b09ad4ad6cb962c2"
 }

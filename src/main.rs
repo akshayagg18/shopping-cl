@@ -1062,6 +1062,14 @@ struct Ck {
     camp: u32,
 }
 
+// Once grouped by person, repeating that person's key in every row is unused.
+#[derive(Clone,Copy,Default)]
+#[repr(C)]
+struct EvBody {ts:u32,pc:u32}
+#[derive(Clone,Copy,Default)]
+#[repr(C)]
+struct ClickBody {cref:u64,ts:u32,camp:u32}
+
 // ---------------------------------------------------------------- aggregation
 
 pub struct UserRow {
@@ -1101,15 +1109,16 @@ struct Scratch<'s> {
     // per-bucket grouping
     table: Vec<(u64, u32)>,
     used: Vec<u32>,
+    person_keys:Vec<u64>,
     ev_cnt: Vec<u32>,
     ck_cnt: Vec<u32>,
     ev_local: Vec<u32>,
     ck_local: Vec<u32>,
-    evs_sorted: Vec<Ev2>,
-    cks_sorted: Vec<Ck>,
+    evs_sorted: Vec<EvBody>,
+    cks_sorted: Vec<ClickBody>,
     radix_tmp: Vec<Ev2>,
     bin_cnt: Vec<u32>,
-    tmp_ev: Vec<Ev2>,
+    tmp_ev: Vec<EvBody>,
     tmp_id: Vec<u32>,
 }
 
@@ -1124,6 +1133,7 @@ impl Scratch<'_> {
             cat: vec![0; 256],
             table: Vec::new(),
             used: Vec::new(),
+            person_keys:Vec::new(),
             ev_cnt: Vec::new(),
             ck_cnt: Vec::new(),
             ev_local: Vec::new(),
@@ -1197,6 +1207,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evin: &[Ev2], ckin
     let mut mask = cap - 1;
     sc.used.clear();
     sc.ev_cnt.clear();
+    sc.person_keys.clear();
     sc.ev_local.clear();
     let slot_of = |k: u64, mask: usize| (k.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 32) as usize & mask;
     for e in evin.iter() {
@@ -1207,6 +1218,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evin: &[Ev2], ckin
                 *t = (e.key, sc.ev_cnt.len() as u32);
                 sc.used.push(s as u32);
                 sc.ev_cnt.push(0);
+                sc.person_keys.push(e.key);
                 break t.1;
             }
             if t.0 == e.key {
@@ -1298,7 +1310,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evin: &[Ev2], ckin
     unsafe {
         for (e, &id) in evin.iter().zip(&sc.ev_local) {
             let at = sc.bin_cnt.get_unchecked_mut(bin_of(e.ts));
-            sc.tmp_ev.as_mut_ptr().add(*at as usize).write(*e);
+            sc.tmp_ev.as_mut_ptr().add(*at as usize).write(EvBody{ts:e.ts,pc:e.pc});
             sc.tmp_id.as_mut_ptr().add(*at as usize).write(id);
             *at += 1;
         }
@@ -1316,7 +1328,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evin: &[Ev2], ckin
     for (c, &id) in ckin.iter().zip(&sc.ck_local) {
         if id != u32::MAX {
             let at = &mut ck_pos[id as usize];
-            unsafe { sc.cks_sorted.as_mut_ptr().add(*at as usize).write(*c); }
+            unsafe { sc.cks_sorted.as_mut_ptr().add(*at as usize).write(ClickBody{cref:c.cref,ts:c.ts,camp:c.camp}); }
             *at += 1;
         }
     }
@@ -1333,7 +1345,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evin: &[Ev2], ckin
         if ck.len() > 1 {
             ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
         }
-        person_sessions(ctx, ev, ck, agg, sc);
+        person_sessions(ctx, sc.person_keys[pid], ev, ck, agg, sc);
     }
     sc.evs_sorted = evs;
     sc.cks_sorted = cks;
@@ -1356,7 +1368,7 @@ struct Run {
 }
 
 #[inline(always)]
-fn run_at(evs: &[Ev2], k: usize) -> Run {
+fn run_at(evs: &[EvBody], k: usize) -> Run {
     let b = bin_of(evs[k].ts);
     let mut r = Run { end: k, min: u32::MAX, max: 0, n: 0, rev: 0, purch: false };
     while r.end < evs.len() && bin_of(evs[r.end].ts) == b {
@@ -1375,9 +1387,7 @@ fn run_at(evs: &[Ev2], k: usize) -> Run {
 
 /// `evs`: one person's events grouped by half-hour bin, bins ascending (order
 /// inside a bin is arbitrary). `cks`: the person's clicks by (ts, click_id).
-fn person_sessions(ctx: &Ctx, evs: &[Ev2], cks: &[Ck], agg: &mut Agg, sc: &mut Scratch) {
-    let key = evs[0].key;
-    let name = key;
+fn person_sessions(ctx: &Ctx,name:u64, evs: &[EvBody], cks: &[ClickBody], agg: &mut Agg, sc: &mut Scratch) {
     let (mut lo, mut hi) = (0usize, 0usize);
     let mut cur_day: i64 = i64::MIN;
     let (mut d_sess, mut d_evs, mut d_rev) = (0u32, 0u32, 0i64);
@@ -1614,8 +1624,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let est_events = (ev_bytes / 75).max(1);
     let auto = |per: usize| (usize::BITS - 1 - (est_events / per).max(1).leading_zeros()).clamp(9, 12);
     let envbits = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(d).clamp(6, 14);
-    P2B.store(envbits("SS_P2B", auto(P2_PER)), Ordering::Relaxed);
-    flow::PDB.store(envbits("SS_PDB", auto(PD_PER)), Ordering::Relaxed);
+    P2B.store(envbits("SS_P2B", auto(P2_PER).min(10)), Ordering::Relaxed);
+    flow::PDB.store(envbits("SS_PDB", auto(PD_PER).min(10)), Ordering::Relaxed);
     lap("open");
     let (ws, we) = (inp.window_start, inp.window_end);
     let ev_units = chunks(&inp.events);

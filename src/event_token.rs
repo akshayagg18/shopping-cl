@@ -150,6 +150,22 @@ impl Tokens {
         if !self.refs || a<ESC || b<ESC {return false;}
         self.bytes(a)==self.bytes(b)
     }
+    /// Hint only: uncommon time wrappers and owned entries are skipped.
+    #[inline]
+    pub fn prefetch(&self,stored:u64) {
+        #[cfg(target_arch="x86_64")]
+        if self.refs && stored>=ESC && stored<RARE_TIME && stored&63!=0 {
+            let len=(stored&63) as usize;
+            let offset=((stored&((1<<41)-1))>>6) as usize;
+            let ptr=std::ptr::with_exposed_provenance::<i8>(self.base+offset);
+            // Same source-field bounds and lifetime as bytes(); never read or
+            // write through this pointer, and never step beyond its last byte.
+            unsafe {
+                std::arch::x86_64::_mm_prefetch(ptr,std::arch::x86_64::_MM_HINT_T0);
+                std::arch::x86_64::_mm_prefetch(ptr.add(len-1),std::arch::x86_64::_MM_HINT_T0);
+            }
+        }
+    }
     #[inline(always)]
     pub fn seconds(&self,stored:u64,seconds:u32)->i64 {
         if stored<RARE_TIME {seconds as i64} else {self.times.lock().unwrap()[(stored&((1<<41)-1)) as usize].1}

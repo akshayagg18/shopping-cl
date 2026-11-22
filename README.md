@@ -1,3 +1,5 @@
+> Experimental combined candidate: scanner inlining,16-record ID prefetch,8/16-byte grouped bodies and at most1024 automatic partitions. Fresh Docker/20M/60M validation is pending. Sub-0.4 is unproven. The previous validated source is ae0cf75dfbcc7eead8c68e20b09ad4ad6cb962c2.
+
 > Current-generator candidate: opaque byte IDs, exact source-reference event deduplication,
 > sharded fallback dictionaries, and per-worker exact user-ID caches. The earlier
 > 935 ms / 20M measurement below used the previous generator. It is not evidence

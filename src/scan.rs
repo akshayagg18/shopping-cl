@@ -254,7 +254,7 @@ pub fn scan_records<const N: usize>(f: usize, s: usize, e: usize, mut each: impl
     }
 }
 
-#[inline(never)]
+#[inline(always)]
 fn scan_block<const N: usize>(f: usize, s: usize, e: usize, each: &mut impl FnMut(usize, &'static [u8], Option<&Flds<N>>)) {
     let data = file_bytes(f);
     let n = data.len();
