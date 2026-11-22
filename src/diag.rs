@@ -192,7 +192,13 @@ fn rusage() -> String {
 /// deltas, user/sys seconds.
 fn child(tag: &str, data: &Path, out: &Path, threads: usize, extra: &[(&str, &str)]) -> String {
     // a tag starting with "alt" runs the other build shipped in the image
-    let exe = if tag.starts_with("alt") { std::path::PathBuf::from("/ssp_alt") } else { std::env::current_exe().unwrap() };
+    let exe = if tag.starts_with("alt") {
+        std::path::PathBuf::from("/ssp_alt")
+    } else if tag.starts_with("np") {
+        std::path::PathBuf::from("/ssp_np")
+    } else {
+        std::env::current_exe().unwrap()
+    };
     child_bin(&exe, tag, data, out, threads, extra)
 }
 
@@ -503,7 +509,7 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let dev_gb = dir_gb(data);
-    eprintln!("D24 (v16b + toggles: a1 = AVX-512 masks on ymm, a2 = on zmm, pin = workers pinned) {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
+    eprintln!("D25 (alt = v16b as scored, pgo = v16b+PGO on rust 1.97.0, np = same without PGO) {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
     eprintln!("cols: wall/int ms: open links parse dedup sess write | user sys rss faults | digests");
     let dg = |k: u64, line: &str, base: Option<(u64, u64)>| -> String {
         match (digests(line), base) {
@@ -539,19 +545,14 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
         let _ = std::fs::remove_dir_all(&big);
         true
     };
-    run_k(2, &[("x2", &[]), ("x2-a2pin", &[("SS_A512", "2"), ("SS_PIN", "1")])]);
-    let round: [(&str, &[(&str, &str)]); 5] = [
-        ("base", &[]),
-        ("a1", &[("SS_A512", "1")]),
-        ("a2", &[("SS_A512", "2")]),
-        ("pin", &[("SS_PIN", "1")]),
-        ("a1pin", &[("SS_A512", "1"), ("SS_PIN", "1")]),
-    ];
-    let checks: [(&str, &[(&str, &str)]); 2] = [("a2-chk", &[("SS_A512", "2")]), ("a1pin-chk", &[("SS_A512", "1"), ("SS_PIN", "1")])];
+    eprintln!("{}", child("alt-dev", data, &ob, threads, &[]));
+    eprintln!("{}", child("np-dev", data, &ob, threads, &[("SS_DIGEST", "1")]));
+    run_k(2, &[("x2", &[])]);
+    let round: [(&str, &[(&str, &str)]); 3] = [("alt", &[]), ("pgo", &[]), ("np", &[])];
+    let checks: [(&str, &[(&str, &str)]); 1] = [("np-chk", &[])];
     let plan = |rounds: usize| {
         let mut v: Vec<(&str, &[(&str, &str)])> = vec![("warm", &[])];
         for r in 0..rounds {
-            // rotate the order each round
             for i in 0..round.len() {
                 v.push(round[(i + r) % round.len()]);
             }
@@ -564,7 +565,7 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     if !run_k(kb, &plan(2)) {
         run_k(kb * 2 / 3, &plan(2));
     }
-    run_k(km, &plan(3));
+    run_k(km, &plan(4));
     let _ = std::fs::remove_dir_all(&ob);
     eprintln!("done {:.1}s", t0.elapsed().as_secs_f64());
 }
