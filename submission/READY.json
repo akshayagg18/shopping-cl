@@ -4,15 +4,19 @@
   "official_submitted": false,
   "official_runtime_seconds": null,
   "sub_0_4_proven": false,
-  "run_url": "https://github.com/akshayagg18/shopping-cl/actions/runs/44993593990",
+  "run_url": "https://github.com/akshayagg18/shopping-cl/actions/runs/44995086022",
   "generator_zip_sha256": "78f973f75d14b48e792628284f19c75de71fa597d20952e16a9ced93c78bee4a",
   "validation": "Fresh Docker,36 fixtures,current1M,20M and two60M seeds exact; native units/fuzz/adversarial passed",
   "retained_hosted_timing": {
     "events": 60000000,
     "seed": 20261124,
-    "baseline_median_ms": 7298.752424000099,
-    "candidate_median_ms": 6965.623783000069,
-    "n": 3
+    "baseline_median_ms": 5958.229998999968,
+    "candidate_median_ms": 5375.5173929999955,
+    "n": 3,
+    "hardware": "AMD EPYC9V45,2 physical/4 SMT CPUs,16GiB"
   },
-  "caveat": "Reporter shadowing overwrote earlier study summaries; correctness passed but20M/first60M hosted distributions are not retained. Corrected rerun pending. Official sign-in is pending user response."
+  "caveat": "Current-generator correctness and repeat measurements passed at20M and two60M seeds. Independent hardware is not official hardware; no official score or sub-0.4 result. Sign-in setup awaits user response.",
+  "corrected_retained_all_studies": true,
+  "hosted_20m_median_ms": 1682.7436840000018,
+  "hosted_20m_baseline_median_ms": 1981.9294779999836
 }

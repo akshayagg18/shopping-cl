@@ -66,5 +66,7 @@ separate locations, owned/ref equality, and0/1/63/64/65537-byte fields.
 
 Default candidate settings enable these changes. Experimental controls:
 `SS_EVENT_REFS=0`, `SS_ID_LOCAL=0`, `SS_ID_SHARDS=1`, `SS_EVENT_SHARDS=1`.
-Normal release diagnostics remain compiled out. Full20M/60M and fresh Docker
-validation are required before recommending this source to the official scorer.
+Normal release diagnostics remain compiled out. Current-generator20M, two60M
+seeds and fresh Docker validation subsequently passed for source ae0cf75; see
+FIRST_SUBMISSION_REPORT.md and the corrected run44995086022 for all distributions.
+The official score and requested sub-0.4 target remain unproven.

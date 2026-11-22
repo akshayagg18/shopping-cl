@@ -1,7 +1,7 @@
 # Current measured candidate — Shopping Sessions
 
 **Validated source: ae0cf75dfbcc7eead8c68e20b09ad4ad6cb962c2.**
-[Fresh Docker and current-generator validation](https://github.com/akshayagg18/shopping-cl/actions/runs/44993593990).
+[Fresh Docker and current-generator validation](https://github.com/akshayagg18/shopping-cl/actions/runs/44995086022).
 No official submission or runtime exists. **Sub-0.4 seconds is unproven.**
 The user-reported1.73-second practice baseline has no scorer receipt in this workspace.
 
@@ -93,7 +93,7 @@ substantial variance and only three samples. Do not extrapolate the larger local
 relative gain across hardware. A reporter variable-shadowing bug overwrote the
 20M and first60M timing summaries under a stage-name key. Their correctness
 checks passed, but those timing distributions are unavailable in the retained
-receipt. The bug was fixed and another independent run is underway. Raw retained
+receipt. The corrected rerun completed and retained every study, as recorded below. Raw retained
 receipt is experiments/results/opaque-hosted-result.json, keyed released;
 its manifest unambiguously identifies the final seed. No missing numbers were
 reconstructed or claimed.
@@ -115,3 +115,24 @@ net median gain was2.7%, similar to prefetch and noisier. Next tests evaluate
 all-reference IDs and valid-F1 ingestion decoding, then select only measured
 wins and retest unseen final-size seeds. Repository size remains below50MB;
 no generated datasets are committed.
+
+## Corrected independent receipt
+
+The reporting fix preserved every dataset. Source remains exactly ae0cf75.
+Fresh runner AMD EPYC9V45,2 physical/4 SMT CPUs,16GiB,no swap; pinned current
+generator, compiler and static build. All direct and sandbox comparisons passed.
+
+|Input / seed|n each|D2 median ms|Prior exact median ms|Candidate median ms|Candidate mean / SD / min / max ms|
+|---|---:|---:|---:|---:|---|
+|20m / 20261123|7|1981.93|4304.45|1682.74|1674.20 / 41.58 / 1590.45 / 1728.27|
+|60m / 20261123|3|5872.20|15511.35|5399.00|5399.47 / 34.00 / 5365.72 / 5433.71|
+|60m-fresh / 20261124|3|5958.23|14873.69|5375.52|5435.47 / 127.17 / 5349.36 / 5581.53|
+
+The candidate median is15.1% below the frozen baseline at20M and8.1% /9.8%
+below it on the two60M seeds on this host. These distributions are distinct from
+the earlier EPYC7763 run and the local Xeon VM; they are not combined. Candidate
+20M stage medians: links138.0ms, parse1043.6, dedup194.2, sessions219.3, output55.6,
+release17.4. Final-size peak RSS was9.31 /9.43GiB, versus D2's13.48 /13.72GiB.
+Full samples, hardware, manifests, asset/artifact hashes and resource counters:
+`experiments/results/opaque-hosted-v2-result.json`. This is an independently
+measured improvement, not an official score or a proven sub-0.4 result.

@@ -1,0 +1,342 @@
+{
+  "success": true,
+  "candidate": "ae0cf75dfbcc7eead8c68e20b09ad4ad6cb962c2",
+  "baseline": "d2dc441e6bed67a57572a7c1f12b06dad7f163cc",
+  "official_score": false,
+  "run_url": "https://github.com/akshayagg18/shopping-cl/actions/runs/44995086022",
+  "started_utc": "2026-11-22T06:44:47.070040+00:00",
+  "prior": "fef07368caf2e161fbf91dbf67e8176574fcfaa9",
+  "measurements": {
+    "20m": {
+      "hosted-baseline": {
+        "n": 7,
+        "median_ms": 1981.9294779999836,
+        "mean_ms": 1974.0027092857092,
+        "sd_ms": 74.8289478520537,
+        "min_ms": 1856.8577089999962,
+        "max_ms": 2106.0751210000035,
+        "samples_ms": [
+          1981.9294779999836,
+          1929.1793649999818,
+          1856.8577089999962,
+          1970.6903109999985,
+          1990.3609529999926,
+          1982.9260280000085,
+          2106.0751210000035
+        ],
+        "peak_rss_kib": 4612732,
+        "user_ms": 5828.077,
+        "system_ms": 798.78,
+        "major_faults": 0,
+        "minor_faults": 210478,
+        "voluntary_cs": 375,
+        "involuntary_cs": 1169,
+        "stage_median_ms": {
+          "open": 101.3,
+          "written": 108.10000000000014,
+          "sessionized": 1701.7
+        },
+        "binary_sha256": "f7e8a5ba3108f4cdec3ba9ac54613d50af286afaab52da6f428e1f06138e4be1"
+      },
+      "hosted-prior": {
+        "n": 7,
+        "median_ms": 4304.44578800001,
+        "mean_ms": 4316.381109999993,
+        "sd_ms": 86.95172902997533,
+        "min_ms": 4183.249348000004,
+        "max_ms": 4433.317246999991,
+        "samples_ms": [
+          4183.249348000004,
+          4433.317246999991,
+          4298.130090999962,
+          4402.055969999992,
+          4304.44578800001,
+          4244.880088000002,
+          4348.589237999988
+        ],
+        "peak_rss_kib": 3471560,
+        "user_ms": 9270.356,
+        "system_ms": 2491.058,
+        "major_faults": 0,
+        "minor_faults": 49618,
+        "voluntary_cs": 331671,
+        "involuntary_cs": 731,
+        "stage_median_ms": {
+          "dedup": 50.80000000000018,
+          "sessionized": 219.0999999999999,
+          "open": 1.5,
+          "released": 17.5,
+          "parsed": 3486.6000000000004,
+          "written": 56.09999999999991,
+          "links": 232.6
+        },
+        "binary_sha256": "afae337fcd035d61f738ec0f5b7209d8f309f90c19fceb3622ccab6056d87f10"
+      },
+      "hosted-candidate": {
+        "n": 7,
+        "median_ms": 1682.7436840000018,
+        "mean_ms": 1674.2031237142783,
+        "sd_ms": 41.5824265025731,
+        "min_ms": 1590.4467320000322,
+        "max_ms": 1728.2733939999844,
+        "samples_ms": [
+          1674.6504919999552,
+          1669.2451060000053,
+          1684.9077809999926,
+          1682.7436840000018,
+          1590.4467320000322,
+          1728.2733939999844,
+          1689.1546769999763
+        ],
+        "peak_rss_kib": 3262232,
+        "user_ms": 6175.325,
+        "system_ms": 231.87,
+        "major_faults": 0,
+        "minor_faults": 26844,
+        "voluntary_cs": 1126,
+        "involuntary_cs": 1070,
+        "stage_median_ms": {
+          "dedup": 194.20000000000005,
+          "sessionized": 219.29999999999995,
+          "open": 1.5,
+          "released": 17.40000000000009,
+          "parsed": 1043.6,
+          "written": 55.600000000000136,
+          "links": 138.0
+        },
+        "binary_sha256": "33873df6d6590f3b8322b141fbb0fdae79cd60f4fef4207c7162df14a8de551d"
+      },
+      "seed": 20261123,
+      "manifest": {
+        "window_start": "2028-10-16T00:00:00Z",
+        "window_end": "2028-10-30T00:00:00Z"
+      },
+      "exact_output_comparison": "passed",
+      "input_csv_bytes": 2033398100,
+      "candidate_sandbox_comparison": "passed"
+    },
+    "60m": {
+      "hosted-baseline": {
+        "n": 3,
+        "median_ms": 5872.201422999979,
+        "mean_ms": 5880.774007333343,
+        "sd_ms": 42.167398946352094,
+        "min_ms": 5843.551594000019,
+        "max_ms": 5926.569005000033,
+        "samples_ms": [
+          5843.551594000019,
+          5926.569005000033,
+          5872.201422999979
+        ],
+        "peak_rss_kib": 14131852,
+        "user_ms": 18506.129,
+        "system_ms": 1815.45,
+        "major_faults": 0,
+        "minor_faults": 182960,
+        "voluntary_cs": 780,
+        "involuntary_cs": 2994,
+        "stage_median_ms": {
+          "open": 309.4,
+          "written": 311.3000000000002,
+          "sessionized": 5154.0
+        },
+        "binary_sha256": "f7e8a5ba3108f4cdec3ba9ac54613d50af286afaab52da6f428e1f06138e4be1"
+      },
+      "hosted-prior": {
+        "n": 3,
+        "median_ms": 15511.352403000046,
+        "mean_ms": 15546.751873333316,
+        "sd_ms": 180.43229530279788,
+        "min_ms": 15386.642802999973,
+        "max_ms": 15742.26041399993,
+        "samples_ms": [
+          15742.26041399993,
+          15511.352403000046,
+          15386.642802999973
+        ],
+        "peak_rss_kib": 10481152,
+        "user_ms": 32565.857,
+        "system_ms": 7865.862,
+        "major_faults": 0,
+        "minor_faults": 138443,
+        "voluntary_cs": 1145531,
+        "involuntary_cs": 2707,
+        "stage_median_ms": {
+          "dedup": 193.10000000000036,
+          "sessionized": 714.6000000000004,
+          "open": 1.6,
+          "released": 58.5,
+          "parsed": 12771.1,
+          "written": 168.5,
+          "links": 812.3
+        },
+        "binary_sha256": "afae337fcd035d61f738ec0f5b7209d8f309f90c19fceb3622ccab6056d87f10"
+      },
+      "hosted-candidate": {
+        "n": 3,
+        "median_ms": 5398.999372000048,
+        "mean_ms": 5399.47392900001,
+        "sd_ms": 33.99747364680046,
+        "min_ms": 5365.716217999989,
+        "max_ms": 5433.706196999992,
+        "samples_ms": [
+          5433.706196999992,
+          5365.716217999989,
+          5398.999372000048
+        ],
+        "peak_rss_kib": 9757460,
+        "user_ms": 19685.061999999998,
+        "system_ms": 673.838,
+        "major_faults": 0,
+        "minor_faults": 74473,
+        "voluntary_cs": 1835,
+        "involuntary_cs": 2885,
+        "stage_median_ms": {
+          "dedup": 667.9000000000001,
+          "sessionized": 624.5999999999995,
+          "open": 1.5,
+          "released": 56.599999999999454,
+          "parsed": 3379.4,
+          "written": 169.20000000000073,
+          "links": 479.5
+        },
+        "binary_sha256": "33873df6d6590f3b8322b141fbb0fdae79cd60f4fef4207c7162df14a8de551d"
+      },
+      "seed": 20261123,
+      "manifest": {
+        "window_start": "2028-10-16T00:00:00Z",
+        "window_end": "2028-10-30T00:00:00Z"
+      },
+      "exact_output_comparison": "passed",
+      "input_csv_bytes": 6094665387,
+      "candidate_sandbox_comparison": "passed"
+    },
+    "60m-fresh": {
+      "hosted-baseline": {
+        "n": 3,
+        "median_ms": 5958.229998999968,
+        "mean_ms": 6028.438479999977,
+        "sd_ms": 192.2209244379111,
+        "min_ms": 5881.191518999913,
+        "max_ms": 6245.89392200005,
+        "samples_ms": [
+          5958.229998999968,
+          5881.191518999913,
+          6245.89392200005
+        ],
+        "peak_rss_kib": 14383316,
+        "user_ms": 18211.911,
+        "system_ms": 1756.304,
+        "major_faults": 0,
+        "minor_faults": 184684,
+        "voluntary_cs": 490,
+        "involuntary_cs": 3154,
+        "stage_median_ms": {
+          "open": 343.1,
+          "written": 266.60000000000036,
+          "sessionized": 5226.5
+        },
+        "binary_sha256": "f7e8a5ba3108f4cdec3ba9ac54613d50af286afaab52da6f428e1f06138e4be1"
+      },
+      "hosted-prior": {
+        "n": 3,
+        "median_ms": 14873.689831999967,
+        "mean_ms": 14940.80491766666,
+        "sd_ms": 377.19359969572713,
+        "min_ms": 14601.67400399996,
+        "max_ms": 15347.050917000048,
+        "samples_ms": [
+          14873.689831999967,
+          15347.050917000048,
+          14601.67400399996
+        ],
+        "peak_rss_kib": 10736624,
+        "user_ms": 30240.811999999998,
+        "system_ms": 7969.411,
+        "major_faults": 0,
+        "minor_faults": 144939,
+        "voluntary_cs": 1138218,
+        "involuntary_cs": 2273,
+        "stage_median_ms": {
+          "dedup": 198.6999999999989,
+          "sessionized": 692.3000000000011,
+          "open": 1.7,
+          "released": 74.19999999999891,
+          "parsed": 12313.1,
+          "written": 164.0,
+          "links": 730.8
+        },
+        "binary_sha256": "afae337fcd035d61f738ec0f5b7209d8f309f90c19fceb3622ccab6056d87f10"
+      },
+      "hosted-candidate": {
+        "n": 3,
+        "median_ms": 5375.5173929999955,
+        "mean_ms": 5435.467957000014,
+        "sd_ms": 127.16878437320617,
+        "min_ms": 5349.355569000068,
+        "max_ms": 5581.53090899998,
+        "samples_ms": [
+          5375.5173929999955,
+          5349.355569000068,
+          5581.53090899998
+        ],
+        "peak_rss_kib": 9884468,
+        "user_ms": 19598.173,
+        "system_ms": 693.9639999999999,
+        "major_faults": 0,
+        "minor_faults": 80734,
+        "voluntary_cs": 1833,
+        "involuntary_cs": 3442,
+        "stage_median_ms": {
+          "dedup": 721.2000000000003,
+          "sessionized": 601.8000000000002,
+          "open": 1.8,
+          "released": 75.90000000000055,
+          "parsed": 3331.0,
+          "written": 177.19999999999982,
+          "links": 453.59999999999997
+        },
+        "binary_sha256": "33873df6d6590f3b8322b141fbb0fdae79cd60f4fef4207c7162df14a8de551d"
+      },
+      "seed": 20261124,
+      "manifest": {
+        "window_start": "2025-02-12T00:00:00Z",
+        "window_end": "2025-02-26T00:00:00Z"
+      },
+      "exact_output_comparison": "passed",
+      "input_csv_bytes": 6230703912,
+      "candidate_sandbox_comparison": "passed"
+    }
+  },
+  "hardware": {
+    "affinity": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "cpu_model": "AMD EPYC 9V45 96-Core Processor",
+    "memory": {
+      "MemTotal": "16366628 kB",
+      "SwapTotal": "0 kB",
+      "SwapFree": "0 kB"
+    },
+    "cpu_max": "unavailable",
+    "memory_max": "unavailable"
+  },
+  "topology": "CPU CORE SOCKET NODE L1d:L1i:L2:L3\n  0    0      0    0 0:0:0:0\n  1    0      0    0 0:0:0:0\n  2    1      0    0 1:1:1:0\n  3    1      0    0 1:1:1:0\n",
+  "baseline_build_s": 93.618169628,
+  "baseline_image": "sha256:f95407df41bf15c1262b8fc723ef1bf802eb04df954d2b6c33c07f5fcc6646ff",
+  "prior_build_s": 12.338597133000007,
+  "prior_image": "sha256:e1345a6ed3c41ab7d583b2452ca66d5a7b90bc83d9af8f1b6c65e27361afb399",
+  "candidate_build_s": 13.474627097999985,
+  "candidate_image": "sha256:9b15fbcc95a2a664d9e4987c6350fecf2fa61cfe34e4131c14566850922496ae",
+  "asset_sha256": {
+    "generator.zip": "78f973f75d14b48e792628284f19c75de71fa597d20952e16a9ced93c78bee4a",
+    "starter-polars.zip": "0faa7a2cb78f78682f606f88748cdf7290622db2ee55a71261091f3e01392d60",
+    "dev-answer.zip": "c2439e0e2e7456d721852814e9928e077648803d5c57a1760a40c7d3b0864d20"
+  },
+  "generator_zip_sha256": "78f973f75d14b48e792628284f19c75de71fa597d20952e16a9ced93c78bee4a",
+  "rules_sha256": "90e1132a605d762423ba5958bec44bfddbc3506f94b3ba1068a28b7a427f4248",
+  "dev_and_36_fixtures": "passed"
+}
