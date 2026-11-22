@@ -21,11 +21,11 @@ adds almost nothing to the measured time.
    the same table, its values rewritten to `LINKED | name ref`, is the person map. No
    sorting, scattering or serial pass.
 3. **Tokenizing.** Per window of 192 KiB, one AVX2 pass builds the newline bitmap, so
-   every line's start and length are known up front. A line of up to 127 bytes is then
-   split from three or four 32-byte loads: comma and quote masks, prefix-XOR quote
+   every line's start and length are known up front. A line of up to 191 bytes is then
+   split from three to six 32-byte loads: comma and quote masks, prefix-XOR quote
    parity, and the quoting rules (no separator inside quotes, opening quotes after a
    separator, closing quotes before one) as a few mask operations; the N-th separator
-   must be the newline. Longer lines (well under 1%) take a scalar path. Fields are
+   must be the newline. Longer lines (none in generated data) take a scalar path. Fields are
    unquoted on access. (With three loads only, the fifth of scorer-v5 lines that carry a
    32-character ID did not fit, which is why this tokenizer first measured slower than
    the stage-1 bitmap one, still available as `SS_TOK=1`.)
