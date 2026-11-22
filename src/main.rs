@@ -1928,15 +1928,19 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         (0..nthreads).map(|t| std::sync::Mutex::new(flow::Sink::new(nfiles + t, name_cap))).collect();
     // every worker takes the next unit in list order (the order read ahead)
     let next = std::sync::atomic::AtomicUsize::new(0);
+    // the 20M and 60M partition counts, compiled in
+    let c10 = flow::pd_bits() == 10 && p2_bits() == 10;
     rayon::broadcast(|ctx| {
         let t = ctx.index() % nthreads;
         let mut sink = sinks[t].lock().unwrap();
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(&(kind, f, s, e)) = units.get(i) else { break };
-            match kind {
-                0 => flow::events_unit(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64),
-                1 => flow::clicks_unit(f, s, e, &lk, &persons, ws, we, &mut sink),
+            match (kind, c10) {
+                (0, true) => flow::events_unit::<true>(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64),
+                (0, false) => flow::events_unit::<false>(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64),
+                (1, true) => flow::clicks_unit::<true>(f, s, e, &lk, &persons, ws, we, &mut sink),
+                (1, false) => flow::clicks_unit::<false>(f, s, e, &lk, &persons, ws, we, &mut sink),
                 _ => rest.best_unit(f, s, e),
             }
         }
