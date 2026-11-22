@@ -30,7 +30,8 @@ adds almost nothing to the measured time.
    are hashed with two AES rounds (a bijection of the zero-padded 16-byte ID).
 5. **One scatter per record.** With persons known up front, each valid event goes
    straight to its person partition (24-byte record), and every event copy, valid or
-   not, leaves a 24-byte copy record in its `event_id` partition. Records leave through
+   not, leaves a 16-byte copy record in its `event_id` partition (the hash bits that
+   pick the partition are reused for check bits). Records leave through
    per-partition write-combining staging areas with non-temporal stores. Person lookups
    are prefetched 16 lines ahead. An unlinked user's ID is copied into a per-thread name
    buffer while the line is in cache, so output never reads the event files again.
