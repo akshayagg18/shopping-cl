@@ -1241,7 +1241,15 @@ fn zeroed_u32(n: usize) -> Vec<std::sync::atomic::AtomicU32> {
 
 // ---------------------------------------------------------------- records
 
-/// A surviving event, by person id. 12 bytes.
+/// A surviving view or cart, by person id. 8 bytes.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct Ev8 {
+    pid: u32,
+    ts: u32,
+}
+
+/// A surviving purchase, by person id. 12 bytes.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct Ev2 {
@@ -1369,7 +1377,7 @@ impl Scratch {
 /// persons and counting half-hour bins happen in one pass.
 #[allow(clippy::too_many_arguments)]
 fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &[flow::Sink], dead: &flow::Dead, evb: &mut Vec<Ev1>, ckb: &mut Vec<Ck1>, persons: &Persons) {
-    let n: usize = sinks.iter().map(|s| s.ev.len(b)).sum();
+    let n: usize = sinks.iter().map(|s| s.ev.len(b) + s.pu.len(b)).sum();
     if n == 0 {
         return;
     }
@@ -1412,6 +1420,27 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                     unsafe {
                         std::arch::x86_64::_mm_prefetch(sl.as_ptr().wrapping_add(j + 48) as *const i8, std::arch::x86_64::_MM_HINT_T0)
                     };
+                }
+                if (dw >> (i % 64)) & 1 == 0 {
+                    let li = (e.pid >> pbits) as usize;
+                    unsafe {
+                        *cntp.add(li) += 1;
+                        evp.add(m).write(Ev1 { ts: e.ts, pc: 0 });
+                        lip.add(m).write(li as u32);
+                    }
+                    m += 1;
+                }
+                i += 1;
+            }
+        }
+        // the purchases (dead flags of partition p2 + b)
+        let mut i = 0usize;
+        let mut dw = 0u64;
+        let bp = p2() + b;
+        for sl in s.pu.slices(b) {
+            for e in sl.iter() {
+                if i % 64 == 0 {
+                    dw = dead.word(t, bp, i / 64);
                 }
                 if (dw >> (i % 64)) & 1 == 0 {
                     let li = (e.pid >> pbits) as usize;
@@ -1717,7 +1746,7 @@ fn main() {
     let out = PathBuf::from(env("OUTPUT_DIR", "/output"));
     let threads: usize = env("NCPU", "8").parse().unwrap_or(8);
     // SS_PIN=1: worker i stays on the i-th allowed CPU (staging areas stay in its caches)
-    let pin: Option<Vec<usize>> = if std::env::var("SS_PIN").is_ok_and(|v| v == "1") {
+    let pin: Option<Vec<usize>> = if std::env::var("SS_PIN").map_or(true, |v| v != "0") {
         unsafe {
             let mut set: libc::cpu_set_t = std::mem::zeroed();
             if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) == 0 {
@@ -1928,15 +1957,19 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         (0..nthreads).map(|t| std::sync::Mutex::new(flow::Sink::new(nfiles + t, name_cap))).collect();
     // every worker takes the next unit in list order (the order read ahead)
     let next = std::sync::atomic::AtomicUsize::new(0);
+    // the 20M and 60M partition counts, compiled in
+    let c10 = flow::pd_bits() == 10 && p2_bits() == 10;
     rayon::broadcast(|ctx| {
         let t = ctx.index() % nthreads;
         let mut sink = sinks[t].lock().unwrap();
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(&(kind, f, s, e)) = units.get(i) else { break };
-            match kind {
-                0 => flow::events_unit(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64),
-                1 => flow::clicks_unit(f, s, e, &lk, &persons, ws, we, &mut sink),
+            match (kind, c10) {
+                (0, true) => flow::events_unit::<true>(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64),
+                (0, false) => flow::events_unit::<false>(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64),
+                (1, true) => flow::clicks_unit::<true>(f, s, e, &lk, &persons, ws, we, &mut sink),
+                (1, false) => flow::clicks_unit::<false>(f, s, e, &lk, &persons, ws, we, &mut sink),
                 _ => rest.best_unit(f, s, e),
             }
         }
@@ -1970,7 +2003,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         })
         .collect();
     // largest partitions first, so a giant component never starts last
-    let mut order: Vec<(usize, usize)> = (0..p2()).map(|b| (sinks.iter().map(|s| s.ev.len(b)).sum::<usize>(), b)).collect();
+    let mut order: Vec<(usize, usize)> = (0..p2()).map(|b| (sinks.iter().map(|s| s.ev.len(b) + s.pu.len(b)).sum::<usize>(), b)).collect();
     order.sort_unstable_by(|a, b| b.cmp(a));
     order.par_iter().with_max_len(1).for_each(|&(_, b)| {
         let i = rayon::current_thread_index().unwrap_or(0) % nthreads;
