@@ -10,7 +10,10 @@ adds almost nothing to the measured time.
 ## How it works
 
 1. **Input.** Every CSV is memory-mapped. Work is split into ~4 MiB line-aligned units
-   (a line belongs to the unit holding its first byte), scanned in 192 KiB windows.
+   (a line belongs to the unit holding its first byte); workers take them in list order
+   from a shared counter. If the input is not in the page cache (a few pages per file
+   checked with `mincore`), a helper thread reads it ahead with `MADV_WILLNEED` in that
+   same order while links are being resolved.
 2. **Links first, in one concurrent table.** Every link endpoint is inserted into one
    open-addressing table with compare-and-swap; a slot's index is the ID's node number.
    A lock-free union-find (a root only links to a smaller root) joins the nodes, each

@@ -273,6 +273,26 @@ fn csvs(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
+/// Whether the inputs sit in the page cache: a few pages per file, by mincore.
+fn mostly_cached(inp: &Inputs) -> bool {
+    let (mut yes, mut all) = (0usize, 0usize);
+    let mut vec = [0u8; 1];
+    for &f in inp.events.iter().chain(&inp.clicks) {
+        let d = file_bytes(f);
+        let pages = d.len().div_ceil(4096);
+        for k in 0..4 {
+            let pg = pages * k / 4;
+            if pg >= pages {
+                continue;
+            }
+            let r = unsafe { libc::mincore(d.as_ptr().add(pg * 4096) as *mut libc::c_void, 1, vec.as_mut_ptr()) };
+            all += 1;
+            yes += (r == 0 && vec[0] & 1 != 0) as usize;
+        }
+    }
+    yes * 10 >= all * 9
+}
+
 fn open_all(data: &Path) -> Inputs {
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut push = |p: PathBuf| {
@@ -284,26 +304,24 @@ fn open_all(data: &Path) -> Inputs {
     let links: Vec<usize> = csvs(&data.join("links")).into_iter().map(&mut push).collect();
     let products = push(data.join("products.csv"));
     let campaigns = push(data.join("campaigns.csv"));
-    let maps: Vec<Mmap> = paths
+    let opened: Vec<(Mmap, usize)> = paths
         .par_iter()
         .map(|p| {
             let f = File::open(p).unwrap_or_else(|e| panic!("open {}: {e}", p.display()));
-            let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-            if len == 0 {
-                // mmap of an empty file fails on some systems: map an anonymous empty region.
+            let len = f.metadata().map(|m| m.len()).unwrap_or(0) as usize;
+            let m = if len == 0 {
+                // mmap of an empty file fails on some systems: map an anonymous empty
+                // region (its length 1 is not the file's: lengths are kept apart)
                 memmap2::MmapOptions::new().len(1).map_anon().unwrap().make_read_only().unwrap()
             } else {
                 // no MAP_POPULATE: page-table work is spread over the workers
                 unsafe { memmap2::MmapOptions::new().map(&f) }.unwrap()
-            }
+            };
+            (m, len)
         })
         .collect();
     PATHS.store(Box::into_raw(Box::new(paths.clone())), Ordering::Release);
-    // Note: anon placeholder has len 1 with a zero byte; record real lengths below.
-    let lens: Vec<usize> = paths
-        .iter()
-        .map(|p| std::fs::metadata(p).map(|m| m.len() as usize).unwrap_or(0))
-        .collect();
+    let (maps, lens): (Vec<Mmap>, Vec<usize>) = opened.into_iter().unzip();
     FILES.store(Box::into_raw(Box::new(maps)), Ordering::Release);
     LENS.store(Box::into_raw(Box::new(lens)), Ordering::Release);
 
@@ -1016,8 +1034,10 @@ pub struct UserRow {
 
 pub struct Agg {
     pub rows: Vec<UserRow>,
-    /// [day * (ncamp + 1) + camp] -> (sessions | purchasing sessions << 32, revenue), credited
-    pub credit: Vec<(u64, i64)>,
+    /// [day * (ncamp + 1) + camp] -> sessions | purchasing sessions << 32, credited
+    pub credit: Vec<u64>,
+    /// [day * (ncamp + 1) + camp] -> revenue credited (touched by purchasing sessions only)
+    pub credit_rev: Vec<i64>,
     /// [day * (ncamp + 1) + camp] -> assisted sessions
     pub assist: Vec<u32>,
 }
@@ -1441,9 +1461,10 @@ fn person_sessions(ctx: &Ctx, key: u64, uref: u64, evs: &[Ev1], cks: &[Ck1], agg
             ctx.ncamp
         };
         let row = du * (ctx.ncamp + 1);
-        let slot = &mut agg.credit[row + credit];
-        slot.0 += 1 | ((purch as u64) << 32);
-        slot.1 += rev;
+        agg.credit[row + credit] += 1 | ((purch as u64) << 32);
+        if rev != 0 {
+            agg.credit_rev[row + credit] += rev;
+        }
         let arow = &mut agg.assist[row..row + ctx.ncamp + 1];
         for &c in &sc.active {
             arow[c as usize] += 1;
@@ -1567,6 +1588,12 @@ fn main() {
         eprintln!("micro {mode}: lines {lines} acc {acc} scalar {}", SCALAR.load(Ordering::Relaxed));
         return;
     }
+    if let Ok(v) = std::env::var("SS_UPSCALE") {
+        // local tool: SS_UPSCALE=<dst>:<k> copies DATA_DIR k times over (renamed IDs)
+        let (dst, k) = v.split_once(':').unwrap();
+        diag::upscale(&data, Path::new(dst), k.parse().unwrap());
+        return;
+    }
     if std::env::var("SS_DIAG").is_ok() {
         diag::main(&data, &out, threads);
         std::process::exit(1);
@@ -1611,6 +1638,23 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let (ws, we) = (inp.window_start, inp.window_end);
     let ev_units = chunks(&inp.events);
     let ck_units = chunks(&inp.clicks);
+    let units: Vec<(bool, usize, usize, usize)> =
+        ev_units.iter().map(|&(f, s, e)| (true, f, s, e)).chain(ck_units.iter().map(|&(f, s, e)| (false, f, s, e))).collect();
+    // input not yet in the page cache: read it ahead, in the order the workers
+    // will take it, while links are resolved
+    if !READ.load(Ordering::Relaxed) && std::env::var("SS_RA").map_or(true, |v| v != "0") && !mostly_cached(&inp) {
+        let mut order: Vec<(usize, usize, usize)> = inp.links.iter().chain([inp.products, inp.campaigns].iter()).map(|&f| (f, 0, file_bytes(f).len())).collect();
+        order.extend(units.iter().map(|&(_, f, s, e)| (f, s, e)));
+        std::thread::spawn(move || {
+            for (f, s, e) in order {
+                let d = file_bytes(f);
+                let a = s & !4095;
+                if e > a {
+                    unsafe { libc::madvise(d.as_ptr().add(a) as *mut libc::c_void, e - a, libc::MADV_WILLNEED) };
+                }
+            }
+        });
+    }
     // links first: every record below is routed straight to its person
     let (persons, lk) = rayon::join(|| links(&inp), || lookups(&inp));
     lap("links");
@@ -1620,15 +1664,19 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let name_cap = est_events / nthreads * 32 + (1 << 20);
     let sinks: Vec<std::sync::Mutex<flow::Sink>> =
         (0..nthreads).map(|t| std::sync::Mutex::new(flow::Sink::new(nfiles + t, name_cap))).collect();
-    let units: Vec<(bool, usize, usize, usize)> =
-        ev_units.iter().map(|&(f, s, e)| (true, f, s, e)).chain(ck_units.iter().map(|&(f, s, e)| (false, f, s, e))).collect();
-    units.par_iter().for_each(|&(is_ev, f, s, e)| {
-        let t = rayon::current_thread_index().unwrap_or(0) % nthreads;
+    // every worker takes the next unit in list order (the order read ahead)
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    rayon::broadcast(|ctx| {
+        let t = ctx.index() % nthreads;
         let mut sink = sinks[t].lock().unwrap();
-        if is_ev {
-            flow::events_unit(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64);
-        } else {
-            flow::clicks_unit(f, s, e, &lk, &persons, ws, we, &mut sink);
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            let Some(&(is_ev, f, s, e)) = units.get(i) else { break };
+            if is_ev {
+                flow::events_unit(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64);
+            } else {
+                flow::clicks_unit(f, s, e, &lk, &persons, ws, we, &mut sink);
+            }
         }
     });
     let mut sinks: Vec<flow::Sink> = sinks.into_iter().map(|m| m.into_inner().unwrap()).collect();
@@ -1652,7 +1700,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let states: Vec<std::sync::Mutex<(Agg, Scratch, Vec<Ev1>, Vec<Ck1>)>> = (0..nthreads)
         .map(|_| {
             std::sync::Mutex::new((
-                Agg { rows: Vec::with_capacity(est_events / nthreads / 2 + 1024), credit: vec![(0u64, 0i64); (ncamp + 1) * ndays], assist: vec![0u32; (ncamp + 1) * ndays] },
+                Agg { rows: Vec::with_capacity(est_events / nthreads / 2 + 1024), credit: vec![0u64; (ncamp + 1) * ndays], credit_rev: vec![0i64; (ncamp + 1) * ndays], assist: vec![0u32; (ncamp + 1) * ndays] },
                 Scratch::new(ncamp),
                 Vec::new(),
                 Vec::new(),
