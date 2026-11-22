@@ -1,8 +1,6 @@
-> Experimental combined candidate: scanner inlining,16-record ID prefetch,8/16-byte grouped bodies and at most1024 automatic partitions. Fresh Docker/20M/60M validation is pending. Sub-0.4 is unproven. The previous validated source is ae0cf75dfbcc7eead8c68e20b09ad4ad6cb962c2.
-
 > Current-generator candidate: opaque byte IDs, exact source-reference event deduplication,
 > sharded fallback dictionaries, and per-worker exact user-ID caches. The earlier
-> 935 ms / 20M measurement below used the previous generator. It is not evidence
+> 935 ms / 20M measurement used the previous generator. It is not evidence
 > for the current generator or an official score. Current evidence and status:
 > [OPAQUE_IDS.md](experiments/OPAQUE_IDS.md). Sub-0.4 seconds is unproven.
 
@@ -32,7 +30,7 @@ For direct runs: `cargo build --release --locked`, then `DATA_DIR=data OUTPUT_DI
 * Memory-map input; partition scans into line-owned chunks with a SIMD dialect tokenizer. Only LF separates lines. Malformed quotes and field counts are rejected; CR is preserved.
 * Resolve literal identity edges with parallel union-find; choose each component's byte-wise smallest ID. A bijective integer permutation of reversible ASCII keys or exact interned bytes replaces probabilistic identifier equality. No identifier bits are discarded.
 * Route valid event candidates directly to person streams. Keep every parseable event copy, including invalid candidates, in an independent deduplication stream. Earliest ingestion wins before validation can affect the result. Rare dates outside unsigned epoch seconds retain full signed comparisons.
-* Use 16-byte surviving-event candidates and 16-byte copy records. Event IDs have a lossless base62 encoding when possible; every other ID is interned exactly. Wide references, stream locations and timestamps use explicit side tables instead of truncation.
+* Use 16-byte surviving-event candidates and 16-byte copy records. Event IDs have a lossless base62 encoding when possible; other source fields use exact offset/length references when representable and full-byte owned dictionaries otherwise. Hash matches are followed by byte equality. Wide references, stream locations and timestamps use explicit side tables instead of truncation.
 * Deduplication marks losing candidates dead. Group surviving events by person and half-hour bins. Track each bin's minimum and maximum to form sessions under the strictly-greater-than-30-minute rule without sorting every event timestamp. Click ordering, inclusive seven-day attribution and distinct assistance are preserved.
 * Decode user names only when writing output. Write standards-compliant uncompressed Parquet directly, with DATE logical types, integer counts, nullable UTF-8 categories and 64-bit revenues. Row order and file count may differ.
 
@@ -42,7 +40,7 @@ The default release build contains no per-record diagnostic counters. Build with
 
 `tools/validate.py BINARY --threads 8 --fuzz-rounds 5` runs all 36 official fixtures, the downloaded official development answer, and a literal Python reference on the small generated input plus four dirty-input mutations. `tests/adversarial.py BINARY` checks long UTF-8 identifiers, dates before 1970 and transformation boundaries. `tools/check.py` compares both complete tables while ignoring permitted row/file ordering. Release unit tests exercise tokenizer equivalence, identity domains and inverses, compact copy bit layouts and overflow side tables.
 
-See the experiment report and raw results for the exact tested artifacts and sample distributions. The fresh hosted check passed at20M and60M for exact source commit `fef07368caf2e161fbf91dbf67e8176574fcfaa9`:20M935.15ms versus1550.86ms baseline,60M2857.89ms versus4816.35ms, on4 CPUs. Full evidence is in `FIRST_SUBMISSION_REPORT.md` and `submission/READY.json`. A successful GitHub check or repository push is not an official competition submission.
+Selected runtime source `82d185b15affaf4b65fcb4936d23d410478debfc` passed fresh static Docker,36 fixtures,the current1M development answer,20M and two60M seeds. On a two-core/four-SMT EPYC9V74 runner it measured1584.56ms at20M(n7) and5039.23/5240.35ms at60M(n3 per seed), improving the previous validated source by5–10% on the same host. The selected source adds scanner inlining, source-ID prefetch, compact grouped records and automatic partition capping. [Fresh validation](https://github.com/akshayagg18/shopping-cl/actions/runs/45019804680). Full distributions, stage costs, rejected experiments and limits are in [FIRST_SUBMISSION_REPORT.md](FIRST_SUBMISSION_REPORT.md). GitHub publication and CI do not establish an official score.
 
 ## Dependencies and license
 

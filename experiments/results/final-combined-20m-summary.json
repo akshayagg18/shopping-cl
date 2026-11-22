@@ -1,0 +1,59 @@
+{
+  "combined": {
+    "n": 9,
+    "median_ms": 2964.7670199919958,
+    "mean_ms": 3006.882692889323,
+    "sd_ms": 104.58199060995315,
+    "min_ms": 2916.3597709994065,
+    "max_ms": 3241.7149000102654,
+    "peak_rss_kib": 3258464,
+    "stage_median_ms": {
+      "links": 253.7,
+      "open": 1.4,
+      "sessionized": 442.0,
+      "dedup": 214.4000000000001,
+      "parsed": 1914.6,
+      "released": 33.09999999999991,
+      "written": 111.40000000000009
+    },
+    "exact_comparison": "passed"
+  },
+  "fast": {
+    "n": 9,
+    "median_ms": 2924.0688669960946,
+    "mean_ms": 3059.322454444353,
+    "sd_ms": 347.4310407501144,
+    "min_ms": 2854.999064002186,
+    "max_ms": 3953.3778470067773,
+    "peak_rss_kib": 3272636,
+    "stage_median_ms": {
+      "links": 247.7,
+      "open": 1.3,
+      "sessionized": 459.0999999999999,
+      "dedup": 240.0,
+      "parsed": 1838.4,
+      "released": 33.80000000000018,
+      "written": 109.5
+    },
+    "exact_comparison": "passed"
+  },
+  "selected": {
+    "n": 9,
+    "median_ms": 3067.2221970016835,
+    "mean_ms": 3122.689100223296,
+    "sd_ms": 192.85391713716524,
+    "min_ms": 2960.2540640044026,
+    "max_ms": 3610.326480004005,
+    "peak_rss_kib": 3242860,
+    "stage_median_ms": {
+      "links": 249.89999999999998,
+      "open": 1.3,
+      "sessionized": 462.5,
+      "dedup": 309.6999999999998,
+      "parsed": 1890.8999999999999,
+      "released": 31.700000000000273,
+      "written": 114.09999999999991
+    },
+    "exact_comparison": "passed"
+  }
+}

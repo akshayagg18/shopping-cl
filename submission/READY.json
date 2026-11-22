@@ -1,6 +1,111 @@
 {
-  "status": "pending_combined_validation",
+  "status": "validated_current_generator",
+  "scorer_commit": "82d185b15affaf4b65fcb4936d23d410478debfc",
+  "repository": "https://github.com/akshayagg18/shopping-cl",
   "official_submitted": false,
   "sub_0_4_proven": false,
-  "previous_validated_source": "ae0cf75dfbcc7eead8c68e20b09ad4ad6cb962c2"
+  "validation_run": "https://github.com/akshayagg18/shopping-cl/actions/runs/45019804680",
+  "binary_sha256": "6d237aff1f71626ae6babb7766ed408e20acdfe40eabbdff4ea9635a446a576b",
+  "generator_sha256": "78f973f75d14b48e792628284f19c75de71fa597d20952e16a9ced93c78bee4a",
+  "measurements": {
+    "20m": {
+      "n": 7,
+      "median_ms": 1584.5644440000228,
+      "mean_ms": 1568.0992748571368,
+      "sd_ms": 25.219248647393343,
+      "min_ms": 1539.8793329999876,
+      "max_ms": 1593.2426549999832,
+      "samples_ms": [
+        1589.637945999982,
+        1593.2426549999832,
+        1585.18729299999,
+        1584.5644440000228,
+        1540.1299600000016,
+        1544.0532929999904,
+        1539.8793329999876
+      ],
+      "peak_rss_kib": 3275756,
+      "user_ms": 5768.784000000001,
+      "system_ms": 210.781,
+      "major_faults": 0,
+      "minor_faults": 26540,
+      "voluntary_cs": 1160,
+      "involuntary_cs": 893,
+      "stage_median_ms": {
+        "sessionized": 227.39999999999986,
+        "open": 1.4,
+        "links": 139.79999999999998,
+        "parsed": 1022.5,
+        "written": 50.5,
+        "dedup": 107.5,
+        "released": 13.599999999999909
+      },
+      "binary_sha256": "6d237aff1f71626ae6babb7766ed408e20acdfe40eabbdff4ea9635a446a576b"
+    },
+    "60m": {
+      "n": 3,
+      "median_ms": 5039.23255299992,
+      "mean_ms": 5054.9505216666075,
+      "sd_ms": 27.82824863715072,
+      "min_ms": 5038.537700999996,
+      "max_ms": 5087.081310999906,
+      "samples_ms": [
+        5038.537700999996,
+        5087.081310999906,
+        5039.23255299992
+      ],
+      "peak_rss_kib": 9588108,
+      "user_ms": 18760.138000000003,
+      "system_ms": 551.328,
+      "major_faults": 0,
+      "minor_faults": 70560,
+      "voluntary_cs": 1864,
+      "involuntary_cs": 2738,
+      "stage_median_ms": {
+        "sessionized": 717.5,
+        "open": 1.5,
+        "links": 494.2,
+        "parsed": 3167.7,
+        "written": 155.0,
+        "dedup": 455.8000000000002,
+        "released": 37.0
+      },
+      "binary_sha256": "6d237aff1f71626ae6babb7766ed408e20acdfe40eabbdff4ea9635a446a576b"
+    },
+    "60m-fresh": {
+      "n": 3,
+      "median_ms": 5240.35383699993,
+      "mean_ms": 5253.025392666625,
+      "sd_ms": 40.17602863752793,
+      "min_ms": 5220.712922999951,
+      "max_ms": 5298.009417999992,
+      "samples_ms": [
+        5298.009417999992,
+        5240.35383699993,
+        5220.712922999951
+      ],
+      "peak_rss_kib": 9789652,
+      "user_ms": 19253.891,
+      "system_ms": 554.132,
+      "major_faults": 0,
+      "minor_faults": 71409,
+      "voluntary_cs": 1799,
+      "involuntary_cs": 2838,
+      "stage_median_ms": {
+        "sessionized": 731.8999999999996,
+        "open": 0.8,
+        "links": 497.1,
+        "parsed": 3287.6000000000004,
+        "written": 156.10000000000036,
+        "dedup": 511.60000000000036,
+        "released": 36.80000000000018
+      },
+      "binary_sha256": "6d237aff1f71626ae6babb7766ed408e20acdfe40eabbdff4ea9635a446a576b"
+    }
+  },
+  "current_fixture_and_dev_answer": "passed",
+  "20m_and_two_60m_exact": "passed",
+  "fresh_container_invocations_in_study": 30,
+  "runtime_source_unchanged_from": "82d185b15affaf4b65fcb4936d23d410478debfc",
+  "report": "FIRST_SUBMISSION_REPORT.md"
 }

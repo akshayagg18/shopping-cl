@@ -1,0 +1,806 @@
+{
+  "success": true,
+  "candidate": "8a61625edd9284b16b92f7ba4f5c9d68d38f1874",
+  "baseline": "ae0cf75dfbcc7eead8c68e20b09ad4ad6cb962c2",
+  "official_score": false,
+  "run_url": "https://github.com/akshayagg18/shopping-cl/actions/runs/45019804680",
+  "started_utc": "2026-11-22T11:57:34.014093+00:00",
+  "prior": "82d185b15affaf4b65fcb4936d23d410478debfc",
+  "measurements": {
+    "20m": {
+      "hosted-baseline": {
+        "n": 7,
+        "median_ms": 1670.6284990000313,
+        "mean_ms": 1670.5610535714347,
+        "sd_ms": 18.734770901184426,
+        "min_ms": 1647.077109999998,
+        "max_ms": 1696.4345060000028,
+        "samples_ms": [
+          1689.9884840000254,
+          1696.4345060000028,
+          1678.1249869999897,
+          1670.6284990000313,
+          1658.7329509999904,
+          1647.077109999998,
+          1652.9408380000064
+        ],
+        "peak_rss_kib": 3269104,
+        "user_ms": 6185.852,
+        "system_ms": 220.45999999999998,
+        "major_faults": 0,
+        "minor_faults": 26761,
+        "voluntary_cs": 1120,
+        "involuntary_cs": 1078,
+        "stage_median_ms": {
+          "sessionized": 238.5999999999999,
+          "open": 1.4,
+          "links": 139.79999999999998,
+          "parsed": 1027.1,
+          "written": 51.600000000000136,
+          "dedup": 188.5999999999999,
+          "released": 13.5
+        },
+        "binary_sha256": "33873df6d6590f3b8322b141fbb0fdae79cd60f4fef4207c7162df14a8de551d"
+      },
+      "hosted-prior": {
+        "n": 7,
+        "median_ms": 1584.5644440000228,
+        "mean_ms": 1568.0992748571368,
+        "sd_ms": 25.219248647393343,
+        "min_ms": 1539.8793329999876,
+        "max_ms": 1593.2426549999832,
+        "samples_ms": [
+          1589.637945999982,
+          1593.2426549999832,
+          1585.18729299999,
+          1584.5644440000228,
+          1540.1299600000016,
+          1544.0532929999904,
+          1539.8793329999876
+        ],
+        "peak_rss_kib": 3275756,
+        "user_ms": 5768.784000000001,
+        "system_ms": 210.781,
+        "major_faults": 0,
+        "minor_faults": 26540,
+        "voluntary_cs": 1160,
+        "involuntary_cs": 893,
+        "stage_median_ms": {
+          "sessionized": 227.39999999999986,
+          "open": 1.4,
+          "links": 139.79999999999998,
+          "parsed": 1022.5,
+          "written": 50.5,
+          "dedup": 107.5,
+          "released": 13.599999999999909
+        },
+        "binary_sha256": "6d237aff1f71626ae6babb7766ed408e20acdfe40eabbdff4ea9635a446a576b"
+      },
+      "hosted-candidate": {
+        "n": 7,
+        "median_ms": 1567.9307350000045,
+        "mean_ms": 1568.3940357142774,
+        "sd_ms": 29.84956225724686,
+        "min_ms": 1533.935291999967,
+        "max_ms": 1614.8160930000017,
+        "samples_ms": [
+          1576.4792509999666,
+          1596.5868729999784,
+          1614.8160930000017,
+          1567.9307350000045,
+          1533.935291999967,
+          1545.4464340000413,
+          1543.5635719999823
+        ],
+        "peak_rss_kib": 3273408,
+        "user_ms": 5794.44,
+        "system_ms": 220.271,
+        "major_faults": 0,
+        "minor_faults": 26695,
+        "voluntary_cs": 1145,
+        "involuntary_cs": 957,
+        "stage_median_ms": {
+          "sessionized": 229.4000000000001,
+          "open": 1.4,
+          "links": 142.79999999999998,
+          "parsed": 1013.0999999999999,
+          "written": 51.0,
+          "dedup": 102.20000000000005,
+          "released": 13.5
+        },
+        "binary_sha256": "e16c8732903edd96d5b2432078f056a2bc61f1112593f8266ce660c7b7568d16"
+      },
+      "seed": 20261123,
+      "manifest": {
+        "window_start": "2028-10-16T00:00:00Z",
+        "window_end": "2028-10-30T00:00:00Z"
+      },
+      "exact_output_comparison": "passed",
+      "input_csv_bytes": 2033398100,
+      "all_sandbox_comparisons": "passed"
+    },
+    "60m": {
+      "hosted-baseline": {
+        "n": 3,
+        "median_ms": 5574.289141999998,
+        "mean_ms": 5574.218463333334,
+        "sd_ms": 41.03346165308123,
+        "min_ms": 5533.149707999996,
+        "max_ms": 5615.216540000006,
+        "samples_ms": [
+          5615.216540000006,
+          5533.149707999996,
+          5574.289141999998
+        ],
+        "peak_rss_kib": 9663876,
+        "user_ms": 20604.653,
+        "system_ms": 556.827,
+        "major_faults": 0,
+        "minor_faults": 71610,
+        "voluntary_cs": 2020,
+        "involuntary_cs": 3253,
+        "stage_median_ms": {
+          "sessionized": 698.1999999999998,
+          "open": 1.5,
+          "links": 505.0,
+          "parsed": 3443.7999999999997,
+          "written": 161.80000000000018,
+          "dedup": 688.0000000000005,
+          "released": 37.69999999999982
+        },
+        "binary_sha256": "33873df6d6590f3b8322b141fbb0fdae79cd60f4fef4207c7162df14a8de551d"
+      },
+      "hosted-prior": {
+        "n": 3,
+        "median_ms": 5039.23255299992,
+        "mean_ms": 5054.9505216666075,
+        "sd_ms": 27.82824863715072,
+        "min_ms": 5038.537700999996,
+        "max_ms": 5087.081310999906,
+        "samples_ms": [
+          5038.537700999996,
+          5087.081310999906,
+          5039.23255299992
+        ],
+        "peak_rss_kib": 9588108,
+        "user_ms": 18760.138000000003,
+        "system_ms": 551.328,
+        "major_faults": 0,
+        "minor_faults": 70560,
+        "voluntary_cs": 1864,
+        "involuntary_cs": 2738,
+        "stage_median_ms": {
+          "sessionized": 717.5,
+          "open": 1.5,
+          "links": 494.2,
+          "parsed": 3167.7,
+          "written": 155.0,
+          "dedup": 455.8000000000002,
+          "released": 37.0
+        },
+        "binary_sha256": "6d237aff1f71626ae6babb7766ed408e20acdfe40eabbdff4ea9635a446a576b"
+      },
+      "hosted-candidate": {
+        "n": 3,
+        "median_ms": 5132.069107999996,
+        "mean_ms": 5112.378207333336,
+        "sd_ms": 50.160983716870525,
+        "min_ms": 5055.359400000043,
+        "max_ms": 5149.706113999969,
+        "samples_ms": [
+          5132.069107999996,
+          5055.359400000043,
+          5149.706113999969
+        ],
+        "peak_rss_kib": 9565724,
+        "user_ms": 18769.71,
+        "system_ms": 573.4749999999999,
+        "major_faults": 0,
+        "minor_faults": 70258,
+        "voluntary_cs": 1880,
+        "involuntary_cs": 2837,
+        "stage_median_ms": {
+          "sessionized": 724.6999999999998,
+          "open": 1.5,
+          "links": 488.70000000000005,
+          "parsed": 3227.7999999999997,
+          "written": 159.59999999999945,
+          "dedup": 451.7000000000003,
+          "released": 37.5
+        },
+        "binary_sha256": "e16c8732903edd96d5b2432078f056a2bc61f1112593f8266ce660c7b7568d16"
+      },
+      "seed": 20261123,
+      "manifest": {
+        "window_start": "2028-10-16T00:00:00Z",
+        "window_end": "2028-10-30T00:00:00Z"
+      },
+      "exact_output_comparison": "passed",
+      "input_csv_bytes": 6094665387,
+      "all_sandbox_comparisons": "passed"
+    },
+    "60m-fresh": {
+      "hosted-baseline": {
+        "n": 3,
+        "median_ms": 5688.474056000018,
+        "mean_ms": 5702.068149333324,
+        "sd_ms": 67.08093869927531,
+        "min_ms": 5642.825413999958,
+        "max_ms": 5774.904977999995,
+        "samples_ms": [
+          5642.825413999958,
+          5774.904977999995,
+          5688.474056000018
+        ],
+        "peak_rss_kib": 9887728,
+        "user_ms": 21021.693,
+        "system_ms": 584.865,
+        "major_faults": 0,
+        "minor_faults": 72811,
+        "voluntary_cs": 1774,
+        "involuntary_cs": 3193,
+        "stage_median_ms": {
+          "sessionized": 715.8000000000002,
+          "open": 1.8,
+          "links": 500.09999999999997,
+          "parsed": 3478.5,
+          "written": 166.0,
+          "dedup": 752.0999999999999,
+          "released": 37.80000000000018
+        },
+        "binary_sha256": "33873df6d6590f3b8322b141fbb0fdae79cd60f4fef4207c7162df14a8de551d"
+      },
+      "hosted-prior": {
+        "n": 3,
+        "median_ms": 5240.35383699993,
+        "mean_ms": 5253.025392666625,
+        "sd_ms": 40.17602863752793,
+        "min_ms": 5220.712922999951,
+        "max_ms": 5298.009417999992,
+        "samples_ms": [
+          5298.009417999992,
+          5240.35383699993,
+          5220.712922999951
+        ],
+        "peak_rss_kib": 9789652,
+        "user_ms": 19253.891,
+        "system_ms": 554.132,
+        "major_faults": 0,
+        "minor_faults": 71409,
+        "voluntary_cs": 1799,
+        "involuntary_cs": 2838,
+        "stage_median_ms": {
+          "sessionized": 731.8999999999996,
+          "open": 0.8,
+          "links": 497.1,
+          "parsed": 3287.6000000000004,
+          "written": 156.10000000000036,
+          "dedup": 511.60000000000036,
+          "released": 36.80000000000018
+        },
+        "binary_sha256": "6d237aff1f71626ae6babb7766ed408e20acdfe40eabbdff4ea9635a446a576b"
+      },
+      "hosted-candidate": {
+        "n": 3,
+        "median_ms": 5286.490735000029,
+        "mean_ms": 5251.707920666718,
+        "sd_ms": 85.40019416765095,
+        "min_ms": 5154.405250000082,
+        "max_ms": 5314.227777000042,
+        "samples_ms": [
+          5154.405250000082,
+          5314.227777000042,
+          5286.490735000029
+        ],
+        "peak_rss_kib": 9745136,
+        "user_ms": 19341.333,
+        "system_ms": 537.814,
+        "major_faults": 0,
+        "minor_faults": 71438,
+        "voluntary_cs": 1723,
+        "involuntary_cs": 2900,
+        "stage_median_ms": {
+          "sessionized": 729.5,
+          "open": 1.5,
+          "links": 490.9,
+          "parsed": 3295.5,
+          "written": 159.69999999999982,
+          "dedup": 517.3000000000002,
+          "released": 36.80000000000018
+        },
+        "binary_sha256": "e16c8732903edd96d5b2432078f056a2bc61f1112593f8266ce660c7b7568d16"
+      },
+      "seed": 20261124,
+      "manifest": {
+        "window_start": "2025-02-12T00:00:00Z",
+        "window_end": "2025-02-26T00:00:00Z"
+      },
+      "exact_output_comparison": "passed",
+      "input_csv_bytes": 6230703912,
+      "all_sandbox_comparisons": "passed"
+    }
+  },
+  "hardware": {
+    "affinity": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "cpu_model": "AMD EPYC 9V74 80-Core Processor",
+    "memory": {
+      "MemTotal": "16366632 kB",
+      "SwapTotal": "0 kB",
+      "SwapFree": "0 kB"
+    },
+    "cpu_max": "unavailable",
+    "memory_max": "unavailable"
+  },
+  "topology": "CPU CORE SOCKET NODE L1d:L1i:L2:L3\n  0    0      0    0 0:0:0:0\n  1    0      0    0 0:0:0:0\n  2    1      0    0 1:1:1:0\n  3    1      0    0 1:1:1:0\n",
+  "baseline_build_s": 30.26074668299998,
+  "baseline_image": "sha256:46782fa409bf1dcd2f924e19490e3cec7b763e93ccccae0a9f1f76d41b36cf16",
+  "prior_build_s": 13.057853468000019,
+  "prior_image": "sha256:5dff41ba727eff664243647a5d4e93a06d4c522344c3d2b996362c8595de29bf",
+  "candidate_build_s": 13.920706102999986,
+  "candidate_image": "sha256:2dd06d0dde6f90ecd5abea1b708d6bc21f0d455f49b550f881cd93de2f0d06ad",
+  "asset_sha256": {
+    "generator.zip": "78f973f75d14b48e792628284f19c75de71fa597d20952e16a9ced93c78bee4a",
+    "starter-polars.zip": "0faa7a2cb78f78682f606f88748cdf7290622db2ee55a71261091f3e01392d60",
+    "dev-answer.zip": "c2439e0e2e7456d721852814e9928e077648803d5c57a1760a40c7d3b0864d20"
+  },
+  "generator_zip_sha256": "78f973f75d14b48e792628284f19c75de71fa597d20952e16a9ced93c78bee4a",
+  "rules_sha256": "90e1132a605d762423ba5958bec44bfddbc3506f94b3ba1068a28b7a427f4248",
+  "sandbox_runs": [
+    {
+      "variant": "baseline",
+      "dataset": "data-dev",
+      "docker_cli_wall_ms": 713.053417000026,
+      "internal_laps_ms": {
+        "open": 1.1,
+        "links": 10.5,
+        "parsed": 53.8,
+        "dedup": 61.6,
+        "sessionized": 74.6,
+        "written": 79.4,
+        "released": 81.3
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "prior",
+      "dataset": "data-dev",
+      "docker_cli_wall_ms": 235.02496300000075,
+      "internal_laps_ms": {
+        "open": 1.2,
+        "links": 10.7,
+        "parsed": 54.3,
+        "dedup": 58.8,
+        "sessionized": 72.0,
+        "written": 78.0,
+        "released": 79.8
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "candidate",
+      "dataset": "data-dev",
+      "docker_cli_wall_ms": 236.02324900002714,
+      "internal_laps_ms": {
+        "open": 1.1,
+        "links": 10.1,
+        "parsed": 53.3,
+        "dedup": 57.7,
+        "sessionized": 70.8,
+        "written": 75.1,
+        "released": 77.0
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "baseline",
+      "dataset": "data-20m",
+      "docker_cli_wall_ms": 3411.40034,
+      "internal_laps_ms": {
+        "open": 2.0,
+        "links": 140.9,
+        "parsed": 1153.2,
+        "dedup": 1334.6,
+        "sessionized": 1568.9,
+        "written": 1618.3,
+        "released": 1631.9
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "prior",
+      "dataset": "data-20m",
+      "docker_cli_wall_ms": 2084.495742999991,
+      "internal_laps_ms": {
+        "open": 2.0,
+        "links": 144.0,
+        "parsed": 1148.9,
+        "dedup": 1242.9,
+        "sessionized": 1465.1,
+        "written": 1515.5,
+        "released": 1529.1
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "candidate",
+      "dataset": "data-20m",
+      "docker_cli_wall_ms": 2093.131590999974,
+      "internal_laps_ms": {
+        "open": 2.1,
+        "links": 133.5,
+        "parsed": 1148.9,
+        "dedup": 1246.7,
+        "sessionized": 1482.5,
+        "written": 1529.0,
+        "released": 1542.2
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "candidate",
+      "dataset": "data-20m",
+      "docker_cli_wall_ms": 1981.5283000000363,
+      "internal_laps_ms": {
+        "open": 2.3,
+        "links": 135.6,
+        "parsed": 1130.9,
+        "dedup": 1238.7,
+        "sessionized": 1466.3,
+        "written": 1515.4,
+        "released": 1528.8
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "prior",
+      "dataset": "data-20m",
+      "docker_cli_wall_ms": 2016.8313770000168,
+      "internal_laps_ms": {
+        "open": 1.9,
+        "links": 132.8,
+        "parsed": 1116.3,
+        "dedup": 1210.5,
+        "sessionized": 1434.5,
+        "written": 1484.3,
+        "released": 1498.4
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "baseline",
+      "dataset": "data-20m",
+      "docker_cli_wall_ms": 2161.789392000003,
+      "internal_laps_ms": {
+        "open": 2.1,
+        "links": 133.8,
+        "parsed": 1138.3,
+        "dedup": 1311.3,
+        "sessionized": 1541.5,
+        "written": 1591.2,
+        "released": 1604.8
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "baseline",
+      "dataset": "data-20m",
+      "docker_cli_wall_ms": 2171.448345999977,
+      "internal_laps_ms": {
+        "open": 1.8,
+        "links": 131.8,
+        "parsed": 1137.5,
+        "dedup": 1310.0,
+        "sessionized": 1542.4,
+        "written": 1593.8,
+        "released": 1607.4
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "prior",
+      "dataset": "data-20m",
+      "docker_cli_wall_ms": 2039.6612190000383,
+      "internal_laps_ms": {
+        "open": 1.9,
+        "links": 143.5,
+        "parsed": 1152.1,
+        "dedup": 1246.4,
+        "sessionized": 1467.2,
+        "written": 1514.4,
+        "released": 1527.7
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "candidate",
+      "dataset": "data-20m",
+      "docker_cli_wall_ms": 2014.703652000037,
+      "internal_laps_ms": {
+        "open": 1.8,
+        "links": 132.6,
+        "parsed": 1108.7,
+        "dedup": 1203.4,
+        "sessionized": 1427.8,
+        "written": 1477.5,
+        "released": 1490.9
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "baseline",
+      "dataset": "data-60m",
+      "docker_cli_wall_ms": 6799.147421999919,
+      "internal_laps_ms": {
+        "open": 1.9,
+        "links": 495.0,
+        "parsed": 3857.9,
+        "dedup": 4497.4,
+        "sessionized": 5213.5,
+        "written": 5378.6,
+        "released": 5416.6
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "prior",
+      "dataset": "data-60m",
+      "docker_cli_wall_ms": 6300.4512730000215,
+      "internal_laps_ms": {
+        "open": 2.1,
+        "links": 494.3,
+        "parsed": 3641.9,
+        "dedup": 4082.2,
+        "sessionized": 4786.6,
+        "written": 4941.2,
+        "released": 4978.8
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "candidate",
+      "dataset": "data-60m",
+      "docker_cli_wall_ms": 6427.190544000041,
+      "internal_laps_ms": {
+        "open": 2.2,
+        "links": 480.0,
+        "parsed": 3648.1,
+        "dedup": 4112.8,
+        "sessionized": 4828.5,
+        "written": 5023.7,
+        "released": 5060.1
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "candidate",
+      "dataset": "data-60m",
+      "docker_cli_wall_ms": 6071.892256000069,
+      "internal_laps_ms": {
+        "open": 2.0,
+        "links": 498.9,
+        "parsed": 3673.8,
+        "dedup": 4120.0,
+        "sessionized": 4865.7,
+        "written": 5025.9,
+        "released": 5062.7
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "prior",
+      "dataset": "data-60m",
+      "docker_cli_wall_ms": 6355.815420999988,
+      "internal_laps_ms": {
+        "open": 2.0,
+        "links": 500.2,
+        "parsed": 3659.6,
+        "dedup": 4094.2,
+        "sessionized": 4793.9,
+        "written": 4955.3,
+        "released": 4991.5
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "baseline",
+      "dataset": "data-60m",
+      "docker_cli_wall_ms": 6958.166820999963,
+      "internal_laps_ms": {
+        "open": 2.1,
+        "links": 492.1,
+        "parsed": 3972.1,
+        "dedup": 4696.0,
+        "sessionized": 5396.6,
+        "written": 5559.0,
+        "released": 5600.8
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "baseline",
+      "dataset": "data-60m",
+      "docker_cli_wall_ms": 6619.085162000033,
+      "internal_laps_ms": {
+        "open": 2.0,
+        "links": 497.4,
+        "parsed": 3898.6,
+        "dedup": 4579.3,
+        "sessionized": 5275.1,
+        "written": 5425.3,
+        "released": 5462.0
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "prior",
+      "dataset": "data-60m",
+      "docker_cli_wall_ms": 6294.730887000014,
+      "internal_laps_ms": {
+        "open": 1.9,
+        "links": 503.1,
+        "parsed": 3746.9,
+        "dedup": 4195.5,
+        "sessionized": 4904.4,
+        "written": 5061.3,
+        "released": 5097.8
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "candidate",
+      "dataset": "data-60m",
+      "docker_cli_wall_ms": 6406.801085000097,
+      "internal_laps_ms": {
+        "open": 1.9,
+        "links": 511.4,
+        "parsed": 3713.6,
+        "dedup": 4182.6,
+        "sessionized": 4898.1,
+        "written": 5094.5,
+        "released": 5131.0
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "baseline",
+      "dataset": "data-60m-fresh",
+      "docker_cli_wall_ms": 6955.369292,
+      "internal_laps_ms": {
+        "open": 3.5,
+        "links": 505.3,
+        "parsed": 4017.9,
+        "dedup": 4792.6,
+        "sessionized": 5509.3,
+        "written": 5668.2,
+        "released": 5705.6
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "prior",
+      "dataset": "data-60m-fresh",
+      "docker_cli_wall_ms": 6538.821022999969,
+      "internal_laps_ms": {
+        "open": 2.0,
+        "links": 527.1,
+        "parsed": 3813.1,
+        "dedup": 4352.6,
+        "sessionized": 5107.4,
+        "written": 5267.8,
+        "released": 5305.5
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "candidate",
+      "dataset": "data-60m-fresh",
+      "docker_cli_wall_ms": 6581.510110999943,
+      "internal_laps_ms": {
+        "open": 3.5,
+        "links": 511.9,
+        "parsed": 3845.6,
+        "dedup": 4357.8,
+        "sessionized": 5129.9,
+        "written": 5294.8,
+        "released": 5332.3
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "candidate",
+      "dataset": "data-60m-fresh",
+      "docker_cli_wall_ms": 6524.494834000052,
+      "internal_laps_ms": {
+        "open": 2.1,
+        "links": 514.2,
+        "parsed": 3804.5,
+        "dedup": 4318.9,
+        "sessionized": 5059.2,
+        "written": 5293.8,
+        "released": 5330.7
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "prior",
+      "dataset": "data-60m-fresh",
+      "docker_cli_wall_ms": 6631.100793999963,
+      "internal_laps_ms": {
+        "open": 1.1,
+        "links": 508.6,
+        "parsed": 3811.3,
+        "dedup": 4343.7,
+        "sessionized": 5072.9,
+        "written": 5234.7,
+        "released": 5272.0
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "baseline",
+      "dataset": "data-60m-fresh",
+      "docker_cli_wall_ms": 7260.445958999981,
+      "internal_laps_ms": {
+        "open": 1.2,
+        "links": 496.4,
+        "parsed": 4122.2,
+        "dedup": 4951.6,
+        "sessionized": 5690.8,
+        "written": 5860.2,
+        "released": 5897.5
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "baseline",
+      "dataset": "data-60m-fresh",
+      "docker_cli_wall_ms": 7049.8911980000685,
+      "internal_laps_ms": {
+        "open": 1.7,
+        "links": 522.5,
+        "parsed": 4071.5,
+        "dedup": 4861.7,
+        "sessionized": 5612.0,
+        "written": 5779.5,
+        "released": 5817.2
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "prior",
+      "dataset": "data-60m-fresh",
+      "docker_cli_wall_ms": 6609.459466999965,
+      "internal_laps_ms": {
+        "open": 1.4,
+        "links": 533.6,
+        "parsed": 3844.9,
+        "dedup": 4385.8,
+        "sessionized": 5143.6,
+        "written": 5310.0,
+        "released": 5346.9
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    },
+    {
+      "variant": "candidate",
+      "dataset": "data-60m-fresh",
+      "docker_cli_wall_ms": 6711.531261999994,
+      "internal_laps_ms": {
+        "open": 1.6,
+        "links": 507.9,
+        "parsed": 3899.2,
+        "dedup": 4404.8,
+        "sessionized": 5169.7,
+        "written": 5325.6,
+        "released": 5362.1
+      },
+      "note": "Fresh container; CLI wall includes daemon startup/cleanup and is not official timing."
+    }
+  ],
+  "dev_and_36_fixtures": "passed"
+}
