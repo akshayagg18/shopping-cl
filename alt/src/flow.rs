@@ -126,6 +126,7 @@ pub struct Stream<T> {
 impl<T: Copy + Default> Stream<T> {
     /// Records per staging flush: a whole number of cache lines.
     const K: usize = match std::mem::size_of::<T>() {
+        12 => 16,
         16 => 4,
         24 => 8,
         32 => 4,
@@ -257,8 +258,11 @@ pub struct Sink {
     /// the event files' mapping (no page faults, nothing mapped to tear down at
     /// exit). Refs into it use file number `name_file`.
     pub names: Vec<u8>,
+    #[allow(dead_code)]
     name_file: usize,
     pub wide: Vec<Wide>,
+    /// this worker's block of person ids for new users
+    pub pids: (u32, u32),
 }
 
 // raw block pointers into this sink's own arena
@@ -275,6 +279,7 @@ impl Sink {
             names: Vec::with_capacity(name_cap + 16),
             name_file,
             wide: Vec::new(),
+            pids: (0, 0),
         }
     }
     /// End of the parse phase: everything staged goes to its blocks.
@@ -301,32 +306,13 @@ struct PendE {
     ingest: u32,
     ts: u32,
     pc: u32,
-    /// the user ID's first 16 bytes (the whole ID when its length, uref's low
-    /// 16 bits, is at most 16)
-    nm: [u8; 16],
 }
 
 #[inline(always)]
 fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
-    let (key, uref) = match persons.map.get(pd.uh) {
-        Some(k) => (k, 0),
-        None => {
-            // unlinked: the name comes from this event (any of the user's would do)
-            let n = sink.names.len();
-            let nl = (pd.uref & 0xFFFF) as usize;
-            if nl <= 16 && n + 16 <= sink.names.capacity() {
-                unsafe {
-                    std::ptr::write_unaligned(sink.names.as_mut_ptr().add(n) as *mut [u8; 16], pd.nm);
-                    sink.names.set_len(n + nl);
-                }
-                (unlinked_key(pd.uh), mkref(sink.name_file, n, nl))
-            } else {
-                (unlinked_key(pd.uh), pd.uref)
-            }
-        }
-    };
-    let pb = person_bucket(key);
-    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { key, uref, ts: pd.ts, pc: pd.pc });
+    let pid = persons.pid(pd.uh, pd.uref, &mut sink.pids);
+    let pb = (pid as usize) & (p2() - 1);
+    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { pid, ts: pd.ts, pc: pd.pc });
     let (part, id) = (pd.part as usize, pd.id);
     if i < (1 << LOC_I) - 1 && pb < 1 << (32 - LOC_I) {
         sink.cp.push(&mut sink.arena, part, CopyR { id, ingest: pd.ingest, loc: ((pb as u32) << LOC_I) | i });
@@ -376,7 +362,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
                 break 'valid;
             };
             let uh = h64(user);
-            persons.map.prefetch(uh);
+            persons.prefetch(uh);
             if filled == AHEAD {
                 emit_event(sink, persons, tid, &ring[head]);
             } else {
@@ -385,13 +371,6 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             // built in place in the ring slot just emitted
             let pd = &mut ring[head];
             let ua = user.as_ptr() as usize - line.as_ptr() as usize;
-            if ua + 16 <= line.len() {
-                pd.nm = unsafe { std::ptr::read_unaligned(line.as_ptr().add(ua) as *const [u8; 16]) };
-            } else {
-                let k = user.len().min(16);
-                pd.nm = [0; 16];
-                pd.nm[..k].copy_from_slice(&user[..k]);
-            }
             pd.uh = uh;
             pd.uref = mkref(f, p + ua, user.len());
             pd.id = copy_id(eid_h, eid_c);
@@ -415,6 +394,8 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
 #[derive(Clone, Copy, Default)]
 struct PendC {
     uh: u64,
+    /// the user ID (names the person if this click meets the ID first)
+    uref: u64,
     cref: u64,
     ts: u32,
     camp: u32,
@@ -422,8 +403,8 @@ struct PendC {
 
 #[inline(always)]
 fn emit_click(sink: &mut Sink, persons: &Persons, pd: &PendC) {
-    let key = persons.map.get(pd.uh).unwrap_or_else(|| unlinked_key(pd.uh));
-    sink.ck.push(&mut sink.arena, person_bucket(key), Ck { key, cref: pd.cref, ts: pd.ts, camp: pd.camp });
+    let pid = persons.pid(pd.uh, pd.uref, &mut sink.pids);
+    sink.ck.push(&mut sink.arena, (pid as usize) & (p2() - 1), Ck { pid, cref: pd.cref, ts: pd.ts, camp: pd.camp });
 }
 
 /// Parse one unit of click lines into `sink`.
@@ -449,8 +430,8 @@ pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
         }
         let Some(camp) = lk.campaigns.get(h64(fld(2))) else { return };
         let uh = h64(user);
-        persons.map.prefetch(uh);
-        let pd = PendC { uh, cref: mkref(f, p + fs.span(line, 0).0, cid.len()), ts: (ts - lo) as u32, camp: camp as u32 };
+        persons.prefetch(uh);
+        let pd = PendC { uh, uref: mkref(f, p + fs.span(line, 1).0, user.len()), cref: mkref(f, p + fs.span(line, 0).0, cid.len()), ts: (ts - lo) as u32, camp: camp as u32 };
         if filled == AHEAD {
             emit_click(sink, persons, &ring[head]);
         } else {

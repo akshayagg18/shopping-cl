@@ -209,6 +209,18 @@ struct Slot {
     val: u64,
 }
 
+/// `n` empty slots from zeroed memory: big tables come straight from fresh
+/// mappings, so no thread fills them (the first touch, by the parallel inserts,
+/// maps their pages) instead of one thread writing zeros before anyone can start.
+fn zeroed_slots(n: usize) -> Vec<Slot> {
+    let layout = std::alloc::Layout::array::<Slot>(n).unwrap();
+    unsafe {
+        let p = std::alloc::alloc_zeroed(layout) as *mut Slot;
+        assert!(!p.is_null(), "out of memory");
+        Vec::from_raw_parts(p, n, n)
+    }
+}
+
 struct U64Map {
     mask: usize,
     slots: Vec<Slot>,
@@ -770,14 +782,93 @@ fn lookups(inp: &Inputs) -> Lookups {
 
 // ---------------------------------------------------------------- links
 
-const LINKED: u64 = 1 << 63;
+/// A map value: VALID | person id (0 while the inserting thread writes it).
+const VALID: u64 = 1 << 63;
+/// Person ids handed to a worker at a time for the unlinked users it meets first.
+const PID_BLOCK: u32 = 4096;
 
-/// Person keys: a linked ID maps to LINKED | ref of its component's
-/// byte-wise smallest ID (refs stay below 2^63); any other ID's key is its own
-/// hash with the top bit cleared.
-struct Persons {
-    /// user hash -> person key, for every linked ID
+/// Every user ID seen (link endpoints first, then each new ID of an event or a
+/// click) maps to a dense person id: all IDs of a link component share their
+/// component's id, any other ID has its own. `names[pid]` is the person's name
+/// (a ref): the component's byte-wise smallest ID, or the ID itself.
+pub struct Persons {
     map: PersonMap,
+    names: Vec<std::sync::atomic::AtomicU64>,
+    /// next free block of person ids
+    next: std::sync::atomic::AtomicU32,
+}
+
+impl Persons {
+    /// Upper bound of the person ids in use (after the parse phase).
+    #[inline]
+    pub fn npid(&self) -> usize {
+        self.next.load(Ordering::Relaxed) as usize
+    }
+    #[inline(always)]
+    pub fn name(&self, pid: u32) -> u64 {
+        unsafe { self.names.get_unchecked(pid as usize) }.load(Ordering::Relaxed)
+    }
+    #[inline(always)]
+    pub fn prefetch(&self, uh: u64) {
+        self.map.prefetch(uh)
+    }
+    /// The person id of the user ID hashing to `uh`, inserting the ID (named
+    /// `uref`, with a new id from `blk`) if it is new.
+    #[inline(always)]
+    pub fn pid(&self, uh: u64, uref: u64, blk: &mut (u32, u32)) -> u32 {
+        let m = &self.map;
+        let mut i = m.index(uh);
+        loop {
+            let k = m.key_at(i).load(Ordering::Relaxed);
+            if k == uh {
+                let v = m.val_at(i).load(Ordering::Acquire);
+                if v != 0 {
+                    return v as u32;
+                }
+                return self.wait(i);
+            }
+            if k == 0 {
+                match m.key_at(i).compare_exchange(0, uh, Ordering::Relaxed, Ordering::Relaxed) {
+                    Ok(_) => {
+                        if blk.0 == blk.1 {
+                            let b = self.next.fetch_add(PID_BLOCK, Ordering::Relaxed);
+                            assert!((b + PID_BLOCK) as usize <= self.names.len(), "person ids exhausted");
+                            *blk = (b, b + PID_BLOCK);
+                        }
+                        let p = blk.0;
+                        blk.0 += 1;
+                        unsafe { self.names.get_unchecked(p as usize) }.store(uref, Ordering::Relaxed);
+                        m.val_at(i).store(VALID | p as u64, Ordering::Release);
+                        return p;
+                    }
+                    Err(c) if c == uh => return self.wait(i),
+                    Err(_) => {}
+                }
+            }
+            i = (i + 1) & m.mask;
+        }
+    }
+    #[cold]
+    #[inline(never)]
+    fn wait(&self, i: usize) -> u32 {
+        loop {
+            let v = self.map.val_at(i).load(Ordering::Acquire);
+            if v != 0 {
+                return v as u32;
+            }
+            std::hint::spin_loop();
+        }
+    }
+}
+
+/// `n` zeroed values from fresh memory (no fill).
+fn zeroed_atomics(n: usize) -> Vec<std::sync::atomic::AtomicU64> {
+    let layout = std::alloc::Layout::array::<std::sync::atomic::AtomicU64>(n.max(1)).unwrap();
+    unsafe {
+        let p = std::alloc::alloc_zeroed(layout) as *mut std::sync::atomic::AtomicU64;
+        assert!(!p.is_null(), "out of memory");
+        Vec::from_raw_parts(p, n.max(1), n.max(1))
+    }
 }
 
 /// Linear probing from the hash's top bits, filled concurrently (a slot's index
@@ -793,7 +884,7 @@ impl PersonMap {
     /// distinct; link endpoints repeat, so it is far lower in practice).
     fn with_room(n: usize) -> Self {
         let bits = ((n.max(1) * 4 / 3).next_power_of_two().max(1 << 14)).trailing_zeros();
-        PersonMap { shift: 64 - bits, mask: (1 << bits) - 1, slots: vec![Slot::default(); 1 << bits] }
+        PersonMap { shift: 64 - bits, mask: (1 << bits) - 1, slots: zeroed_slots(1 << bits) }
     }
     #[inline(always)]
     fn index(&self, k: u64) -> usize {
@@ -807,7 +898,30 @@ impl PersonMap {
     fn val_at(&self, i: usize) -> &std::sync::atomic::AtomicU64 {
         unsafe { &*((self.slots.as_ptr().add(i) as *const std::sync::atomic::AtomicU64).add(1)) }
     }
+    /// `insert`, and whether this call put the key there.
+    #[inline(always)]
+    fn insert_new(&self, k: u64, v: u64) -> (usize, bool) {
+        let mut i = self.index(k);
+        loop {
+            let cur = self.key_at(i).load(Ordering::Relaxed);
+            if cur == k {
+                return (i, false);
+            }
+            if cur == 0 {
+                match self.key_at(i).compare_exchange(0, k, Ordering::Relaxed, Ordering::Relaxed) {
+                    Ok(_) => {
+                        self.val_at(i).store(v, Ordering::Relaxed);
+                        return (i, true);
+                    }
+                    Err(c) if c == k => return (i, false),
+                    Err(_) => {}
+                }
+            }
+            i = (i + 1) & self.mask;
+        }
+    }
     /// Concurrent insert of non-zero `k` (value `v` if new); returns its slot.
+    #[allow(dead_code)]
     #[inline(always)]
     fn insert(&self, k: u64, v: u64) -> usize {
         let mut i = self.index(k);
@@ -839,6 +953,7 @@ impl PersonMap {
         }
     }
     /// Lookup; the caller prefetches, so no filter in front (its own load would miss).
+    #[allow(dead_code)]
     #[inline(always)]
     fn get(&self, k: u64) -> Option<u64> {
         let mut i = self.index(k);
@@ -855,17 +970,10 @@ impl PersonMap {
     }
 }
 
-#[inline(always)]
-fn unlinked_key(user_hash: u64) -> u64 {
-    user_hash & !LINKED
-}
 
-#[inline(always)]
-fn person_bucket(key: u64) -> usize {
-    (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - p2_bits())) as usize
-}
 
-fn links(inp: &Inputs) -> Persons {
+/// `users`: room for that many more IDs, met while parsing.
+fn links(inp: &Inputs, users: usize) -> Persons {
     use std::sync::atomic::AtomicU32;
     let t0 = std::time::Instant::now();
     let tl = std::env::var_os("SS_LT").is_some();
@@ -891,43 +999,55 @@ fn links(inp: &Inputs) -> Persons {
         })
         .collect();
     lt("parsed");
-    // every ID into the table (slot = node), edges as slot pairs
+    // every ID into the table (slot = node), edges as slot pairs, and the list
+    // of the slots taken (the passes below visit only those: the table also
+    // has room for the users met later)
     let total: usize = parts.iter().map(|v| v.len()).sum();
-    let map = PersonMap::with_room(total);
+    let map = PersonMap::with_room(total + users);
     let cap = map.slots.len();
-    let edges: Vec<Vec<(u32, u32)>> = parts
+    let res: Vec<(Vec<(u32, u32)>, Vec<u32>)> = parts
         .par_iter()
         .map(|v| {
             const AH: usize = 8;
             let mut e = Vec::with_capacity(v.len() / 2);
+            let mut taken = Vec::with_capacity(v.len());
             for k in (0..v.len()).step_by(2) {
                 if k + AH + 1 < v.len() {
                     map.prefetch(v[k + AH].0);
                     map.prefetch(v[k + AH + 1].0);
                 }
-                let a = map.insert(v[k].0, v[k].1);
-                let b = map.insert(v[k + 1].0, v[k + 1].1);
+                let (a, na) = map.insert_new(v[k].0, v[k].1);
+                let (b, nb) = map.insert_new(v[k + 1].0, v[k + 1].1);
+                if na {
+                    taken.push(a as u32);
+                }
+                if nb {
+                    taken.push(b as u32);
+                }
                 e.push((a as u32, b as u32));
             }
-            e
+            (e, taken)
         })
         .collect();
     drop(parts);
+    let (edges, taken): (Vec<Vec<(u32, u32)>>, Vec<Vec<u32>>) = res.into_iter().unzip();
     lt("inserted");
-    // lock-free union-find: a root only ever links to a smaller root
-    let parent: Vec<AtomicU32> = (0..cap as u32).into_par_iter().with_min_len(1 << 14).map(AtomicU32::new).collect();
+    // lock-free union-find over zeroed memory: parent[x] = p + 1, 0 for a root;
+    // a root only ever links to a smaller root
+    let parent = zeroed_u32(cap);
     #[inline(always)]
     fn find(p: &[AtomicU32], mut x: u32) -> u32 {
         loop {
             let px = p[x as usize].load(Ordering::Relaxed);
-            if px == x {
+            if px == 0 {
                 return x;
             }
-            let gx = p[px as usize].load(Ordering::Relaxed);
-            if gx != px {
-                let _ = p[x as usize].compare_exchange_weak(px, gx, Ordering::Relaxed, Ordering::Relaxed);
+            let gx = p[(px - 1) as usize].load(Ordering::Relaxed);
+            if gx == 0 {
+                return px - 1;
             }
-            x = gx;
+            let _ = p[x as usize].compare_exchange_weak(px, gx, Ordering::Relaxed, Ordering::Relaxed);
+            x = gx - 1;
         }
     }
     edges.par_iter().for_each(|es| {
@@ -940,7 +1060,7 @@ fn links(inp: &Inputs) -> Persons {
                     break;
                 }
                 let (hi, lo) = if a > b { (a, b) } else { (b, a) };
-                if parent[hi as usize].compare_exchange(hi, lo, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                if parent[hi as usize].compare_exchange(0, lo + 1, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
                     break;
                 }
             }
@@ -948,59 +1068,91 @@ fn links(inp: &Inputs) -> Persons {
     });
     drop(edges);
     lt("uf");
-    // byte-wise smallest ID per component: best[root] = its slot; every
-    // parent is set to its root on the way (later passes need one hop)
-    let best: Vec<AtomicU32> = (0..cap as u32).into_par_iter().with_min_len(1 << 14).map(AtomicU32::new).collect();
+    // byte-wise smallest ID per component: best[root] = slot + 1 (0: the root
+    // itself); every parent is set to its root on the way (one hop after)
+    let best = zeroed_u32(cap);
     let name_of = |i: usize| deref(map.val_at(i).load(Ordering::Relaxed));
-    (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
-        if map.key_at(i).load(Ordering::Relaxed) == 0 {
-            return;
-        }
-        let r = find(&parent, i as u32) as usize;
-        if r == i {
-            return;
-        }
-        parent[i].store(r as u32, Ordering::Relaxed);
-        let mine = name_of(i);
-        let mut cur = best[r].load(Ordering::Relaxed);
-        while mine < name_of(cur as usize) {
-            match best[r].compare_exchange_weak(cur, i as u32, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => break,
-                Err(c) => cur = c,
+    taken.par_iter().for_each(|ts| {
+        for &i in ts {
+            let i = i as usize;
+            let r = find(&parent, i as u32) as usize;
+            if r == i {
+                continue;
+            }
+            parent[i].store(r as u32 + 1, Ordering::Relaxed);
+            let mine = name_of(i);
+            let mut cur = best[r].load(Ordering::Relaxed);
+            loop {
+                let c = if cur == 0 { r } else { cur as usize - 1 };
+                if !(mine < name_of(c)) {
+                    break;
+                }
+                match best[r].compare_exchange_weak(cur, i as u32 + 1, Ordering::Relaxed, Ordering::Relaxed) {
+                    Ok(_) => break,
+                    Err(c) => cur = c,
+                }
             }
         }
     });
     lt("best");
-    // a root's value becomes its component's name ref (it reads only its own
-    // component's non-root slots), then every value becomes LINKED | that ref
-    (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
-        if map.key_at(i).load(Ordering::Relaxed) != 0 && parent[i].load(Ordering::Relaxed) == i as u32 {
-            let b = best[i].load(Ordering::Relaxed) as usize;
-            if b != i {
-                map.val_at(i).store(map.val_at(b).load(Ordering::Relaxed), Ordering::Relaxed);
+    // a dense person id per component (its root), from blocks; the name first
+    // (the component's best slot may be the root, whose value changes here)
+    // ids: every taken slot at most once, plus a partly used block per task and per worker
+    let names = zeroed_atomics(cap + (taken.len() + rayon::current_num_threads() + 2) * PID_BLOCK as usize);
+    let next = std::sync::atomic::AtomicU32::new(0);
+    taken.par_iter().for_each(|ts| {
+        let mut blk = (0u32, 0u32);
+        for &i in ts {
+            let i = i as usize;
+            if parent[i].load(Ordering::Relaxed) != 0 {
+                continue;
             }
+            if blk.0 == blk.1 {
+                let b = next.fetch_add(PID_BLOCK, Ordering::Relaxed);
+                blk = (b, b + PID_BLOCK);
+            }
+            let p = blk.0;
+            blk.0 += 1;
+            let bs = best[i].load(Ordering::Relaxed);
+            let b = if bs == 0 { i } else { bs as usize - 1 };
+            names[p as usize].store(map.val_at(b).load(Ordering::Relaxed), Ordering::Relaxed);
+            map.val_at(i).store(VALID | p as u64, Ordering::Relaxed);
         }
     });
-    (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
-        if map.key_at(i).load(Ordering::Relaxed) != 0 {
-            let r = parent[i].load(Ordering::Relaxed) as usize;
-            map.val_at(i).store(LINKED | map.val_at(r).load(Ordering::Relaxed), Ordering::Relaxed);
+    // every other ID takes its root's id (parents point at roots after the best pass)
+    taken.par_iter().for_each(|ts| {
+        for &i in ts {
+            let i = i as usize;
+            let pr = parent[i].load(Ordering::Relaxed);
+            if pr != 0 {
+                map.val_at(i).store(map.val_at(pr as usize - 1).load(Ordering::Relaxed), Ordering::Relaxed);
+            }
         }
     });
     lt("named");
     std::mem::forget(parent);
     std::mem::forget(best);
-    Persons { map }
+    let n = next.load(Ordering::Relaxed);
+    Persons { map, names, next: std::sync::atomic::AtomicU32::new(n) }
+}
+
+/// `n` zeroed atomics from fresh memory (no fill).
+fn zeroed_u32(n: usize) -> Vec<std::sync::atomic::AtomicU32> {
+    let layout = std::alloc::Layout::array::<std::sync::atomic::AtomicU32>(n.max(1)).unwrap();
+    unsafe {
+        let p = std::alloc::alloc_zeroed(layout) as *mut std::sync::atomic::AtomicU32;
+        assert!(!p.is_null(), "out of memory");
+        Vec::from_raw_parts(p, n.max(1), n.max(1))
+    }
 }
 
 // ---------------------------------------------------------------- records
 
-/// A surviving event, keyed by person. 24 bytes.
+/// A surviving event, by person id. 12 bytes.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct Ev2 {
-    key: u64,
-    uref: u64,
+    pid: u32,
     ts: u32,
     pc: u32,
 }
@@ -1023,11 +1175,11 @@ struct Ck1 {
     camp: u32,
 }
 
-/// A valid click, keyed by person.
+/// A valid click, by person id.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct Ck {
-    key: u64,
+    pid: u32,
     cref: u64,
     ts: u32, // ms since window start - 7 days (CLICK_REACH): never negative
     camp: u32,
@@ -1069,17 +1221,12 @@ struct Scratch {
     pos: Vec<u32>,    // position in active list
     cat: Vec<i64>,
     // per-bucket grouping
-    table: Vec<(u64, u32)>,
-    used: Vec<u32>,
     ev_cnt: Vec<u32>,
     ck_cnt: Vec<u32>,
     ev_local: Vec<u32>,
     ck_local: Vec<u32>,
     evs_sorted: Vec<Ev1>,
     cks_sorted: Vec<Ck1>,
-    // per grouped person: key and the ref of one of its events' user IDs
-    pkey: Vec<u64>,
-    puref: Vec<u64>,
     ev_pos: Vec<u32>,
     ck_pos: Vec<u32>,
     // per person: occupied half-hour bins (bitmap), their aggregates, the
@@ -1106,16 +1253,12 @@ impl Scratch {
             active: Vec::new(),
             pos: vec![0; ncamp + 1],
             cat: vec![0; 256],
-            table: Vec::new(),
-            used: Vec::new(),
             ev_cnt: Vec::new(),
             ck_cnt: Vec::new(),
             ev_local: Vec::new(),
             ck_local: Vec::new(),
             evs_sorted: Vec::new(),
             cks_sorted: Vec::new(),
-            pkey: Vec::new(),
-            puref: Vec::new(),
             ev_pos: Vec::new(),
             ck_pos: Vec::new(),
             bm: Vec::new(),
@@ -1127,68 +1270,24 @@ impl Scratch {
 }
 
 /// Group one person bucket's events and clicks by person, then sessionize.
-/// Local person id of `key` in the grouping table, inserting a new person.
-#[inline(always)]
-fn group_id(sc: &mut Scratch, key: u64, cap: &mut usize) -> u32 {
-    let slot_of = |k: u64, mask: usize| (k.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 32) as usize & mask;
-    let mask = *cap - 1;
-    let mut s = slot_of(key, mask);
-    let id = loop {
-        let t = unsafe { sc.table.get_unchecked_mut(s) };
-        if t.1 == u32::MAX {
-            *t = (key, sc.ev_cnt.len() as u32);
-            sc.used.push(s as u32);
-            sc.ev_cnt.push(0);
-            break t.1;
-        }
-        if t.0 == key {
-            break t.1;
-        }
-        s = (s + 1) & mask;
-    };
-    if sc.used.len() * 2 > *cap {
-        // grow: clear the used slots, re-insert every person at twice the size
-        let entries: Vec<(u64, u32)> = sc.used.iter().map(|&u| sc.table[u as usize]).collect();
-        for &u in &sc.used {
-            sc.table[u as usize] = (0, u32::MAX);
-        }
-        *cap *= 2;
-        let mask = *cap - 1;
-        if sc.table.len() < *cap {
-            sc.table.resize(*cap, (0, u32::MAX));
-        }
-        sc.used.clear();
-        for (k, id) in entries {
-            let mut s = slot_of(k, mask);
-            while sc.table[s].1 != u32::MAX {
-                s = (s + 1) & mask;
-            }
-            sc.table[s] = (k, id);
-            sc.used.push(s as u32);
-        }
-    }
-    id
-}
 
 /// Group one person partition's live events and clicks by person, then
 /// sessionize. Gathering the records from every worker's stream, numbering
 /// persons and counting half-hour bins happen in one pass.
 #[allow(clippy::too_many_arguments)]
-fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &[flow::Sink], dead: &flow::Dead, evb: &mut Vec<Ev1>, ckb: &mut Vec<Ck1>) {
+fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &[flow::Sink], dead: &flow::Dead, evb: &mut Vec<Ev1>, ckb: &mut Vec<Ck1>, persons: &Persons) {
     let n: usize = sinks.iter().map(|s| s.ev.len(b)).sum();
     if n == 0 {
         return;
     }
-    // persons are ~30x fewer than events: the table starts small (cache
-    // resident) and doubles when half full
-    let mut cap = (n / 8).next_power_of_two().max(256);
-    if sc.table.len() < cap {
-        sc.table.resize(cap, (0, u32::MAX));
+    // person ids are dense and this partition holds the ids congruent to b:
+    // a person's local index is its id >> p2_bits, no hashing
+    let pbits = p2_bits();
+    let nloc = (persons.npid() >> pbits) + 1;
+    if sc.ev_cnt.len() < nloc {
+        sc.ev_cnt.resize(nloc, 0);
+        sc.ck_cnt.resize(nloc, 0);
     }
-    sc.used.clear();
-    sc.ev_cnt.clear();
-    sc.pkey.clear();
-    sc.puref.clear();
     sc.ev_local.clear();
     sc.ev_local.reserve(n);
     let nb = ctx.nbins;
@@ -1198,6 +1297,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     }
     evb.clear();
     evb.reserve(n);
+    let (mut lo, mut hi) = (usize::MAX, 0usize);
     for (t, s) in sinks.iter().enumerate() {
         let mut i = 0usize;
         let mut dw = 0u64;
@@ -1206,29 +1306,27 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                 if i % 64 == 0 {
                     dw = dead.word(t, b, i / 64);
                 }
-                if j % 4 == 0 {
+                if j % 8 == 0 {
                     // records were streamed out of the cache: fetch ahead (the
                     // hardware prefetcher restarts at every 4 KiB)
                     #[cfg(target_arch = "x86_64")]
                     unsafe {
-                        std::arch::x86_64::_mm_prefetch(sl.as_ptr().wrapping_add(j + 24) as *const i8, std::arch::x86_64::_MM_HINT_T0)
+                        std::arch::x86_64::_mm_prefetch(sl.as_ptr().wrapping_add(j + 48) as *const i8, std::arch::x86_64::_MM_HINT_T0)
                     };
                 }
                 if (dw >> (i % 64)) & 1 == 0 {
-                    let id = group_id(sc, e.key, &mut cap);
-                    if id as usize == sc.pkey.len() {
-                        sc.pkey.push(e.key);
-                        sc.puref.push(e.uref);
-                    }
+                    let li = (e.pid >> pbits) as usize;
                     unsafe {
-                        *sc.ev_cnt.get_unchecked_mut(id as usize) += 1;
+                        *sc.ev_cnt.get_unchecked_mut(li) += 1;
                         let len = evb.len();
                         evb.as_mut_ptr().add(len).write(Ev1 { ts: e.ts, pc: e.pc });
                         evb.set_len(len + 1);
                         let len = sc.ev_local.len();
-                        sc.ev_local.as_mut_ptr().add(len).write(id);
+                        sc.ev_local.as_mut_ptr().add(len).write(li as u32);
                         sc.ev_local.set_len(len + 1);
                     }
+                    lo = lo.min(li);
+                    hi = hi.max(li);
                 }
                 i += 1;
             }
@@ -1238,53 +1336,35 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     if n == 0 {
         return;
     }
-    let mask = cap - 1;
-    let slot_of = |k: u64, mask: usize| (k.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 32) as usize & mask;
-    let evin: &[Ev1] = evb;
-    let np = sc.ev_cnt.len();
-    sc.ck_cnt.clear();
-    sc.ck_cnt.resize(np, 0);
     sc.ck_local.clear();
     ckb.clear();
     for s in sinks {
         for sl in s.ck.slices(b) {
             for c in sl {
-                let mut s = slot_of(c.key, mask);
-                let id = loop {
-                    let t = unsafe { sc.table.get_unchecked(s) };
-                    if t.1 == u32::MAX {
-                        break u32::MAX;
-                    }
-                    if t.0 == c.key {
-                        break t.1;
-                    }
-                    s = (s + 1) & mask;
-                };
+                let li = (c.pid >> pbits) as usize;
                 // clicks of persons without events never matter
-                if id != u32::MAX {
-                    sc.ck_cnt[id as usize] += 1;
+                if li <= hi && unsafe { *sc.ev_cnt.get_unchecked(li) } != 0 {
+                    unsafe { *sc.ck_cnt.get_unchecked_mut(li) += 1 };
                     ckb.push(Ck1 { cref: c.cref, ts: c.ts, camp: c.camp });
-                    sc.ck_local.push(id);
+                    sc.ck_local.push(li as u32);
                 }
             }
         }
     }
     let ckin: &[Ck1] = ckb;
-    for &s in &sc.used {
-        sc.table[s as usize] = (0, u32::MAX);
-    }
-    // prefix sums -> start offsets (ev_cnt / ck_cnt become running positions)
-    let mut acc = 0u32;
-    for c in sc.ev_cnt.iter_mut() {
-        let v = *c;
-        *c = acc;
-        acc += v;
-    }
-    let mut cacc = 0u32;
-    for c in sc.ck_cnt.iter_mut() {
-        let v = *c;
-        *c = cacc;
-        cacc += v;
+    let evin: &[Ev1] = evb;
+    // start offsets of the local persons lo..=hi (ev_pos / ck_pos become ends)
+    let span = hi - lo + 1;
+    sc.ev_pos.clear();
+    sc.ck_pos.clear();
+    sc.ev_pos.reserve(span);
+    sc.ck_pos.reserve(span);
+    let (mut acc, mut cacc) = (0u32, 0u32);
+    for k in lo..=hi {
+        sc.ev_pos.push(acc);
+        sc.ck_pos.push(cacc);
+        acc += sc.ev_cnt[k];
+        cacc += sc.ck_cnt[k];
     }
     sc.evs_sorted.clear();
     sc.evs_sorted.reserve(n);
@@ -1293,38 +1373,35 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     unsafe {
         sc.evs_sorted.set_len(n);
         sc.cks_sorted.set_len(cacc as usize);
-    }
-    // events by person (one counting pass); inside a person, events are binned
-    // by half hour in person_sessions
-    sc.ev_pos.clear();
-    sc.ev_pos.extend_from_slice(&sc.ev_cnt);
-    unsafe {
-        for (e, &id) in evin.iter().zip(&sc.ev_local) {
-            let at = sc.ev_pos.get_unchecked_mut(id as usize);
+        for (e, &li) in evin.iter().zip(&sc.ev_local) {
+            let at = sc.ev_pos.get_unchecked_mut(li as usize - lo);
             *sc.evs_sorted.get_unchecked_mut(*at as usize) = *e;
             *at += 1;
         }
     }
-    sc.ck_pos.clear();
-    sc.ck_pos.extend_from_slice(&sc.ck_cnt);
-    for (c, &id) in ckin.iter().zip(&sc.ck_local) {
-        let at = &mut sc.ck_pos[id as usize];
+    for (c, &li) in ckin.iter().zip(&sc.ck_local) {
+        let at = &mut sc.ck_pos[li as usize - lo];
         sc.cks_sorted[*at as usize] = *c;
         *at += 1;
     }
     let evs = std::mem::take(&mut sc.evs_sorted);
-    let cks = std::mem::take(&mut sc.cks_sorted);
-    let mut evs = evs;
-    let mut cks = cks;
-    for pid in 0..np {
-        let (es, ee) = (sc.ev_cnt[pid] as usize, sc.ev_pos[pid] as usize);
-        let (cs, ce) = (sc.ck_cnt[pid] as usize, sc.ck_pos[pid] as usize);
-        let ev = &mut evs[es..ee];
+    let mut cks = std::mem::take(&mut sc.cks_sorted);
+    for k in lo..=hi {
+        let ne = sc.ev_cnt[k] as usize;
+        if ne == 0 {
+            continue;
+        }
+        let ee = sc.ev_pos[k - lo] as usize;
+        let ce = sc.ck_pos[k - lo] as usize;
+        let cs = ce - sc.ck_cnt[k] as usize;
         let ck = &mut cks[cs..ce];
         if ck.len() > 1 {
             ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
         }
-        person_sessions(ctx, sc.pkey[pid], sc.puref[pid], ev, ck, agg, sc);
+        let pid = ((k << pbits) | b) as u32;
+        person_sessions(ctx, persons.name(pid), &evs[ee - ne..ee], ck, agg, sc);
+        sc.ev_cnt[k] = 0;
+        sc.ck_cnt[k] = 0;
     }
     sc.evs_sorted = evs;
     sc.cks_sorted = cks;
@@ -1390,8 +1467,7 @@ fn bin_runs(evs: &[Ev1], sc: &mut Scratch) {
 }
 
 /// `evs`: one person's events, any order. `cks`: the person's clicks by (ts, click_id).
-fn person_sessions(ctx: &Ctx, key: u64, uref: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg, sc: &mut Scratch) {
-    let name = if key & LINKED != 0 { key & !LINKED } else { uref };
+fn person_sessions(ctx: &Ctx, name: u64, evs: &[Ev1], cks: &[Ck1], agg: &mut Agg, sc: &mut Scratch) {
     let (mut lo, mut hi) = (0usize, 0usize);
     let mut cur_day: i64 = i64::MIN;
     let (mut d_sess, mut d_evs, mut d_rev) = (0u32, 0u32, 0i64);
@@ -1698,7 +1774,9 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         });
     }
     // links first: every record below is routed straight to its person
-    let (persons, lk) = rayon::join(|| links(&inp), || lookups(&inp));
+    // room in the person table for the IDs met while parsing (generated data
+    // has about one user ID per 15 events; this allows one per 8)
+    let (persons, lk) = rayon::join(|| links(&inp, est_events / 8 + 4096), || lookups(&inp));
     lap("links");
     let nthreads = rayon::current_num_threads();
     let nfiles = unsafe { &*FILES.load(Ordering::Relaxed) }.len();
@@ -1756,7 +1834,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         let i = rayon::current_thread_index().unwrap_or(0) % nthreads;
         let mut guard = states[i].lock().unwrap();
         let (agg, sc, evb, ckb) = &mut *guard;
-        process_bucket(&ctx, agg, sc, b, &sinks, &dead, evb, ckb);
+        process_bucket(&ctx, agg, sc, b, &sinks, &dead, evb, ckb, &persons);
     });
     let aggs: Vec<Agg> = states.into_iter().map(|m| m.into_inner().unwrap().0).collect();
     lap("sessionized");

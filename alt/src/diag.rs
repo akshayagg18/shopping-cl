@@ -509,7 +509,7 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let dev_gb = dir_gb(data);
-    eprintln!("D25 (alt = v16b as scored, pgo = v16b+PGO on rust 1.97.0, np = same without PGO) {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
+    eprintln!("D29 (alt = v18 as submitted; others v18b = v18 + zeroed person map, partition variants) {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
     eprintln!("cols: wall/int ms: open links parse dedup sess write | user sys rss faults | digests");
     let dg = |k: u64, line: &str, base: Option<(u64, u64)>| -> String {
         match (digests(line), base) {
@@ -546,10 +546,15 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
         true
     };
     eprintln!("{}", child("alt-dev", data, &ob, threads, &[]));
-    eprintln!("{}", child("np-dev", data, &ob, threads, &[("SS_DIGEST", "1")]));
     run_k(2, &[("x2", &[])]);
-    let round: [(&str, &[(&str, &str)]); 3] = [("alt", &[]), ("pgo", &[]), ("np", &[])];
-    let checks: [(&str, &[(&str, &str)]); 1] = [("np-chk", &[])];
+    let round: [(&str, &[(&str, &str)]); 5] = [
+        ("alt", &[]),
+        ("base", &[]),
+        ("p9d10", &[("SS_P2B", "9")]),
+        ("p10d9", &[("SS_PDB", "9")]),
+        ("p9d9", &[("SS_P2B", "9"), ("SS_PDB", "9")]),
+    ];
+    let checks: [(&str, &[(&str, &str)]); 1] = [("p9d9-chk", &[("SS_P2B", "9"), ("SS_PDB", "9")])];
     let plan = |rounds: usize| {
         let mut v: Vec<(&str, &[(&str, &str)])> = vec![("warm", &[])];
         for r in 0..rounds {
@@ -562,10 +567,10 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     };
     let kb: usize = std::env::var("SS_DIAG_BIG").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
     let km: usize = std::env::var("SS_DIAG_MID").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
-    if !run_k(kb, &plan(2)) {
-        run_k(kb * 2 / 3, &plan(2));
+    run_k(km, &plan(3));
+    if !run_k(kb, &plan(1)) {
+        run_k(kb * 2 / 3, &plan(1));
     }
-    run_k(km, &plan(4));
     let _ = std::fs::remove_dir_all(&ob);
     eprintln!("done {:.1}s", t0.elapsed().as_secs_f64());
 }

@@ -336,7 +336,8 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
         if eid.is_empty() {
             return;
         }
-        let ingest_ms = parse::ingest_memo(fld(3), &mut memo).unwrap_or(i64::MAX / 2);
+        // both timestamps at once (ts only counts for a line with a user)
+        let (ts_opt, ingest_ms) = parse::ts_pair(fld(2), fld(3), &mut memo);
         let (eid_h, eid_c) = h64_chk(eid);
         let ingest = (ingest_ms.max(0) / 1000).min(u32::MAX as i64) as u32;
         'valid: {
@@ -344,7 +345,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             if user.is_empty() {
                 break 'valid;
             }
-            let Some(ts) = parse::ts_memo(fld(2), &mut memo) else { break 'valid };
+            let Some(ts) = ts_opt else { break 'valid };
             if ts < ws || ts >= we || ingest_ms - ts > DAY_MS {
                 break 'valid;
             }
@@ -484,9 +485,7 @@ impl Dead {
 #[derive(Default)]
 struct DedupScratch2 {
     blocks: Vec<(usize, u32, u32)>, // (records, count, owning worker)
-    /// all zero between partitions (only the slots written are cleared)
     table: Vec<u64>,
-    touched: Vec<u32>,
 }
 
 thread_local! {
@@ -530,12 +529,9 @@ pub fn dedup_part(b: usize, sinks: &[Sink], wide: &[Wide], dead: &Dead) {
         assert!(sc.blocks.len() < WIDE >> OB, "dedup partition too large");
         let cap = (n * 2).next_power_of_two().max(16);
         let mask = cap - 1;
-        if sc.table.len() < cap {
-            sc.table.resize(cap, 0);
-        }
-        sc.touched.clear();
-        sc.touched.reserve(n);
-        let (blocks, table, touched) = (&sc.blocks, &mut sc.table, &mut sc.touched);
+        sc.table.clear();
+        sc.table.resize(cap, 0);
+        let (blocks, table) = (&sc.blocks, &mut sc.table);
         // (id, ingest, event record to kill: worker, partition, index)
         let copy = |g: usize| -> (u64, u32, Option<(usize, usize, usize)>) {
             if g & WIDE != 0 {
@@ -555,11 +551,6 @@ pub fn dedup_part(b: usize, sinks: &[Sink], wide: &[Wide], dead: &Dead) {
                 let t = unsafe { *table.get_unchecked(s) };
                 if t == 0 {
                     unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
-                    unsafe {
-                        let l = touched.len();
-                        touched.as_mut_ptr().add(l).write(s as u32);
-                        touched.set_len(l + 1);
-                    }
                     return;
                 }
                 if t >> 32 == fp {
@@ -590,9 +581,6 @@ pub fn dedup_part(b: usize, sinks: &[Sink], wide: &[Wide], dead: &Dead) {
         }
         for (k, w) in wide.iter().enumerate() {
             one(WIDE | k, w.id, w.ingest);
-        }
-        for &s in sc.touched.iter() {
-            unsafe { *sc.table.get_unchecked_mut(s as usize) = 0 };
         }
     })
 }

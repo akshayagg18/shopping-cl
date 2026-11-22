@@ -160,18 +160,9 @@ fn words16(b: &[u8]) -> (u64, u64) {
 #[inline(always)]
 fn aes16(b: &[u8]) -> (u64, u64) {
     use std::arch::x86_64::*;
+    let (x, y) = words16(b);
     unsafe {
-        // one 16-byte load masked to the ID when it stays inside the ID's page
-        // (no fault possible), the word loads otherwise
-        // (an empty slice's pointer may be dangling: never read through it)
-        let v = if !b.is_empty() && (b.as_ptr() as usize & 4095) <= 4096 - 16 {
-            static MASK: [u8; 32] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            let raw = _mm_loadu_si128(b.as_ptr() as *const __m128i);
-            _mm_and_si128(raw, _mm_loadu_si128(MASK.as_ptr().add(16 - b.len()) as *const __m128i))
-        } else {
-            let (x, y) = words16(b);
-            _mm_set_epi64x(y as i64, x as i64)
-        };
+        let v = _mm_set_epi64x(y as i64, x as i64);
         let k0 = _mm_set_epi64x(0x243F_6A88_85A3_08D3u64 as i64, (0x1319_8A2E_0370_7344u64 ^ b.len() as u64) as i64);
         let k1 = _mm_set_epi64x(0xA409_3822_299F_31D0u64 as i64, 0x082E_FA98_EC4E_6C89u64 as i64);
         let k2 = _mm_set_epi64x(0x4528_21E6_38D0_1377u64 as i64, 0xBE54_66CF_34E9_0C6Cu64 as i64);

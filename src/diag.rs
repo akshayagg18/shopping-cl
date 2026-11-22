@@ -508,7 +508,7 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let big = scratch.join("big");
     let ob = scratch.join("o_big");
     let dev_gb = dir_gb(data);
-    eprintln!("D31 alt=v18 np=v20(D30) new=v20e {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
+    eprintln!("D32 alt=v20 np=v21b(two-pass sessions) new=v22(timestamp pairs) {model} | dev {dev_gb:.3} GB, scratch avail {:.1} GB, mem.max {}", avail_gb(&scratch), cat("/sys/fs/cgroup/memory.max").trim());
     eprintln!("wall/int: open links parse dedup sess write | user sys GB");
     let dg = |k: u64, line: &str, base: Option<(u64, u64)>| -> String {
         match (digests(line), base) {
