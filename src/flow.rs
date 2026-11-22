@@ -52,13 +52,35 @@ pub struct Wide {
 
 #[inline(always)]
 fn copy_id(h: u64, c: u32) -> u64 {
-    let b = pd_bits();
-    (h & (u64::MAX >> b)) | (((c as u64) >> (32 - b)) << (64 - b))
+    copy_id_c::<false>(h, c)
 }
 
 #[inline(always)]
 fn eid_part(eid: u64) -> usize {
-    (eid >> (64 - pd_bits())) as usize
+    eid_part_c::<false>(eid)
+}
+
+/// C: the partition counts are the 20M/60M ones (1024 event-id and 1024
+/// person partitions), known at compile time in the parse loops.
+#[inline(always)]
+fn pdb_c<const C: bool>() -> u32 {
+    if C { 10 } else { pd_bits() }
+}
+
+#[inline(always)]
+fn pmask_c<const C: bool>() -> usize {
+    if C { 1023 } else { p2() - 1 }
+}
+
+#[inline(always)]
+fn copy_id_c<const C: bool>(h: u64, c: u32) -> u64 {
+    let b = pdb_c::<C>();
+    (h & (u64::MAX >> b)) | (((c as u64) >> (32 - b)) << (64 - b))
+}
+
+#[inline(always)]
+fn eid_part_c<const C: bool>(eid: u64) -> usize {
+    (eid >> (64 - pdb_c::<C>())) as usize
 }
 
 // ---------------------------------------------------------------- block streams
@@ -72,15 +94,36 @@ pub struct Arena {
     ptr: usize,
     end: usize,
     chunks: Vec<Vec<u8>>,
+    /// chunks mapped (and their pages faulted in) ahead of the parse
+    spare: Vec<Vec<u8>>,
 }
 
 impl Arena {
     fn new() -> Self {
-        Arena { ptr: 0, end: 0, chunks: Vec::new() }
+        Arena { ptr: 0, end: 0, chunks: Vec::new(), spare: Vec::new() }
+    }
+    /// Map about `bytes` of chunks now and touch every page (one write per
+    /// 4 KiB: a huge page faults in whole), so the parse takes no page faults.
+    fn prefault(&mut self, bytes: usize) {
+        for _ in 0..bytes.div_ceil(ARENA_CHUNK) {
+            let mut v: Vec<u8> = Vec::with_capacity(ARENA_CHUNK);
+            let p = v.as_mut_ptr();
+            for o in (0..ARENA_CHUNK).step_by(4096) {
+                unsafe { std::ptr::write_volatile(p.add(o), 0) };
+            }
+            self.spare.push(v);
+        }
+        self.spare.reverse();
     }
     #[cold]
     #[inline(never)]
     fn refill(&mut self) {
+        if let Some(mut v) = self.spare.pop() {
+            self.ptr = v.as_mut_ptr() as usize;
+            self.end = self.ptr + v.capacity();
+            self.chunks.push(v);
+            return;
+        }
         let mut v: Vec<u8> = Vec::with_capacity(ARENA_CHUNK);
         self.ptr = v.as_mut_ptr() as usize;
         self.end = self.ptr + v.capacity();
@@ -126,6 +169,7 @@ pub struct Stream<T> {
 impl<T: Copy + Default> Stream<T> {
     /// Records per staging flush: a whole number of cache lines.
     const K: usize = match std::mem::size_of::<T>() {
+        8 => 16,
         12 => 16,
         16 => 4,
         24 => 8,
@@ -251,7 +295,10 @@ impl<T: Copy + Default> Stream<T> {
 /// One worker's output of the parse phase.
 pub struct Sink {
     arena: Arena,
-    pub ev: Stream<Ev2>,
+    /// views and carts: person and time only (8 bytes)
+    pub ev: Stream<Ev8>,
+    /// purchases (about 3% of events), with price and category
+    pub pu: Stream<Ev2>,
     pub cp: Stream<CopyR>,
     pub ck: Stream<Ck>,
     /// IDs of unlinked users, copied while they are in cache: names never read
@@ -274,6 +321,7 @@ impl Sink {
         Sink {
             arena: Arena::new(),
             ev: Stream::new(p2()),
+            pu: Stream::new(p2()),
             cp: Stream::new(pd()),
             ck: Stream::new(p2()),
             names: Vec::with_capacity(name_cap + 16),
@@ -282,9 +330,14 @@ impl Sink {
             pids: (0, 0),
         }
     }
+    /// Fault in about `bytes` of record memory ahead of the parse.
+    pub fn prefault(&mut self, bytes: usize) {
+        self.arena.prefault(bytes);
+    }
     /// End of the parse phase: everything staged goes to its blocks.
     pub fn finish(&mut self) {
         self.ev.finish(&mut self.arena);
+        self.pu.finish(&mut self.arena);
         self.cp.finish(&mut self.arena);
         self.ck.finish(&mut self.arena);
         #[cfg(target_arch = "x86_64")]
@@ -309,10 +362,16 @@ struct PendE {
 }
 
 #[inline(always)]
-fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
+fn emit_event<const C: bool>(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
     let pid = persons.pid(pd.uh, pd.uref, &mut sink.pids);
-    let pb = (pid as usize) & (p2() - 1);
-    let i = sink.ev.push(&mut sink.arena, pb, Ev2 { pid, ts: pd.ts, pc: pd.pc });
+    let pb = (pid as usize) & pmask_c::<C>();
+    // purchases live in their own stream: the record's dead-flag partition
+    // is p2 + pb there
+    let (i, pb) = if pd.pc == 0 {
+        (sink.ev.push(&mut sink.arena, pb, Ev8 { pid, ts: pd.ts }), pb)
+    } else {
+        (sink.pu.push(&mut sink.arena, pb, Ev2 { pid, ts: pd.ts, pc: pd.pc }), p2() + pb)
+    };
     let (part, id) = (pd.part as usize, pd.id);
     if i < (1 << LOC_I) - 1 && pb < 1 << (32 - LOC_I) {
         sink.cp.push(&mut sink.arena, part, CopyR { id, ingest: pd.ingest, loc: ((pb as u32) << LOC_I) | i });
@@ -323,7 +382,7 @@ fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
 
 /// Parse one unit of event lines into `sink`.
 #[allow(clippy::too_many_arguments)]
-pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons, ws: i64, we: i64, sink: &mut Sink, tid: u64) {
+pub fn events_unit<const C: bool>(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons, ws: i64, we: i64, sink: &mut Sink, tid: u64) {
     const AHEAD: usize = 16;
     let mut ring = [PendE::default(); AHEAD];
     let mut memo = parse::Memo::new();
@@ -363,7 +422,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             let uh = h64(user);
             persons.prefetch(uh);
             if filled == AHEAD {
-                emit_event(sink, persons, tid, &ring[head]);
+                emit_event::<C>(sink, persons, tid, &ring[head]);
             } else {
                 filled += 1;
             }
@@ -372,8 +431,8 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             let ua = user.as_ptr() as usize - line.as_ptr() as usize;
             pd.uh = uh;
             pd.uref = mkref(f, p + ua, user.len());
-            pd.id = copy_id(eid_h, eid_c);
-            pd.part = eid_part(eid_h) as u32;
+            pd.id = copy_id_c::<C>(eid_h, eid_c);
+            pd.part = eid_part_c::<C>(eid_h) as u32;
             pd.ingest = ingest;
             pd.ts = (ts - ws) as u32;
             pd.pc = pc;
@@ -381,12 +440,12 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             return;
         }
         // an invalid copy still takes part in dedup
-        sink.cp.push(&mut sink.arena, eid_part(eid_h), CopyR { id: copy_id(eid_h, eid_c), ingest, loc: NOLOC });
+        sink.cp.push(&mut sink.arena, eid_part_c::<C>(eid_h), CopyR { id: copy_id_c::<C>(eid_h, eid_c), ingest, loc: NOLOC });
     });
     let start = if filled == AHEAD { head } else { 0 };
     for k in 0..filled {
         let pd = ring[(start + k) % AHEAD];
-        emit_event(sink, persons, tid, &pd);
+        emit_event::<C>(sink, persons, tid, &pd);
     }
 }
 
@@ -401,14 +460,14 @@ struct PendC {
 }
 
 #[inline(always)]
-fn emit_click(sink: &mut Sink, persons: &Persons, pd: &PendC) {
+fn emit_click<const C: bool>(sink: &mut Sink, persons: &Persons, pd: &PendC) {
     let pid = persons.pid(pd.uh, pd.uref, &mut sink.pids);
-    sink.ck.push(&mut sink.arena, (pid as usize) & (p2() - 1), Ck { pid, cref: pd.cref, ts: pd.ts, camp: pd.camp });
+    sink.ck.push(&mut sink.arena, (pid as usize) & pmask_c::<C>(), Ck::new(pid, pd.cref, pd.ts, pd.camp));
 }
 
 /// Parse one unit of click lines into `sink`.
 #[allow(clippy::too_many_arguments)]
-pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons, ws: i64, we: i64, sink: &mut Sink) {
+pub fn clicks_unit<const C: bool>(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons, ws: i64, we: i64, sink: &mut Sink) {
     const AHEAD: usize = 16;
     let lo = ws - CLICK_REACH;
     let mut ring = [PendC::default(); AHEAD];
@@ -432,7 +491,7 @@ pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
         persons.prefetch(uh);
         let pd = PendC { uh, uref: mkref(f, p + fs.span(line, 1).0, user.len()), cref: mkref(f, p + fs.span(line, 0).0, cid.len()), ts: (ts - lo) as u32, camp: camp as u32 };
         if filled == AHEAD {
-            emit_click(sink, persons, &ring[head]);
+            emit_click::<C>(sink, persons, &ring[head]);
         } else {
             filled += 1;
         }
@@ -442,7 +501,7 @@ pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
     let start = if filled == AHEAD { head } else { 0 };
     for k in 0..filled {
         let pd = ring[(start + k) % AHEAD];
-        emit_click(sink, persons, &pd);
+        emit_click::<C>(sink, persons, &pd);
     }
 }
 
@@ -458,13 +517,14 @@ pub struct Dead {
 
 impl Dead {
     pub fn new(sinks: &[Sink]) -> Self {
-        let np = p2();
+        // partitions p2..2 * p2 are the purchase streams
+        let np = 2 * p2();
         let mut off = Vec::with_capacity(sinks.len() * np);
         let mut n = 0usize;
         for s in sinks {
             for p in 0..np {
                 off.push(n);
-                n += s.ev.len(p).div_ceil(64);
+                n += if p < p2() { s.ev.len(p) } else { s.pu.len(p - p2()) }.div_ceil(64);
             }
         }
         let words = (0..n).map(|_| AtomicU64::new(0)).collect();

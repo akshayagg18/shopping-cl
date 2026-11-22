@@ -1241,7 +1241,15 @@ fn zeroed_u32(n: usize) -> Vec<std::sync::atomic::AtomicU32> {
 
 // ---------------------------------------------------------------- records
 
-/// A surviving event, by person id. 12 bytes.
+/// A surviving view or cart, by person id. 8 bytes.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct Ev8 {
+    pid: u32,
+    ts: u32,
+}
+
+/// A surviving purchase, by person id. 12 bytes.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct Ev2 {
@@ -1268,14 +1276,34 @@ struct Ck1 {
     camp: u32,
 }
 
-/// A valid click, by person id.
+/// A valid click, by person id. 16 bytes: the click ID's ref keeps its file
+/// and offset, and the low 16 bits (the ID's length) hold the campaign; the
+/// length is found again from the file when it is needed (ties only).
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct Ck {
     pid: u32,
-    cref: u64,
     ts: u32, // ms since window start - 7 days (CLICK_REACH): never negative
-    camp: u32,
+    cc: u64,
+}
+
+impl Ck {
+    #[inline(always)]
+    fn new(pid: u32, cref: u64, ts: u32, camp: u32) -> Self {
+        Ck { pid, ts, cc: (cref & !0xFFFF) | camp as u64 }
+    }
+}
+
+/// The click ID a Ck1 ref names: from its offset to the first ',' or '"'
+/// (an ID holds neither).
+fn click_id(r: u64) -> &'static [u8] {
+    let files = unsafe { &*FILES.load(Ordering::Relaxed) };
+    let f = (r >> 52) as usize;
+    let off = ((r >> 16) & ((1u64 << 36) - 1)) as usize;
+    let d = &files[f][..unsafe { &*LENS.load(Ordering::Relaxed) }[f]];
+    let rest = &d[off..];
+    let n = rest.iter().position(|&c| c == b',' || c == b'"' || c == b'\n').unwrap_or(rest.len());
+    &rest[..n]
 }
 
 // ---------------------------------------------------------------- aggregation
@@ -1369,7 +1397,7 @@ impl Scratch {
 /// persons and counting half-hour bins happen in one pass.
 #[allow(clippy::too_many_arguments)]
 fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &[flow::Sink], dead: &flow::Dead, evb: &mut Vec<Ev1>, ckb: &mut Vec<Ck1>, persons: &Persons) {
-    let n: usize = sinks.iter().map(|s| s.ev.len(b)).sum();
+    let n: usize = sinks.iter().map(|s| s.ev.len(b) + s.pu.len(b)).sum();
     if n == 0 {
         return;
     }
@@ -1417,6 +1445,27 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                     let li = (e.pid >> pbits) as usize;
                     unsafe {
                         *cntp.add(li) += 1;
+                        evp.add(m).write(Ev1 { ts: e.ts, pc: 0 });
+                        lip.add(m).write(li as u32);
+                    }
+                    m += 1;
+                }
+                i += 1;
+            }
+        }
+        // the purchases (dead flags of partition p2 + b)
+        let mut i = 0usize;
+        let mut dw = 0u64;
+        let bp = p2() + b;
+        for sl in s.pu.slices(b) {
+            for e in sl.iter() {
+                if i % 64 == 0 {
+                    dw = dead.word(t, bp, i / 64);
+                }
+                if (dw >> (i % 64)) & 1 == 0 {
+                    let li = (e.pid >> pbits) as usize;
+                    unsafe {
+                        *cntp.add(li) += 1;
                         evp.add(m).write(Ev1 { ts: e.ts, pc: e.pc });
                         lip.add(m).write(li as u32);
                     }
@@ -1449,7 +1498,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
                     unsafe {
                         *sc.ck_cnt.get_unchecked_mut(li) += 1;
                         let l = ckb.len();
-                        ckb.as_mut_ptr().add(l).write(Ck1 { cref: c.cref, ts: c.ts, camp: c.camp });
+                        ckb.as_mut_ptr().add(l).write(Ck1 { cref: c.cc & !0xFFFF, ts: c.ts, camp: (c.cc & 0xFFFF) as u32 });
                         ckb.set_len(l + 1);
                         let l = sc.ck_local.len();
                         sc.ck_local.as_mut_ptr().add(l).write(li as u32);
@@ -1504,7 +1553,7 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
         let cs = ce - sc.ck_cnt[k] as usize;
         let ck = &mut cks[cs..ce];
         if ck.len() > 1 {
-            ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
+            ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| click_id(a.cref).cmp(click_id(b.cref))));
         }
         let pid = ((k << pbits) | b) as u32;
         person_sessions(ctx, persons.name(pid), &evs[ee - ne..ee], ck, agg, sc);
@@ -1892,7 +1941,31 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     // links first: every record below is routed straight to its person
     // room in the person table for the IDs met while parsing (generated data
     // has about one user ID per 15 events; this allows one per 8)
-    let ((persons, rest), lk) = rayon::join(|| links(&inp, est_events / 8 + 4096), || lookups(&inp));
+    // the workers' record memory is faulted in while links are resolved (the
+    // kernel zeroes it then, not in the middle of the parse)
+    let nthreads = rayon::current_num_threads();
+    let nfiles = unsafe { &*FILES.load(Ordering::Relaxed) }.len();
+    // room for every event's user ID, at twice a thread's share (spare virtual memory)
+    let name_cap = est_events / nthreads * 32 + (1 << 20);
+    let sinks: Vec<std::sync::Mutex<flow::Sink>> =
+        (0..nthreads).map(|t| std::sync::Mutex::new(flow::Sink::new(nfiles + t, name_cap))).collect();
+    let ck_bytes: usize = inp.clicks.iter().map(|&f| file_bytes(f).len()).sum();
+    // events: 8 + 16 bytes of records each (purchases 12 + 16); clicks (about 55 bytes a line): 16
+    let per_sink = (est_events * 24 + ck_bytes / 55 * 16) / nthreads * 9 / 10;
+    let ((persons, rest), lk) = rayon::join(
+        || links(&inp, est_events / 8 + 4096),
+        || {
+            rayon::join(
+                || lookups(&inp),
+                || {
+                    if std::env::var("SS_PF").map_or(true, |v| v != "0") {
+                        sinks.par_iter().for_each(|m| m.lock().unwrap().prefault(per_sink));
+                    }
+                },
+            )
+            .0
+        },
+    );
     lap("links");
     // the linked components' smallest names are searched while the files are
     // parsed: one search item after every few parse units (SS_LB=0: before the parse)
@@ -1920,23 +1993,21 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         v.extend(bu.map(|&(t, a, b)| (2, t, a, b)));
         v
     };
-    let nthreads = rayon::current_num_threads();
-    let nfiles = unsafe { &*FILES.load(Ordering::Relaxed) }.len();
-    // room for every event's user ID, at twice a thread's share (spare virtual memory)
-    let name_cap = est_events / nthreads * 32 + (1 << 20);
-    let sinks: Vec<std::sync::Mutex<flow::Sink>> =
-        (0..nthreads).map(|t| std::sync::Mutex::new(flow::Sink::new(nfiles + t, name_cap))).collect();
     // every worker takes the next unit in list order (the order read ahead)
     let next = std::sync::atomic::AtomicUsize::new(0);
+    // the 20M and 60M partition counts, compiled in
+    let c10 = flow::pd_bits() == 10 && p2_bits() == 10;
     rayon::broadcast(|ctx| {
         let t = ctx.index() % nthreads;
         let mut sink = sinks[t].lock().unwrap();
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(&(kind, f, s, e)) = units.get(i) else { break };
-            match kind {
-                0 => flow::events_unit(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64),
-                1 => flow::clicks_unit(f, s, e, &lk, &persons, ws, we, &mut sink),
+            match (kind, c10) {
+                (0, true) => flow::events_unit::<true>(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64),
+                (0, false) => flow::events_unit::<false>(f, s, e, &lk, &persons, ws, we, &mut sink, t as u64),
+                (1, true) => flow::clicks_unit::<true>(f, s, e, &lk, &persons, ws, we, &mut sink),
+                (1, false) => flow::clicks_unit::<false>(f, s, e, &lk, &persons, ws, we, &mut sink),
                 _ => rest.best_unit(f, s, e),
             }
         }
@@ -1970,7 +2041,7 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         })
         .collect();
     // largest partitions first, so a giant component never starts last
-    let mut order: Vec<(usize, usize)> = (0..p2()).map(|b| (sinks.iter().map(|s| s.ev.len(b)).sum::<usize>(), b)).collect();
+    let mut order: Vec<(usize, usize)> = (0..p2()).map(|b| (sinks.iter().map(|s| s.ev.len(b) + s.pu.len(b)).sum::<usize>(), b)).collect();
     order.sort_unstable_by(|a, b| b.cmp(a));
     order.par_iter().with_max_len(1).for_each(|&(_, b)| {
         let i = rayon::current_thread_index().unwrap_or(0) % nthreads;
