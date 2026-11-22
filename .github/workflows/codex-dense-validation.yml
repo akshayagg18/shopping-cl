@@ -1,0 +1,30 @@
+name: Codex dense pipeline 20M and 60M validation
+on:
+  push:
+    branches: [codex/dense-validation]
+  workflow_dispatch:
+permissions:
+  contents: read
+  checks: write
+env:
+  CANDIDATE_SHA: 6308907ca3e9f556e0292631a5059cf6c5fe1ada
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.100.0
+      - run: python -m pip install pyarrow==26.0.1 polars==2.1.0
+      - run: sudo swapoff -a
+      - name: Build, check, and measure independently
+        run: python tools/ci_dense.py
+      - name: Publish machine-readable result as a check
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/ci_dense.py --publish
