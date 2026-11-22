@@ -1,5 +1,5 @@
 # DIAGNOSTIC image, both profile-guided on rust 1.97.0:
-#   /ssp      v18b (v18 + person map from zeroed memory), run with partition variants
+#   /ssp      v20 (dense person ids, 12-byte event records), run with partition variants
 #   /ssp_alt  "alt" = v18 exactly as submitted
 FROM --platform=linux/amd64 rust:1.97.0-slim AS b1
 WORKDIR /src
