@@ -72,6 +72,10 @@ pub static READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// (stage 1). Off: on the scorer's Cascade Lake cores stage 1 is ~110 ms faster
 /// at 20M (same-run A/B), though per line wins on newer cores.
 pub static TOK1: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Person partitions of at least SPLIT_MIN events are split 2^P2SPLIT ways
+/// before grouping (0: never).
+pub static P2SPLIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+const SPLIT_MIN: usize = 40_000;
 /// Stage-1 window per block (bytes).
 pub static SUB_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(192 << 10);
 /// Map inputs with MAP_POPULATE.
@@ -1014,20 +1018,13 @@ fn links(inp: &Inputs) -> Persons {
         });
     }
     lt("best");
-    // a root's value becomes its component's name ref (it reads only its own
-    // component's non-root slots), then every value becomes LINKED | that ref
-    (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
-        if map.key_at(i).load(Ordering::Relaxed) != 0 && parent[i].load(Ordering::Relaxed) == i as u32 {
-            let b = best[i].load(Ordering::Relaxed) as usize;
-            if b != i {
-                map.val_at(i).store(map.val_at(b).load(Ordering::Relaxed), Ordering::Relaxed);
-            }
-        }
-    });
+    // every value becomes LINKED | the ref held by its component's best slot;
+    // that slot may already hold LINKED | the same ref: OR-ing is idempotent
     (0..cap).into_par_iter().with_min_len(4096).for_each(|i| {
         if map.key_at(i).load(Ordering::Relaxed) != 0 {
             let r = parent[i].load(Ordering::Relaxed) as usize;
-            map.val_at(i).store(LINKED | map.val_at(r).load(Ordering::Relaxed), Ordering::Relaxed);
+            let b = best[r].load(Ordering::Relaxed) as usize;
+            map.val_at(i).store(LINKED | map.val_at(b).load(Ordering::Relaxed), Ordering::Relaxed);
         }
     });
     lt("named");
@@ -1129,6 +1126,8 @@ struct Scratch {
     // purchases by bin, and the runs in bin order
     bm: Vec<u64>,
     bins: Vec<BinAcc>,
+    sub_ev: Vec<Vec<Ev2>>,
+    sub_ck: Vec<Vec<Ck>>,
     purch: Vec<(u32, u32)>,
     runs: Vec<Run>,
 }
@@ -1163,6 +1162,8 @@ impl Scratch {
             ck_pos: Vec::new(),
             bm: Vec::new(),
             bins: Vec::new(),
+            sub_ev: Vec::new(),
+            sub_ck: Vec::new(),
             purch: Vec::new(),
             runs: Vec::new(),
         }
@@ -1220,6 +1221,54 @@ fn group_id(sc: &mut Scratch, key: u64, cap: &mut usize) -> u32 {
 fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &[flow::Sink], dead: &flow::Dead, evb: &mut Vec<Ev1>, ckb: &mut Vec<Ck1>) {
     let n: usize = sinks.iter().map(|s| s.ev.len(b)).sum();
     if n == 0 {
+        return;
+    }
+    let split = P2SPLIT.load(Ordering::Relaxed);
+    if split > 0 && n >= SPLIT_MIN {
+        // a big partition: live records into 2^split sub-partitions first (by
+        // the next bits of the person bucket hash), each processed in cache
+        let nsub = 1usize << split;
+        let sh = 64 - p2_bits() - split;
+        let fine = |k: u64| ((k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> sh) as usize) & (nsub - 1);
+        let mut se = std::mem::take(&mut sc.sub_ev);
+        let mut sk = std::mem::take(&mut sc.sub_ck);
+        se.resize_with(nsub, Vec::new);
+        sk.resize_with(nsub, Vec::new);
+        for v in se.iter_mut() {
+            v.clear();
+        }
+        for v in sk.iter_mut() {
+            v.clear();
+        }
+        for (t, s) in sinks.iter().enumerate() {
+            let mut i = 0usize;
+            let mut dw = 0u64;
+            for sl in s.ev.slices(b) {
+                for e in sl {
+                    if i % 64 == 0 {
+                        dw = dead.word(t, b, i / 64);
+                    }
+                    if (dw >> (i % 64)) & 1 == 0 {
+                        unsafe { se.get_unchecked_mut(fine(e.key)) }.push(*e);
+                    }
+                    i += 1;
+                }
+            }
+        }
+        for s in sinks {
+            for sl in s.ck.slices(b) {
+                for c in sl {
+                    unsafe { sk.get_unchecked_mut(fine(c.key)) }.push(*c);
+                }
+            }
+        }
+        for f in 0..nsub {
+            if !se[f].is_empty() {
+                process_list(ctx, agg, sc, &se[f], &sk[f], evb, ckb);
+            }
+        }
+        sc.sub_ev = se;
+        sc.sub_ck = sk;
         return;
     }
     // persons are ~30x fewer than events: the table starts small (cache
@@ -1292,6 +1341,146 @@ fn process_bucket(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, b: usize, sinks: &
     for s in sinks {
         for sl in s.ck.slices(b) {
             for c in sl {
+                let mut s = slot_of(c.key, mask);
+                let id = loop {
+                    let t = unsafe { sc.table.get_unchecked(s) };
+                    if t.1 == u32::MAX {
+                        break u32::MAX;
+                    }
+                    if t.0 == c.key {
+                        break t.1;
+                    }
+                    s = (s + 1) & mask;
+                };
+                // clicks of persons without events never matter
+                if id != u32::MAX {
+                    sc.ck_cnt[id as usize] += 1;
+                    ckb.push(Ck1 { cref: c.cref, ts: c.ts, camp: c.camp });
+                    sc.ck_local.push(id);
+                }
+            }
+        }
+    }
+    let ckin: &[Ck1] = ckb;
+    for &s in &sc.used {
+        sc.table[s as usize] = (0, u32::MAX);
+    }
+    // prefix sums -> start offsets (ev_cnt / ck_cnt become running positions)
+    let mut acc = 0u32;
+    for c in sc.ev_cnt.iter_mut() {
+        let v = *c;
+        *c = acc;
+        acc += v;
+    }
+    let mut cacc = 0u32;
+    for c in sc.ck_cnt.iter_mut() {
+        let v = *c;
+        *c = cacc;
+        cacc += v;
+    }
+    sc.evs_sorted.clear();
+    sc.evs_sorted.reserve(n);
+    sc.cks_sorted.clear();
+    sc.cks_sorted.reserve(cacc as usize);
+    unsafe {
+        sc.evs_sorted.set_len(n);
+        sc.cks_sorted.set_len(cacc as usize);
+    }
+    // events by person (one counting pass); inside a person, events are binned
+    // by half hour in person_sessions
+    sc.ev_pos.clear();
+    sc.ev_pos.extend_from_slice(&sc.ev_cnt);
+    unsafe {
+        for (e, &id) in evin.iter().zip(&sc.ev_local) {
+            let at = sc.ev_pos.get_unchecked_mut(id as usize);
+            *sc.evs_sorted.get_unchecked_mut(*at as usize) = *e;
+            *at += 1;
+        }
+    }
+    sc.ck_pos.clear();
+    sc.ck_pos.extend_from_slice(&sc.ck_cnt);
+    for (c, &id) in ckin.iter().zip(&sc.ck_local) {
+        let at = &mut sc.ck_pos[id as usize];
+        sc.cks_sorted[*at as usize] = *c;
+        *at += 1;
+    }
+    let evs = std::mem::take(&mut sc.evs_sorted);
+    let cks = std::mem::take(&mut sc.cks_sorted);
+    let mut evs = evs;
+    let mut cks = cks;
+    for pid in 0..np {
+        let (es, ee) = (sc.ev_cnt[pid] as usize, sc.ev_pos[pid] as usize);
+        let (cs, ce) = (sc.ck_cnt[pid] as usize, sc.ck_pos[pid] as usize);
+        let ev = &mut evs[es..ee];
+        let ck = &mut cks[cs..ce];
+        if ck.len() > 1 {
+            ck.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| deref(a.cref).cmp(deref(b.cref))));
+        }
+        person_sessions(ctx, sc.pkey[pid], sc.puref[pid], ev, ck, agg, sc);
+    }
+    sc.evs_sorted = evs;
+    sc.cks_sorted = cks;
+}
+
+/// process_bucket for live events and clicks already gathered in slices.
+fn process_list(ctx: &Ctx, agg: &mut Agg, sc: &mut Scratch, evs_in: &[Ev2], cks_in: &[Ck], evb: &mut Vec<Ev1>, ckb: &mut Vec<Ck1>) {
+    let n: usize = evs_in.len();
+    if n == 0 {
+        return;
+    }
+    // persons are ~30x fewer than events: the table starts small (cache
+    // resident) and doubles when half full
+    let mut cap = (n / 8).next_power_of_two().max(256);
+    if sc.table.len() < cap {
+        sc.table.resize(cap, (0, u32::MAX));
+    }
+    sc.used.clear();
+    sc.ev_cnt.clear();
+    sc.pkey.clear();
+    sc.puref.clear();
+    sc.ev_local.clear();
+    sc.ev_local.reserve(n);
+    let nb = ctx.nbins;
+    if sc.bins.len() < nb {
+        sc.bins.resize(nb, BinAcc::default());
+        sc.bm.resize(nb.div_ceil(64), 0);
+    }
+    evb.clear();
+    evb.reserve(n);
+    for e in evs_in {
+        {
+            let id = group_id(sc, e.key, &mut cap);
+            if id as usize == sc.pkey.len() {
+                sc.pkey.push(e.key);
+                sc.puref.push(e.uref);
+            }
+            unsafe {
+                *sc.ev_cnt.get_unchecked_mut(id as usize) += 1;
+                let len = evb.len();
+                evb.as_mut_ptr().add(len).write(Ev1 { ts: e.ts, pc: e.pc });
+                evb.set_len(len + 1);
+                let len = sc.ev_local.len();
+                sc.ev_local.as_mut_ptr().add(len).write(id);
+                sc.ev_local.set_len(len + 1);
+            }
+        }
+
+    }
+    let n = evb.len();
+    if n == 0 {
+        return;
+    }
+    let mask = cap - 1;
+    let slot_of = |k: u64, mask: usize| (k.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 32) as usize & mask;
+    let evin: &[Ev1] = evb;
+    let np = sc.ev_cnt.len();
+    sc.ck_cnt.clear();
+    sc.ck_cnt.resize(np, 0);
+    sc.ck_local.clear();
+    ckb.clear();
+    {
+        {
+            for c in cks_in {
                 let mut s = slot_of(c.key, mask);
                 let id = loop {
                     let t = unsafe { sc.table.get_unchecked(s) };
@@ -1692,9 +1881,9 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
         flow::AHEAD_N.store(a.clamp(1, flow::RING), Ordering::Relaxed);
     }
     flow::STAGE_HUGE.store(std::env::var("SS_STH").is_ok_and(|v| v == "1"), Ordering::Relaxed);
+    P2SPLIT.store(std::env::var("SS_P2SPLIT").ok().and_then(|v| v.parse().ok()).unwrap_or(0u32).min(6), Ordering::Relaxed);
     flow::NT_DIRECT.store(std::env::var("SS_NTD").is_ok_and(|v| v == "1"), Ordering::Relaxed);
-    flow::EXP.store(std::env::var("SS_EXP").is_ok(), Ordering::Relaxed);
-    flow::EXPL.store(std::env::var("SS_EXPL").ok().and_then(|v| v.parse().ok()).unwrap_or(0), Ordering::Relaxed);
+    output::DIGEST.store(std::env::var("SS_DIGEST").is_ok_and(|v| v == "1"), Ordering::Relaxed);
     let inp = open_all(data);
     // partition counts follow the input size, so a partition's working set
     // stays about the same from the 20M practice set to the 60M final
