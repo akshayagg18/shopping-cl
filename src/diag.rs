@@ -357,6 +357,7 @@ fn residency(dir: &Path) -> (usize, usize) {
 }
 
 /// Evict the files under `dir` from the page cache (clean pages only).
+#[allow(dead_code)]
 fn evict(dir: &Path) {
     use std::os::unix::io::AsRawFd;
     for p in files_under(dir) {
@@ -370,6 +371,7 @@ fn evict(dir: &Path) {
 }
 
 /// Touch one byte per page of every file under `dir` with all threads: ms.
+#[allow(dead_code)]
 fn touch_all(dir: &Path) -> f64 {
     let files = files_under(dir);
     let t = Instant::now();
@@ -391,6 +393,7 @@ fn touch_all(dir: &Path) -> f64 {
     t.elapsed().as_secs_f64() * 1e3
 }
 
+#[allow(dead_code)]
 fn mounts_for(paths: &[&str]) -> String {
     let mi = cat("/proc/self/mountinfo");
     let mut out = Vec::new();
@@ -414,50 +417,61 @@ fn mounts_for(paths: &[&str]) -> String {
     out.join(" ")
 }
 
+fn mount_opts(path: &str) -> String {
+    let mi = cat("/proc/self/mountinfo");
+    let mut best: Option<(usize, String)> = None;
+    for l in mi.lines() {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.len() < 10 {
+            continue;
+        }
+        let mp = f[4];
+        let sep = f.iter().position(|&x| x == "-").unwrap_or(0);
+        let opts = format!("{} {}", f[5], f.get(sep + 3).copied().unwrap_or(""));
+        if path.starts_with(mp) && best.as_ref().map_or(true, |b| mp.len() >= b.0) {
+            best = Some((mp.len(), opts));
+        }
+    }
+    best.map(|b| b.1).unwrap_or_default()
+}
+
 pub fn main(data: &Path, out: &Path, threads: usize) {
     let t0 = Instant::now();
-    // first thing: is the real input in the page cache?
-    let (ry, ra) = residency(data);
-    let cold_ms = if ry * 2 < ra { touch_all(data) } else { -1.0 };
-    let bytes: usize = files_under(data).iter().map(|p| std::fs::metadata(p).map(|m| m.len() as usize).unwrap_or(0)).sum();
-    let scratch = std::path::PathBuf::from(std::env::var("SCRATCH_DIR").unwrap_or_else(|_| "/scratch".into()));
-    eprintln!(
-        "D16 data cached {ry}/{ra} pages; first touch {cold_ms:.0} ms for {:.0} MB | {}",
-        bytes as f64 / 1e6,
-        mounts_for(&[&data.to_string_lossy(), &out.to_string_lossy(), &scratch.to_string_lossy(), "/tmp"])
-    );
-    let t = Instant::now();
     let _ = crate::run(data, out, false);
-    eprintln!("dev first run {:.0} ms", t.elapsed().as_secs_f64() * 1e3);
+    let cpu = cat("/proc/cpuinfo");
+    let model = cpu.lines().find(|l| l.starts_with("model name")).unwrap_or("?").replace("model name\t: ", "");
+    eprintln!(
+        "D17 {model} | /data [{}] | /tmp [{}] | shmem {}",
+        mount_opts(&data.to_string_lossy()),
+        mount_opts("/tmp"),
+        cat("/sys/kernel/mm/transparent_hugepage/shmem_enabled").trim()
+    );
+    // the scorer's input lives on tmpfs: so does this copy
+    let scratch = std::path::PathBuf::from(std::env::var("SCRATCH_DIR").unwrap_or_else(|_| "/tmp".into()));
     let big = scratch.join("big");
-    let ob = scratch.join("o_big");
+    let ob = std::path::PathBuf::from("/scratch").join("o_big");
+    let ob = if std::path::Path::new("/scratch").exists() { ob } else { scratch.join("o_big") };
     let k: usize = std::env::var("SS_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let t = Instant::now();
     upscale(data, &big, k);
-    let up = t.elapsed().as_secs_f64();
-    evict(&big);
     let (y, a) = residency(&big);
-    let tc = touch_all(&big);
-    eprintln!("x{k} up={up:.1}s; after evict cached {y}/{a}; cold touch {tc:.0} ms; wall/int ms: open links parse dedup sess write | user sys");
-    // c* = evicted before the run
-    let vars: [(&str, bool, &[(&str, &str)]); 10] = [
-        ("base", false, &[]),
-        ("c-ra", true, &[]),
-        ("c-nora", true, &[("SS_RA", "0")]),
-        ("base", false, &[]),
-        ("c-ra", true, &[]),
-        ("c-pread", true, &[("SS_READ", "1")]),
-        ("lt", false, &[("SS_LT", "1")]),
-        ("c-nora", true, &[("SS_RA", "0")]),
-        ("base", false, &[]),
-        ("c-ra", true, &[]),
+    eprintln!("x{k} on {} up={:.1}s cached {y}/{a}; wall/int ms: open links parse dedup sess write [rel] | user sys", scratch.display(), t.elapsed().as_secs_f64());
+    let vars: [(&str, &[(&str, &str)]); 13] = [
+        ("base", &[]),
+        ("tok1", &[("SS_TOK", "1")]),
+        ("pread", &[("SS_READ", "1")]),
+        ("pop", &[("SS_POP", "1")]),
+        ("pf2", &[("SS_PFREE", "2")]),
+        ("base", &[]),
+        ("nolk", &[("SS_EXP", "1")]),
+        ("noemit", &[("SS_EXPL", "3")]),
+        ("scan", &[("SS_EXPL", "2")]),
+        ("lt", &[("SS_LT", "1")]),
+        ("tok1", &[("SS_TOK", "1")]),
+        ("pread", &[("SS_READ", "1")]),
+        ("base", &[]),
     ];
-    for (tag, cold, env) in vars.iter() {
-        if *cold {
-            evict(&big);
-        } else {
-            touch_all(&big);
-        }
+    for (tag, env) in vars.iter() {
         eprintln!("{}", child(tag, &big, &ob, threads, env));
     }
     eprintln!("{}", child("dev", data, &ob, threads, &[]));

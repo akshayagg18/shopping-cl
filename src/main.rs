@@ -68,6 +68,10 @@ static LENS: AtomicPtr<Vec<usize>> = AtomicPtr::new(std::ptr::null_mut());
 static PATHS: AtomicPtr<Vec<PathBuf>> = AtomicPtr::new(std::ptr::null_mut());
 /// Bulk parsing reads through pread into small buffers instead of the mapping.
 pub static READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Events and clicks through the bitmap tokenizer (stage 1) instead of per line.
+pub static TOK1: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Map inputs with MAP_POPULATE.
+pub static POP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn open_input(f: usize) -> File {
     let paths: &'static Vec<PathBuf> = unsafe { &*PATHS.load(Ordering::Acquire) };
@@ -314,8 +318,12 @@ fn open_all(data: &Path) -> Inputs {
                 // region (its length 1 is not the file's: lengths are kept apart)
                 memmap2::MmapOptions::new().len(1).map_anon().unwrap().make_read_only().unwrap()
             } else {
-                // no MAP_POPULATE: page-table work is spread over the workers
-                unsafe { memmap2::MmapOptions::new().map(&f) }.unwrap()
+                // no MAP_POPULATE by default: page-table work is spread over the workers
+                if POP.load(Ordering::Relaxed) {
+                    unsafe { memmap2::MmapOptions::new().populate().map(&f) }.unwrap()
+                } else {
+                    unsafe { memmap2::MmapOptions::new().map(&f) }.unwrap()
+                }
             };
             (m, len)
         })
@@ -1624,6 +1632,10 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
 
     flow::WC.store(std::env::var("SS_WC").map_or(flow::WC_DEFAULT, |v| v == "1"), Ordering::Relaxed);
     READ.store(std::env::var("SS_READ").is_ok_and(|v| v == "1"), Ordering::Relaxed);
+    TOK1.store(std::env::var("SS_TOK").is_ok_and(|v| v == "1"), Ordering::Relaxed);
+    POP.store(std::env::var("SS_POP").is_ok_and(|v| v == "1"), Ordering::Relaxed);
+    flow::EXP.store(std::env::var("SS_EXP").is_ok(), Ordering::Relaxed);
+    flow::EXPL.store(std::env::var("SS_EXPL").ok().and_then(|v| v.parse().ok()).unwrap_or(0), Ordering::Relaxed);
     let inp = open_all(data);
     // partition counts follow the input size, so a partition's working set
     // stays about the same from the 20M practice set to the 60M final
@@ -1721,7 +1733,14 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     output::write(out, aggs, &lk, &ctx_info(&ctx, &lk));
     lap("written");
     if leak {
-        if std::env::var("SS_PFREE").is_ok_and(|v| v == "1") {
+        if std::env::var("SS_PFREE").is_ok_and(|v| v == "2") {
+            // unmap the input from all threads at once (page-table teardown of
+            // every mapped page otherwise runs single-threaded at exit)
+            let files: Box<Vec<Mmap>> = unsafe { Box::from_raw(FILES.swap(std::ptr::null_mut(), Ordering::AcqRel)) };
+            files.into_par_iter().for_each(drop);
+            std::mem::forget(sinks);
+            lap("released");
+        } else if std::env::var("SS_PFREE").is_ok_and(|v| v == "1") {
             // release the big mappings from all threads at once, so the
             // single-threaded teardown at exit has little left to do
             let files: Box<Vec<Mmap>> = unsafe { Box::from_raw(FILES.swap(std::ptr::null_mut(), Ordering::AcqRel)) };
