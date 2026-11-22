@@ -24,18 +24,39 @@ pub fn pd() -> usize {
     1 << pd_bits()
 }
 
-/// One copy of an event, valid or not, for dedup. 24 bytes.
+/// One copy of an event, valid or not, for dedup. 16 bytes.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct CopyR {
-    eid: u64,
-    chk: u32,
+    /// event id hash with its top PD bits (fixed by the partition) replaced by
+    /// check bits: 64 + PD bits of identity
+    id: u64,
     ingest: u32,
-    /// thread << 48 | person partition << 32 | index in that stream; NOLOC when invalid
-    loc: u64,
+    /// person partition << LOC_I | index in this worker's stream of it; NOLOC
+    /// when invalid. The worker is the stream's owner.
+    loc: u32,
 }
 
-const NOLOC: u64 = u64::MAX;
+const NOLOC: u32 = u32::MAX;
+const LOC_I: u32 = 20;
+
+/// A copy whose event record index does not fit `loc` (a person partition
+/// holding over a million of one worker's events): kept aside, same rules.
+#[derive(Clone, Copy)]
+pub struct Wide {
+    part: u32,
+    tid: u32,
+    id: u64,
+    ingest: u32,
+    pb: u32,
+    i: u32,
+}
+
+#[inline(always)]
+fn copy_id(h: u64, c: u32) -> u64 {
+    let b = pd_bits();
+    (h & (u64::MAX >> b)) | (((c as u64) >> (32 - b)) << (64 - b))
+}
 
 #[inline(always)]
 fn eid_part(eid: u64) -> usize {
@@ -91,23 +112,34 @@ struct Tail {
 /// first gather in a small per-partition staging area and leave it a few cache
 /// lines at a time with non-temporal stores (no read-for-ownership of the
 /// destination, no cache pollution).
+#[derive(Clone, Copy)]
+#[repr(C, align(64))]
+struct Line([u8; 64]);
+
 pub struct Stream<T> {
     tails: Vec<Tail>,
     blocks: Vec<Vec<usize>>,
-    stage: Vec<T>,
+    /// K records per partition, cache-line aligned (a row is whole lines)
+    stage: Vec<Line>,
     wc: bool,
     _t: PhantomData<T>,
 }
 
 impl<T: Copy + Default> Stream<T> {
     /// Records per staging flush: a whole number of cache lines.
-    const K: usize = if std::mem::size_of::<T>() == 24 { 8 } else if std::mem::size_of::<T>() == 32 { 4 } else { 1 };
+    const K: usize = match std::mem::size_of::<T>() {
+        16 => 4,
+        24 => 8,
+        32 => 4,
+        _ => 1,
+    };
+    const ROW_LINES: usize = Self::K * std::mem::size_of::<T>() / 64;
     /// Records per block, a multiple of K.
     pub const CAP: usize = BLOCK_BYTES / std::mem::size_of::<T>() / Self::K * Self::K;
 
     fn new(parts: usize) -> Self {
         let wc = WC.load(Ordering::Relaxed) && Self::K > 1;
-        let stage = if wc { vec![T::default(); parts * Self::K] } else { Vec::new() };
+        let stage = if wc { vec![Line([0; 64]); parts * Self::ROW_LINES] } else { Vec::new() };
         Stream { tails: vec![Tail::default(); parts], blocks: (0..parts).map(|_| Vec::new()).collect(), stage, wc, _t: PhantomData }
     }
 
@@ -143,7 +175,7 @@ impl<T: Copy + Default> Stream<T> {
     fn push_wc(&mut self, arena: &mut Arena, p: usize, v: T) -> u32 {
         let i = unsafe { self.tails.get_unchecked(p) }.n;
         let f = i as usize % Self::K;
-        unsafe { *self.stage.get_unchecked_mut(p * Self::K + f) = v };
+        unsafe { (self.stage.as_mut_ptr().add(p * Self::ROW_LINES) as *mut T).add(f).write(v) };
         unsafe { self.tails.get_unchecked_mut(p) }.n = i + 1;
         if f == Self::K - 1 {
             self.flush(arena, p);
@@ -160,14 +192,14 @@ impl<T: Copy + Default> Stream<T> {
         let t = unsafe { self.tails.get_unchecked_mut(p) };
         let bytes = Self::K * std::mem::size_of::<T>();
         unsafe {
-            let src = self.stage.as_ptr().add(p * Self::K) as *const u8;
+            let src = self.stage.as_ptr().add(p * Self::ROW_LINES) as *const u8;
             let dst = t.cur as *mut u8;
             #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
             {
                 use std::arch::x86_64::*;
                 let mut o = 0;
                 while o < bytes {
-                    let x = _mm256_loadu_si256(src.add(o) as *const __m256i);
+                    let x = _mm256_load_si256(src.add(o) as *const __m256i);
                     _mm256_stream_si256(dst.add(o) as *mut __m256i, x);
                     o += 32;
                 }
@@ -194,7 +226,7 @@ impl<T: Copy + Default> Stream<T> {
             }
             let t = &mut self.tails[p];
             unsafe {
-                std::ptr::copy_nonoverlapping(self.stage.as_ptr().add(p * Self::K), t.cur as *mut T, rest);
+                std::ptr::copy_nonoverlapping(self.stage.as_ptr().add(p * Self::ROW_LINES) as *const T, t.cur as *mut T, rest);
             }
             t.cur += rest * std::mem::size_of::<T>();
             t.left -= rest as u32;
@@ -228,6 +260,7 @@ pub struct Sink {
     /// exit). Refs into it use file number `name_file`.
     pub names: Vec<u8>,
     name_file: usize,
+    pub wide: Vec<Wide>,
 }
 
 // raw block pointers into this sink's own arena
@@ -243,6 +276,7 @@ impl Sink {
             ck: Stream::new(p2()),
             names: Vec::with_capacity(name_cap + 16),
             name_file,
+            wide: Vec::new(),
         }
     }
     /// End of the parse phase: everything staged goes to its blocks.
@@ -294,8 +328,12 @@ fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
     };
     let pb = person_bucket(key);
     let i = sink.ev.push(&mut sink.arena, pb, Ev2 { key, uref, ts: pd.ts, pc: pd.pc });
-    let loc = (tid << 48) | ((pb as u64) << 32) | i as u64;
-    sink.cp.push(&mut sink.arena, eid_part(pd.eid), CopyR { eid: pd.eid, chk: pd.chk, ingest: pd.ingest, loc });
+    let (part, id) = (eid_part(pd.eid), copy_id(pd.eid, pd.chk));
+    if i < (1 << LOC_I) - 1 && pb < 1 << (32 - LOC_I) {
+        sink.cp.push(&mut sink.arena, part, CopyR { id, ingest: pd.ingest, loc: ((pb as u32) << LOC_I) | i });
+    } else {
+        sink.wide.push(Wide { part: part as u32, tid: tid as u32, id, ingest: pd.ingest, pb: pb as u32, i });
+    }
 }
 
 /// Parse one unit of event lines into `sink`.
@@ -374,7 +412,7 @@ pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons
             return;
         }
         // an invalid copy still takes part in dedup
-        sink.cp.push(&mut sink.arena, eid_part(eid_h), CopyR { eid: eid_h, chk: eid_c, ingest, loc: NOLOC });
+        sink.cp.push(&mut sink.arena, eid_part(eid_h), CopyR { id: copy_id(eid_h, eid_c), ingest, loc: NOLOC });
     });
     let start = if filled == AHEAD { head } else { 0 };
     for k in 0..filled {
@@ -464,10 +502,7 @@ impl Dead {
         Dead { words, off, np }
     }
     #[inline]
-    fn kill(&self, loc: u64) {
-        let t = (loc >> 48) as usize;
-        let p = ((loc >> 32) & 0xFFFF) as usize;
-        let i = (loc & 0xFFFF_FFFF) as usize;
+    fn kill(&self, t: usize, p: usize, i: usize) {
         self.words[self.off[t * self.np + p] + i / 64].fetch_or(1 << (i % 64), Ordering::Relaxed);
     }
     #[inline(always)]
@@ -478,7 +513,7 @@ impl Dead {
 
 #[derive(Default)]
 struct DedupScratch2 {
-    blocks: Vec<(usize, usize)>,
+    blocks: Vec<(usize, u32, u32)>, // (records, count, owning worker)
     table: Vec<u64>,
 }
 
@@ -486,65 +521,97 @@ thread_local! {
     static DEDUP2: std::cell::RefCell<DedupScratch2> = std::cell::RefCell::new(DedupScratch2::default());
 }
 
+/// The wide copies of all workers, sorted by event id partition.
+pub fn wide_sorted(sinks: &mut [Sink]) -> Vec<Wide> {
+    let mut w: Vec<Wide> = sinks.iter_mut().flat_map(|s| std::mem::take(&mut s.wide)).collect();
+    w.sort_by_key(|x| x.part);
+    w
+}
+
 /// Keep the earliest-ingested copy of every event id in partition `b`; mark
 /// the event records of all other copies dead.
-pub fn dedup_part(b: usize, sinks: &[Sink], dead: &Dead) {
+pub fn dedup_part(b: usize, sinks: &[Sink], wide: &[Wide], dead: &Dead) {
     DEDUP2.with(|cell| {
         let mut guard = cell.borrow_mut();
         let sc = &mut *guard;
         // the copy records stay in their blocks: a table entry names a copy by
-        // block << 9 | offset (a block holds fewer than 512)
-        const OB: u32 = 9;
+        // block << 10 | offset (a block holds at most 512), or WIDE | index
+        const OB: u32 = 10;
+        const WIDE: usize = 1 << 31;
 
         sc.blocks.clear();
         let mut n = 0usize;
-        for s in sinks {
+        for (t, s) in sinks.iter().enumerate() {
             for sl in s.cp.slices(b) {
                 n += sl.len();
-                sc.blocks.push((sl.as_ptr() as usize, sl.len()));
+                sc.blocks.push((sl.as_ptr() as usize, sl.len() as u32, t as u32));
             }
         }
+        let wide = if wide.is_empty() {
+            wide
+        } else {
+            let lo = wide.partition_point(|x| (x.part as usize) < b);
+            let hi = wide.partition_point(|x| (x.part as usize) <= b);
+            &wide[lo..hi]
+        };
+        n += wide.len();
+        assert!(sc.blocks.len() < WIDE >> OB, "dedup partition too large");
         let cap = (n * 2).next_power_of_two().max(16);
         let mask = cap - 1;
         sc.table.clear();
         sc.table.resize(cap, 0);
         let (blocks, table) = (&sc.blocks, &mut sc.table);
-        let rec = |g: usize| -> &CopyR {
-            let (p, _) = unsafe { *blocks.get_unchecked(g >> OB) };
-            unsafe { &*(p as *const CopyR).add(g & ((1 << OB) - 1)) }
-        };
-        for (bi, &(p, len)) in blocks.iter().enumerate() {
-            let blk = unsafe { std::slice::from_raw_parts(p as *const CopyR, len) };
-            for (o, e) in blk.iter().enumerate() {
-                let g = (bi << OB) | o;
-                let fp = e.eid >> 32;
-                let mut s = (e.eid as usize) & mask;
-                loop {
-                    let t = unsafe { *table.get_unchecked(s) };
-                    if t == 0 {
-                        unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
-                        break;
-                    }
-                    if t >> 32 == fp {
-                        let j = (t & 0xFFFF_FFFF) as usize - 1;
-                        let old = rec(j);
-                        if old.eid == e.eid && old.chk == e.chk {
-                            // equal ingest_ts means identical copies (rules.md): keep the first
-                            if e.ingest < old.ingest {
-                                unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
-                                if old.loc != NOLOC {
-                                    dead.kill(old.loc);
-                                }
-                            } else if e.loc != NOLOC {
-                                dead.kill(e.loc);
-                            }
-                            break;
-                        }
-                    }
-                    s = (s + 1) & mask;
-                }
+        // (id, ingest, event record to kill: worker, partition, index)
+        let copy = |g: usize| -> (u64, u32, Option<(usize, usize, usize)>) {
+            if g & WIDE != 0 {
+                let w = unsafe { wide.get_unchecked(g & !WIDE) };
+                (w.id, w.ingest, Some((w.tid as usize, w.pb as usize, w.i as usize)))
+            } else {
+                let (p, _, t) = unsafe { *blocks.get_unchecked(g >> OB) };
+                let r = unsafe { &*(p as *const CopyR).add(g & ((1 << OB) - 1)) };
+                let at = if r.loc == NOLOC { None } else { Some((t as usize, (r.loc >> LOC_I) as usize, (r.loc & ((1 << LOC_I) - 1)) as usize)) };
+                (r.id, r.ingest, at)
             }
+        };
+        let mut one = |g: usize, id: u64, ingest: u32| {
+            let fp = id >> 32;
+            let mut s = (id as usize) & mask;
+            loop {
+                let t = unsafe { *table.get_unchecked(s) };
+                if t == 0 {
+                    unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
+                    return;
+                }
+                if t >> 32 == fp {
+                    let j = (t & 0xFFFF_FFFF) as usize - 1;
+                    let (oid, oingest, oat) = copy(j);
+                    if oid == id {
+                        // equal ingest_ts means identical copies (rules.md): keep the first
+                        let lose = if ingest < oingest {
+                            unsafe { *table.get_unchecked_mut(s) = (fp << 32) | (g as u64 + 1) };
+                            oat
+                        } else {
+                            copy(g).2
+                        };
+                        if let Some((t, p, i)) = lose {
+                            dead.kill(t, p, i);
+                        }
+                        return;
+                    }
+                }
+                s = (s + 1) & mask;
+            }
+        };
+        for (bi, &(p, len, _)) in blocks.iter().enumerate() {
+            let blk = unsafe { std::slice::from_raw_parts(p as *const CopyR, len as usize) };
+            for (o, e) in blk.iter().enumerate() {
+                one((bi << OB) | o, e.id, e.ingest);
+            }
+        }
+        for (k, w) in wide.iter().enumerate() {
+            one(WIDE | k, w.id, w.ingest);
         }
     })
 }
-const _: () = assert!(Stream::<CopyR>::CAP < 512, "dedup names a copy by block << 9 | offset");
+const _: () = assert!(Stream::<CopyR>::CAP <= 1024, "dedup names a copy by block << 10 | offset");
+const _: () = assert!(std::mem::size_of::<CopyR>() == 16);

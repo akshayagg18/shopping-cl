@@ -1685,7 +1685,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     let est_events = (ev_bytes / 75).max(1);
     let auto = |per: usize| (usize::BITS - 1 - (est_events / per).max(1).leading_zeros()).clamp(9, 12);
     let envbits = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(d).clamp(6, 14);
-    P2B.store(envbits("SS_P2B", auto(P2_PER)), Ordering::Relaxed);
+    // a copy record holds the person partition in 12 bits
+    P2B.store(envbits("SS_P2B", auto(P2_PER)).min(12), Ordering::Relaxed);
     flow::PDB.store(envbits("SS_PDB", auto(PD_PER)), Ordering::Relaxed);
     lap("open");
     let (ws, we) = (inp.window_start, inp.window_end);
@@ -1717,7 +1718,8 @@ pub fn run(data: &Path, out: &Path, leak: bool) -> Vec<(&'static str, f64)> {
     NAMES.store(Box::into_raw(Box::new(names)), Ordering::Release);
     lap("parsed");
     let dead = flow::Dead::new(&sinks);
-    (0..flow::pd()).into_par_iter().for_each(|b| flow::dedup_part(b, &sinks, &dead));
+    let wide = flow::wide_sorted(&mut sinks);
+    (0..flow::pd()).into_par_iter().for_each(|b| flow::dedup_part(b, &sinks, &wide, &dead));
     lap("dedup");
 
     let ws_day = ws.div_euclid(DAY_MS);

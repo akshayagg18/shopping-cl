@@ -310,7 +310,7 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let _ = crate::run(data, out, false);
     let cpu = cat("/proc/cpuinfo");
     let model = cpu.lines().find(|l| l.starts_with("model name")).unwrap_or("?").replace("model name\t: ", "");
-    eprintln!("D13 {model} | {} | {}", caches(), cat("/proc/sys/kernel/osrelease").trim());
+    eprintln!("D14 {model} | {} | {} | mem {} cpu {}", caches(), cat("/proc/sys/kernel/osrelease").trim(), cat("/sys/fs/cgroup/memory.max").trim(), cat("/sys/fs/cgroup/cpu.max").trim());
     let (rd, wr) = bw_bench();
     let lk: Vec<String> = [1usize, 4, 8, 16, 32, 64, 128].iter().map(|&mb| format!("{mb}M={:.0}", lookup_bench(mb, 4 << 20))).collect();
     eprintln!("BW rd={rd:.1} ntwr={wr:.1} GB/s | lookups M/s {}", lk.join(" "));
@@ -320,21 +320,25 @@ pub fn main(data: &Path, out: &Path, threads: usize) {
     let t = Instant::now();
     upscale(data, &big, k);
     eprintln!("x{k} up={:.1}s; wall/int ms: open links parse dedup sess write | user sys", t.elapsed().as_secs_f64());
-    let vars: [(&str, &[(&str, &str)]); 11] = [
-        ("base", &[]),
-        ("nolk", &[("SS_EXP", "1")]),
-        ("noemit", &[("SS_EXPL", "3")]),
-        ("scan", &[("SS_EXPL", "2")]),
-        ("scan-ck", &[("SS_EXPL", "4")]),
-        ("none", &[("SS_EXPL", "5")]),
-        ("base", &[]),
-        ("mmap", &[("SS_READ", "0")]),
-        ("p9", &[("SS_P2B", "9")]),
-        ("p11", &[("SS_P2B", "11")]),
-        ("d11", &[("SS_PDB", "11")]),
+    let vars: [(&str, usize, &[(&str, &str)]); 15] = [
+        ("base", threads, &[]),
+        ("nolk", threads, &[("SS_EXP", "1")]),
+        ("noemit", threads, &[("SS_EXPL", "3")]),
+        ("scan", threads, &[("SS_EXPL", "2")]),
+        ("scan-ck", threads, &[("SS_EXPL", "4")]),
+        ("none", threads, &[("SS_EXPL", "5")]),
+        ("base", threads, &[]),
+        ("mmap", threads, &[("SS_READ", "0")]),
+        ("pf1", threads, &[("SS_PFREE", "1")]),
+        ("mmap+pf1", threads, &[("SS_READ", "0"), ("SS_PFREE", "1")]),
+        ("t4", 4, &[]),
+        ("t6", 6, &[]),
+        ("p9", threads, &[("SS_P2B", "9")]),
+        ("p11", threads, &[("SS_P2B", "11")]),
+        ("d11", threads, &[("SS_PDB", "11")]),
     ];
-    for (tag, env) in vars.iter() {
-        eprintln!("{}", child(tag, &big, &ob, threads, env));
+    for (tag, th, env) in vars.iter() {
+        eprintln!("{}", child(tag, &big, &ob, *th, env));
     }
     eprintln!("{}", child("dev", data, &ob, threads, &[]));
     let _ = std::fs::remove_dir_all(&big);
