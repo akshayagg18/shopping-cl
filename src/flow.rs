@@ -324,7 +324,7 @@ fn emit_event(sink: &mut Sink, persons: &Persons, tid: u64, pd: &PendE) {
 /// Parse one unit of event lines into `sink`.
 #[allow(clippy::too_many_arguments)]
 pub fn events_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons, ws: i64, we: i64, sink: &mut Sink, tid: u64) {
-    const AHEAD: usize = 16;
+    const AHEAD: usize = 32;
     let mut ring = [PendE::default(); AHEAD];
     let mut memo = parse::Memo::new();
     let mut head = 0usize;
@@ -409,7 +409,7 @@ fn emit_click(sink: &mut Sink, persons: &Persons, pd: &PendC) {
 /// Parse one unit of click lines into `sink`.
 #[allow(clippy::too_many_arguments)]
 pub fn clicks_unit(f: usize, s: usize, e: usize, lk: &Lookups, persons: &Persons, ws: i64, we: i64, sink: &mut Sink) {
-    const AHEAD: usize = 16;
+    const AHEAD: usize = 32;
     let lo = ws - CLICK_REACH;
     let mut ring = [PendC::default(); AHEAD];
     let mut memo = parse::Memo::new();
