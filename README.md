@@ -20,13 +20,15 @@ adds almost nothing to the measured time.
    component is named by its byte-wise smallest ID with a compare-and-swap minimum, and
    the same table, its values rewritten to `LINKED | name ref`, is the person map. No
    sorting, scattering or serial pass.
-3. **Tokenizing.** One fused AVX2 pass per 64 bytes builds the newline bitmap, a bitmap
-   of quoting violations (prefix-XOR quote parity: no separator inside quotes, opening
-   quotes after a separator, closing quotes before one) and a flat list of separator
-   positions. A line is then: next newline from the bitmap, one compare that its N-th
-   separator is that newline, one test of the violation bitmap. Fields are unquoted on
-   access. (A per-line variant, three 32-byte loads per line, is faster on newer cores
-   but measured ~110 ms slower on the scorer's Cascade Lake: it stays off.)
+3. **Tokenizing.** Per window of 192 KiB, one AVX2 pass builds the newline bitmap, so
+   every line's start and length are known up front. A line of up to 127 bytes is then
+   split from three or four 32-byte loads: comma and quote masks, prefix-XOR quote
+   parity, and the quoting rules (no separator inside quotes, opening quotes after a
+   separator, closing quotes before one) as a few mask operations; the N-th separator
+   must be the newline. Longer lines (well under 1%) take a scalar path. Fields are
+   unquoted on access. (With three loads only, the fifth of scorer-v5 lines that carry a
+   32-character ID did not fit, which is why this tokenizer first measured slower than
+   the stage-1 bitmap one, still available as `SS_TOK=1`.)
 4. **Values.** F1/F2/F3 timestamps take inlined fast paths with a small per-thread cache
    of validated `YYYY-MM-DD` dates; anything unusual falls back to the strict general
    parser (impossible dates, hour 24, second 60, bad offsets are rejected). Short IDs
